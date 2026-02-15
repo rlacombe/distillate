@@ -1,0 +1,18 @@
+.env
+state.json
+state.lock
+*.pdf
+*.rmdoc
+*.zip
+.claude/
+uv.lock
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.ruff_cache/
+.pytest_cache/

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Distillate — Distill research papers into structured notes</title>
+  <meta name="description" content="Automate your paper reading workflow: Zotero to reMarkable to structured notes with highlights and AI summaries.">
+  <style>
+    :root {
+      --bg: #fafaf9;
+      --fg: #1c1917;
+      --muted: #78716c;
+      --accent: #b45309;
+      --border: #e7e5e4;
+      --code-bg: #f5f5f4;
+      --max-w: 640px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      padding: 0 24px;
+    }
+
+    .container {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 80px 0 64px;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 12px;
+    }
+
+    .tagline {
+      font-size: 1.15rem;
+      color: var(--muted);
+      margin-bottom: 48px;
+    }
+
+    .flow {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px 28px;
+      margin-bottom: 40px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85rem;
+      line-height: 1.8;
+      color: var(--fg);
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .install {
+      margin-bottom: 48px;
+    }
+
+    .install code {
+      display: block;
+      background: var(--fg);
+      color: var(--bg);
+      padding: 14px 20px;
+      border-radius: 8px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.9rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      margin-top: 0;
+    }
+
+    .steps {
+      margin-bottom: 48px;
+    }
+
+    .step {
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      margin-bottom: 12px;
+    }
+
+    .step-number {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      background: var(--fg);
+      color: var(--bg);
+      border-radius: 50%;
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      line-height: 24px;
+      margin-right: 10px;
+      vertical-align: middle;
+    }
+
+    .step strong {
+      font-size: 0.95rem;
+      vertical-align: middle;
+    }
+
+    .step p {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 8px;
+      padding-left: 34px;
+    }
+
+    .extras {
+      margin-bottom: 48px;
+    }
+
+    .extras-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 480px) {
+      .extras-grid { grid-template-columns: 1fr; }
+      .container { padding: 48px 0 40px; }
+      h1 { font-size: 1.6rem; }
+    }
+
+    .extra {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+    }
+
+    .extra strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.9rem;
+    }
+
+    .extra span {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .requires {
+      margin-bottom: 48px;
+    }
+
+    .requires table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    .requires th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 2px solid var(--border);
+      font-weight: 600;
+    }
+
+    .requires td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .requires td:last-child {
+      color: var(--muted);
+    }
+
+    .links {
+      display: flex;
+      gap: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .links a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.95rem;
+    }
+
+    .links a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Distillate</h1>
+    <p class="tagline">A reading workflow for researchers who use Zotero and reMarkable.</p>
+
+    <div class="flow">Save paper in Zotero  ──&gt;  PDF on reMarkable
+                               │
+                  Read &amp; highlight on tablet
+                  Move to Read folder when done
+                               │
+                  Distillate picks it up:
+                  ├── Extract highlighted text
+                  ├── Keep notes and a reading log
+                  └── Archive PDFs once read
+
+                  Want more?
+                  ├── AI paper summaries
+                  ├── Daily paper suggestions
+                  └── Weekly digest emails</div>
+
+    <div class="install">
+      <code>pip install distillate &amp;&amp; distillate --init</code>
+    </div>
+
+    <div class="steps">
+      <h2>How it works</h2>
+
+      <div class="step">
+        <span class="step-number">1</span>
+        <strong>Save a paper to Zotero</strong>
+        <p>Use the Zotero browser connector or mobile app. Distillate watches for new papers tagged "inbox".</p>
+      </div>
+
+      <div class="step">
+        <span class="step-number">2</span>
+        <strong>PDF syncs to your reMarkable</strong>
+        <p>Distillate uploads the PDF to your tablet. Optionally removes it from Zotero to save storage (300 MB free tier).</p>
+      </div>
+
+      <div class="step">
+        <span class="step-number">3</span>
+        <strong>Read and highlight on your tablet</strong>
+        <p>Highlight the passages that matter. When you're done, move the document to the Read folder.</p>
+      </div>
+
+      <div class="step">
+        <span class="step-number">4</span>
+        <strong>Distillate extracts your highlights</strong>
+        <p>Highlighted text is pulled from the reMarkable, cleaned up, and saved as a structured markdown note grouped by page.</p>
+      </div>
+
+      <div class="step">
+        <span class="step-number">5</span>
+        <strong>Notes and PDFs are archived locally</strong>
+        <p>Your highlights, reading log, and PDFs are saved to an Obsidian vault or a plain folder on your computer.</p>
+      </div>
+    </div>
+
+    <div class="extras">
+      <h2>Want more?</h2>
+      <div class="extras-grid">
+        <div class="extra">
+          <strong>AI summaries</strong>
+          <span>One-liner, key learnings, and a paragraph summary for each paper you read (via Claude)</span>
+        </div>
+        <div class="extra">
+          <strong>Paper suggestions</strong>
+          <span>Pick what to read next from your queue, based on your reading history</span>
+        </div>
+        <div class="extra">
+          <strong>Weekly digest</strong>
+          <span>A summary of what you read this week, with stats and queue health</span>
+        </div>
+        <div class="extra">
+          <strong>Obsidian integration</strong>
+          <span>Wiki-links between papers, searchable database, reading stats, deep links from Zotero</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="requires">
+      <h2>What you need</h2>
+      <table>
+        <tr><th>Component</th><th>Notes</th></tr>
+        <tr><td>Zotero account</td><td>Free &mdash; manages your paper library</td></tr>
+        <tr><td>reMarkable tablet</td><td>Where you read and highlight</td></tr>
+        <tr><td>rmapi</td><td>Free &mdash; syncs files with reMarkable Cloud</td></tr>
+        <tr><td>Obsidian or output folder</td><td>Optional &mdash; where notes are saved locally</td></tr>
+        <tr><td>Anthropic API key</td><td>Optional &mdash; for AI summaries</td></tr>
+        <tr><td>Resend API key</td><td>Optional &mdash; for email digest</td></tr>
+      </table>
+    </div>
+
+    <div class="links">
+      <a href="https://github.com/rlacombe/distillate">GitHub</a>
+      <a href="https://pypi.org/project/distillate/">PyPI</a>
+      <a href="https://github.com/rlacombe/distillate#install">Install guide</a>
+    </div>
+  </div>
+</body>
+</html>

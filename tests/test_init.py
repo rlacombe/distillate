@@ -1,0 +1,120 @@
+"""Tests for the init wizard (_init_wizard)."""
+
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+
+def _run_wizard(inputs, tmp_path, monkeypatch):
+    """Helper to run the wizard with mocked I/O, rmapi, and Zotero API."""
+    from distillate import config
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(config, "ENV_PATH", env_file)
+
+    input_iter = iter(inputs)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("builtins.input", lambda _: next(input_iter)), \
+         patch("requests.get", return_value=mock_resp), \
+         patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
+         patch("platform.system", return_value="Linux"):
+        from distillate.main import _init_wizard
+        _init_wizard()
+
+    return env_file
+
+
+class TestInitWizard:
+    """Tests for main._init_wizard() with mocked I/O."""
+
+    def test_saves_zotero_credentials(self, tmp_path, monkeypatch):
+        env_file = _run_wizard([
+            "test_api_key",     # API key
+            "12345",            # User ID
+            "n",                # Skip reMarkable registration
+            "n",                # Don't use Obsidian
+            "",                 # Skip plain folder
+            "",                 # Keep PDFs (default Y)
+            "",                 # Skip Anthropic
+            "",                 # Skip Resend
+        ], tmp_path, monkeypatch)
+
+        text = env_file.read_text()
+        assert "ZOTERO_API_KEY=test_api_key" in text
+        assert "ZOTERO_USER_ID=12345" in text
+
+    def test_empty_api_key_aborts(self, capsys):
+        inputs = iter([""])
+        with patch("builtins.input", lambda _: next(inputs)):
+            from distillate.main import _init_wizard
+            _init_wizard()
+
+        output = capsys.readouterr().out
+        assert "required" in output.lower()
+
+    def test_obsidian_vault_path_saved(self, tmp_path, monkeypatch):
+        vault_path = str(tmp_path / "my_vault")
+        env_file = _run_wizard([
+            "key",              # API key
+            "999",              # User ID
+            "n",                # Skip reMarkable registration
+            "",                 # Use Obsidian (default Y)
+            vault_path,         # Vault path
+            "",                 # Keep PDFs (default Y)
+            "",                 # Skip Anthropic
+            "",                 # Skip Resend
+        ], tmp_path, monkeypatch)
+
+        text = env_file.read_text()
+        assert "OBSIDIAN_VAULT_PATH=" in text
+
+    def test_plain_folder_path_saved(self, tmp_path, monkeypatch):
+        output_path = str(tmp_path / "notes")
+        env_file = _run_wizard([
+            "key",              # API key
+            "999",              # User ID
+            "n",                # Skip reMarkable registration
+            "n",                # Don't use Obsidian
+            output_path,        # Plain folder path
+            "",                 # Keep PDFs (default Y)
+            "",                 # Skip Anthropic
+            "",                 # Skip Resend
+        ], tmp_path, monkeypatch)
+
+        text = env_file.read_text()
+        assert "OUTPUT_PATH=" in text
+        assert Path(output_path).exists()
+
+    def test_optional_features_saved(self, tmp_path, monkeypatch):
+        env_file = _run_wizard([
+            "key",                  # API key
+            "999",                  # User ID
+            "n",                    # Skip reMarkable registration
+            "n",                    # Don't use Obsidian
+            "",                     # Skip plain folder
+            "",                     # Keep PDFs (default Y)
+            "sk-ant-test123",       # Anthropic key
+            "re_test456",           # Resend key
+            "user@example.com",     # Email
+        ], tmp_path, monkeypatch)
+
+        text = env_file.read_text()
+        assert "ANTHROPIC_API_KEY=sk-ant-test123" in text
+        assert "RESEND_API_KEY=re_test456" in text
+        assert "DIGEST_TO=user@example.com" in text
+
+    def test_delete_zotero_pdf_option(self, tmp_path, monkeypatch):
+        env_file = _run_wizard([
+            "key",              # API key
+            "999",              # User ID
+            "n",                # Skip reMarkable registration
+            "n",                # Don't use Obsidian
+            "",                 # Skip plain folder
+            "2",                # Remove PDFs from Zotero after sync
+            "",                 # Skip Anthropic
+            "",                 # Skip Resend
+        ], tmp_path, monkeypatch)
+
+        text = env_file.read_text()
+        assert "KEEP_ZOTERO_PDF=false" in text
