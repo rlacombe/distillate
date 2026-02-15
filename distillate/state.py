@@ -95,6 +95,25 @@ class State:
     def has_document(self, zotero_item_key: str) -> bool:
         return zotero_item_key in self._data["documents"]
 
+    def find_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
+        """Find a tracked document by DOI. Returns None if not found."""
+        if not doi:
+            return None
+        for doc in self._data["documents"].values():
+            if doc.get("metadata", {}).get("doi", "") == doi:
+                return doc
+        return None
+
+    def find_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Find a tracked document by exact title (case-insensitive)."""
+        if not title:
+            return None
+        title_lower = title.lower().strip()
+        for doc in self._data["documents"].values():
+            if doc.get("title", "").lower().strip() == title_lower:
+                return doc
+        return None
+
     def add_document(
         self,
         zotero_item_key: str,

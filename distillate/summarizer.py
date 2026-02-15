@@ -137,8 +137,10 @@ def suggest_papers(
         tags = ", ".join(p.get("tags", []))
         summary = p.get("summary", "")
         engagement = p.get("engagement", 0)
+        citations = p.get("citation_count", 0)
         eng_str = f", engagement:{engagement}%" if engagement else ""
-        reads_lines.append(f"- [read{eng_str}] {p['title']} [{tags}] — {summary}")
+        cite_str = f", {citations} citations" if citations else ""
+        reads_lines.append(f"- [read{eng_str}{cite_str}] {p['title']} [{tags}] — {summary}")
 
     # Build unread queue
     from datetime import datetime, timezone
@@ -156,8 +158,10 @@ def suggest_papers(
             except (ValueError, TypeError):
                 pass
         type_str = f" ({paper_type})" if paper_type else ""
+        citations = p.get("citation_count", 0)
+        cite_str = f", {citations} citations" if citations else ""
         queue_lines.append(
-            f"{i}. {p['title']} [{tags}]{type_str} — {days} days in queue"
+            f"{i}. {p['title']} [{tags}]{type_str}{cite_str} — {days} days in queue"
         )
 
     if not queue_lines:

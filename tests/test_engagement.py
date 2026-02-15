@@ -448,3 +448,101 @@ class TestEngagementInSuggestions:
 
         prompt = mock_call.call_args[0][0]
         assert "engagement:85%" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Citation data surfacing
+# ---------------------------------------------------------------------------
+
+
+class TestCitationInDigest:
+    """Tests for citation count in digest email."""
+
+    def test_paper_html_with_citations(self):
+        from distillate.digest import _paper_html
+
+        paper = {
+            "title": "Cited Paper",
+            "summary": "Important work.",
+            "metadata": {"url": "https://example.com", "tags": [], "citation_count": 142},
+            "highlight_count": 5,
+            "engagement": 60,
+            "highlight_word_count": 200,
+            "processed_at": "2026-02-10T12:00:00+00:00",
+        }
+        html = _paper_html(paper)
+        assert "142 citations" in html
+
+    def test_paper_html_without_citations(self):
+        from distillate.digest import _paper_html
+
+        paper = {
+            "title": "Uncited Paper",
+            "summary": "New work.",
+            "metadata": {"url": "", "tags": [], "citation_count": 0},
+            "highlight_count": 3,
+            "processed_at": "",
+        }
+        html = _paper_html(paper)
+        assert "citations" not in html
+
+    def test_paper_html_no_metadata_citation(self):
+        from distillate.digest import _paper_html
+
+        paper = {
+            "title": "Paper No Meta",
+            "summary": "",
+            "metadata": {"tags": []},
+            "highlight_count": 0,
+            "processed_at": "",
+        }
+        html = _paper_html(paper)
+        assert "citations" not in html
+
+
+class TestCitationInSuggestionPrompt:
+    """Tests for citation count in suggest_papers prompt context."""
+
+    @patch("distillate.summarizer._call_claude")
+    @patch("distillate.summarizer.config")
+    def test_citation_count_in_queue(self, mock_config, mock_call):
+        mock_config.ANTHROPIC_API_KEY = "test-key"
+        mock_config.CLAUDE_SMART_MODEL = "claude-sonnet-4-5"
+        mock_call.return_value = "1. Paper A — reason"
+
+        from distillate.summarizer import suggest_papers
+
+        unread = [{
+            "title": "Paper A", "tags": ["ml"], "paper_type": "",
+            "uploaded_at": "2026-01-01", "citation_count": 500,
+        }]
+        recent = [{
+            "title": "Read Paper", "tags": ["dl"], "summary": "Good.",
+            "engagement": 50, "citation_count": 200,
+        }]
+
+        suggest_papers(unread, recent)
+
+        prompt = mock_call.call_args[0][0]
+        assert "500 citations" in prompt
+        assert "200 citations" in prompt
+
+    @patch("distillate.summarizer._call_claude")
+    @patch("distillate.summarizer.config")
+    def test_no_citation_when_zero(self, mock_config, mock_call):
+        mock_config.ANTHROPIC_API_KEY = "test-key"
+        mock_config.CLAUDE_SMART_MODEL = "claude-sonnet-4-5"
+        mock_call.return_value = "1. Paper A — reason"
+
+        from distillate.summarizer import suggest_papers
+
+        unread = [{
+            "title": "Paper A", "tags": [], "paper_type": "",
+            "uploaded_at": "2026-01-01", "citation_count": 0,
+        }]
+        recent = []
+
+        suggest_papers(unread, recent)
+
+        prompt = mock_call.call_args[0][0]
+        assert "citations" not in prompt

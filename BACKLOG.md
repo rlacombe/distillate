@@ -22,14 +22,7 @@
 - ~~Auto-promote~~ — auto-promote runs during `--sync`. Smart demotion skips papers user started reading. Suggestions use Sonnet.
 - ~~Metadata sync~~ — Auto-detects Zotero metadata changes (tags, authors, DOI, etc.) on each run. Updates state.json and Obsidian note frontmatter.
 - ~~Richer emails~~ — Digest: topic tag pills, highlight count, reading velocity, Obsidian deep links. Suggest: tag pills, velocity, queue health snapshot.
-
-### Email copy refresh
-Improve email templates: better copy for queue health, reading velocity, suggestion framing. Make the tone more engaging and the stats more actionable. Low priority — current emails work, just not polished.
-
-### Cross-paper wiki-links
-At note creation time, find 2-3 existing papers with overlapping topic tags and add a `## Related Reading` section with `[[wiki-links]]`. No AI needed, just tag matching against state.json.
-
-**Why**: Builds an organic knowledge graph as you read more papers. Most useful after 10+ read papers.
+- ~~Smart --init re-run~~ — Detects existing config, offers shortcut to optional features. Shows existing values as defaults.
 
 ---
 
@@ -45,3 +38,5 @@ At note creation time, find 2-3 existing papers with overlapping topic tags and 
 - ~~Obsidian Canvas maps~~ — Cool but low utility vs. effort.
 - ~~Handwritten margin notes~~ — rmscene pen stroke extraction too complex for the payoff.
 - ~~Literature review generator~~ — Dream feature, deferred indefinitely. Need 20+ papers per topic.
+- ~~Cross-paper wiki-links~~ — Dropped. User decision.
+- ~~Email copy refresh~~ — Current emails work well. Not worth the churn.

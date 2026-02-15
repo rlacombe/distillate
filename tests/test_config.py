@@ -120,6 +120,88 @@ class TestEnsureLoaded:
         monkeypatch.setattr(config, "_loaded", False)
 
 
+class TestValidateOptional:
+    """Tests for _validate_optional() warnings."""
+
+    def test_warns_on_missing_vault_path(self, monkeypatch, caplog):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "/nonexistent/vault")
+        monkeypatch.setattr(config, "OUTPUT_PATH", "")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert "OBSIDIAN_VAULT_PATH does not exist" in caplog.text
+
+    def test_warns_on_missing_output_path(self, monkeypatch, caplog):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr(config, "OUTPUT_PATH", "/nonexistent/output")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert "OUTPUT_PATH does not exist" in caplog.text
+
+    def test_warns_on_bad_anthropic_key(self, monkeypatch, caplog):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr(config, "OUTPUT_PATH", "")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "bad-key-prefix")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert "ANTHROPIC_API_KEY" in caplog.text
+
+    def test_warns_on_bad_resend_key(self, monkeypatch, caplog):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr(config, "OUTPUT_PATH", "")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "bad-key-prefix")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert "RESEND_API_KEY" in caplog.text
+
+    def test_no_warnings_when_valid(self, monkeypatch, caplog, tmp_path):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", str(tmp_path))
+        monkeypatch.setattr(config, "OUTPUT_PATH", "")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "sk-valid")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "re_valid")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert caplog.text == ""
+
+    def test_no_warnings_when_empty(self, monkeypatch, caplog):
+        import logging
+        from distillate import config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr(config, "OUTPUT_PATH", "")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(config, "RESEND_API_KEY", "")
+
+        with caplog.at_level(logging.WARNING):
+            config._validate_optional()
+        assert caplog.text == ""
+
+
 class TestConfigDir:
     """Tests for CONFIG_DIR resolution."""
 

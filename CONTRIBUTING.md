@@ -48,7 +48,7 @@ distillate/
 
 ## Code Style
 
-- No linter enforced yet (ruff planned)
+- Lint with `ruff check .` before submitting
 - Follow existing patterns in the codebase
 - Keep functions focused and files under 600 lines
 - Guard optional features with `if not config.X: return None`

@@ -340,7 +340,9 @@ def _paper_html(p):
         except (ValueError, TypeError):
             pass
 
-    # Stats badge: engagement + highlights + word count
+    citation_count = p.get("metadata", {}).get("citation_count", 0)
+
+    # Stats badge: engagement + highlights + word count + citations
     stats_parts = []
     if engagement:
         stats_parts.append(f"{engagement}% engaged")
@@ -350,6 +352,8 @@ def _paper_html(p):
         )
     if highlight_word_count:
         stats_parts.append(f"{highlight_word_count} words")
+    if citation_count:
+        stats_parts.append(f"{citation_count:,} citations")
     stats_html = ""
     if stats_parts:
         stats_html = (
@@ -412,6 +416,7 @@ def send_suggestion() -> None:
             "tags": meta.get("tags", []),
             "paper_type": meta.get("paper_type", ""),
             "uploaded_at": doc.get("uploaded_at", ""),
+            "citation_count": meta.get("citation_count", 0),
         })
 
     # Gather recent reads for context (last 30 days)
@@ -425,6 +430,7 @@ def send_suggestion() -> None:
             "tags": meta.get("tags", []),
             "summary": doc.get("summary", ""),
             "engagement": doc.get("engagement", 0),
+            "citation_count": meta.get("citation_count", 0),
         })
 
     # Ask Claude

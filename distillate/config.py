@@ -106,6 +106,28 @@ def ensure_loaded() -> None:
     _loaded = True
     ZOTERO_API_KEY = _require("ZOTERO_API_KEY")
     ZOTERO_USER_ID = _require("ZOTERO_USER_ID")
+    _validate_optional()
+
+
+def _validate_optional() -> None:
+    """Print warnings for common misconfigurations. Never exits."""
+    log = logging.getLogger(__name__)
+
+    if OBSIDIAN_VAULT_PATH and not Path(OBSIDIAN_VAULT_PATH).is_dir():
+        log.warning("OBSIDIAN_VAULT_PATH does not exist: %s", OBSIDIAN_VAULT_PATH)
+
+    if OUTPUT_PATH and not Path(OUTPUT_PATH).is_dir():
+        log.warning("OUTPUT_PATH does not exist: %s", OUTPUT_PATH)
+
+    if ANTHROPIC_API_KEY and not ANTHROPIC_API_KEY.startswith("sk-"):
+        log.warning(
+            "ANTHROPIC_API_KEY doesn't look like a valid key (expected 'sk-' prefix)"
+        )
+
+    if RESEND_API_KEY and not RESEND_API_KEY.startswith("re_"):
+        log.warning(
+            "RESEND_API_KEY doesn't look like a valid key (expected 're_' prefix)"
+        )
 
 
 def setup_logging() -> None:

@@ -98,8 +98,53 @@ def extract_highlights(zip_path: Path) -> Dict[int, List[str]]:
     except Exception:
         log.warning("Failed to read zip %s", zip_path, exc_info=True)
 
+    by_page = _merge_cross_page(by_page)
+
     total = sum(len(v) for v in by_page.values())
     log.info("Extracted %d highlight(s) from %s", total, zip_path.name)
+    return by_page
+
+
+def _merge_cross_page(by_page: Dict[int, List[str]]) -> Dict[int, List[str]]:
+    """Merge highlight passages that span page breaks.
+
+    If the last passage on page N ends without terminal punctuation and the
+    first passage on page N+1 starts lowercase, they are likely the same
+    sentence split across pages. Merge them into page N.
+    """
+    if len(by_page) < 2:
+        return by_page
+
+    pages = sorted(by_page.keys())
+    for i in range(len(pages) - 1):
+        page_n = pages[i]
+        page_next = pages[i + 1]
+
+        if page_next != page_n + 1:
+            continue
+
+        # Pages may have been deleted by a prior merge in this loop
+        if page_n not in by_page or page_next not in by_page:
+            continue
+
+        passages_n = by_page[page_n]
+        passages_next = by_page[page_next]
+
+        if not passages_n or not passages_next:
+            continue
+
+        last = passages_n[-1]
+        first = passages_next[0]
+
+        ends_mid = not last.rstrip().endswith((".", "!", "?", ":", '"'))
+        starts_lower = first[:1].islower()
+
+        if ends_mid and starts_lower:
+            passages_n[-1] = last.rstrip() + " " + first.lstrip()
+            passages_next.pop(0)
+            if not passages_next:
+                del by_page[page_next]
+
     return by_page
 
 

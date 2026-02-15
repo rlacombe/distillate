@@ -15,6 +15,10 @@ log = logging.getLogger(__name__)
 
 _BASE = "https://api.zotero.org"
 
+_MAX_RETRIES = 3
+_RETRY_DELAY_BASE = 2  # seconds; exponential: 2, 4, 8
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
 
 def _headers() -> dict:
     return {
@@ -27,46 +31,69 @@ def _url(path: str) -> str:
     return f"{_BASE}/users/{config.ZOTERO_USER_ID}{path}"
 
 
+def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
+    """HTTP request with retry on transient failures.
+
+    Retries on ConnectionError, Timeout, and 5xx/429 with exponential backoff.
+    4xx client errors (except 429) propagate immediately.
+    """
+    last_exc = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = requests.request(method, url, timeout=config.HTTP_TIMEOUT, **kwargs)
+            _handle_backoff(resp)
+
+            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                delay = _RETRY_DELAY_BASE * (2 ** attempt)
+                log.warning(
+                    "Zotero returned %d, retrying in %ds (%d/%d)",
+                    resp.status_code, delay, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(delay)
+                continue
+
+            resp.raise_for_status()
+            return resp
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_DELAY_BASE * (2 ** attempt)
+                log.warning(
+                    "Zotero request failed (%s), retrying in %ds (%d/%d)",
+                    type(exc).__name__, delay, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(delay)
+            else:
+                raise
+
+    raise last_exc  # type: ignore[misc]
+
+
 def _get(path: str, params: Optional[Dict] = None, **kwargs) -> requests.Response:
-    resp = requests.get(
-        _url(path), headers=_headers(), params=params,
-        timeout=config.HTTP_TIMEOUT, **kwargs,
+    return _request_with_retry(
+        "GET", _url(path), headers=_headers(), params=params, **kwargs,
     )
-    _handle_backoff(resp)
-    resp.raise_for_status()
-    return resp
 
 
 def _post(path: str, **kwargs) -> requests.Response:
-    resp = requests.post(
-        _url(path), headers=_headers(),
-        timeout=config.HTTP_TIMEOUT, **kwargs,
+    return _request_with_retry(
+        "POST", _url(path), headers=_headers(), **kwargs,
     )
-    _handle_backoff(resp)
-    resp.raise_for_status()
-    return resp
 
 
 def _patch(path: str, **kwargs) -> requests.Response:
     headers = {**_headers(), **kwargs.pop("headers", {})}
-    resp = requests.patch(
-        _url(path), headers=headers,
-        timeout=config.HTTP_TIMEOUT, **kwargs,
+    return _request_with_retry(
+        "PATCH", _url(path), headers=headers, **kwargs,
     )
-    _handle_backoff(resp)
-    resp.raise_for_status()
-    return resp
 
 
 def _delete(path: str, **kwargs) -> requests.Response:
     headers = {**_headers(), **kwargs.pop("headers", {})}
-    resp = requests.delete(
-        _url(path), headers=headers,
-        timeout=config.HTTP_TIMEOUT, **kwargs,
+    return _request_with_retry(
+        "DELETE", _url(path), headers=headers, **kwargs,
     )
-    _handle_backoff(resp)
-    resp.raise_for_status()
-    return resp
 
 
 def _handle_backoff(resp: requests.Response) -> None:
@@ -113,14 +140,32 @@ def get_items_by_keys(keys: List[str]) -> List[Dict[str, Any]]:
 
 
 def filter_new_papers(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Filter items to only new papers (no workflow tags, not attachments/notes)."""
-    skip_types = {"attachment", "note"}
+    """Filter items to only new papers (no workflow tags, skips non-paper types).
+
+    Keeps academic paper types (journalArticle, conferencePaper, preprint, etc.)
+    and skips items that won't have a useful PDF for reMarkable.
+    """
+    skip_types = {
+        "attachment", "note",
+        "book", "bookSection",
+        "webpage", "blogPost", "forumPost",
+        "presentation", "document",
+        "letter", "email", "map",
+        "artwork", "film", "tvBroadcast", "radioBroadcast",
+        "podcast", "audioRecording", "videoRecording",
+        "encyclopediaArticle", "dictionaryEntry",
+        "case", "statute", "bill", "hearing",
+        "patent", "computerProgram",
+        "interview", "instantMessage",
+    }
     workflow_tags = {config.ZOTERO_TAG_INBOX, config.ZOTERO_TAG_READ}
 
     result = []
     for item in items:
         data = item.get("data", {})
-        if data.get("itemType") in skip_types:
+        item_type = data.get("itemType", "")
+        if item_type in skip_types:
+            log.debug("Skipping %s: %s", item_type, data.get("title", ""))
             continue
         item_tags = {t["tag"] for t in data.get("tags", [])}
         if item_tags & workflow_tags:

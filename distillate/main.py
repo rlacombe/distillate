@@ -5,6 +5,7 @@ Designed to be run on a schedule via cron or launchd.
 """
 
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -516,16 +517,48 @@ def _status() -> None:
     print(f"  {_stats_line(week_papers, 'This week')}")
     print(f"  {_stats_line(month_papers, 'This month')}")
 
-    # Awaiting PDF
+    # Awaiting PDF (show titles)
     awaiting = state.documents_with_status("awaiting_pdf")
     if awaiting:
         print()
         print(f"  Awaiting PDF: {len(awaiting)} paper{'s' if len(awaiting) != 1 else ''}")
+        for doc in awaiting:
+            print(f"    - {doc['title']}")
+
+    # Pending promotions
+    pending_promo = state.pending_promotions
+    if pending_promo:
+        titles = [state.get_document(k)["title"] for k in pending_promo if state.get_document(k)]
+        if titles:
+            print()
+            print(f"  Pending promotions: {len(titles)}")
+            for t in titles:
+                print(f"    - {t}")
 
     # Total processed
     processed = state.documents_with_status("processed")
     print()
     print(f"  Total: {len(processed)} papers read, {len(queue)} in queue")
+
+    # Config health
+    import shutil
+    issues = []
+    if not config.OBSIDIAN_VAULT_PATH and not config.OUTPUT_PATH:
+        issues.append("No output configured (set OBSIDIAN_VAULT_PATH or OUTPUT_PATH)")
+    elif config.OBSIDIAN_VAULT_PATH and not Path(config.OBSIDIAN_VAULT_PATH).is_dir():
+        issues.append(f"Vault path missing: {config.OBSIDIAN_VAULT_PATH}")
+    if not config.ANTHROPIC_API_KEY:
+        issues.append("No ANTHROPIC_API_KEY (AI summaries disabled)")
+    if not config.RESEND_API_KEY:
+        issues.append("No RESEND_API_KEY (email digest disabled)")
+    if not shutil.which("rmapi"):
+        issues.append("rmapi not found (reMarkable sync will fail)")
+
+    if issues:
+        print()
+        print("  Config:")
+        for issue in issues:
+            print(f"    - {issue}")
     print()
 
 
@@ -568,11 +601,14 @@ def _print_digest() -> None:
             except (ValueError, TypeError):
                 pass
 
+        citation_count = p.get("metadata", {}).get("citation_count", 0)
         stats = []
         if engagement:
             stats.append(f"{engagement}% engaged")
         if highlight_count:
             stats.append(f"{highlight_count} highlights")
+        if citation_count:
+            stats.append(f"{citation_count:,} citations")
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
         print()
@@ -766,6 +802,7 @@ def _suggest() -> None:
                     "tags": meta.get("tags", []),
                     "paper_type": meta.get("paper_type", ""),
                     "uploaded_at": doc.get("uploaded_at", ""),
+                    "citation_count": meta.get("citation_count", 0),
                 })
 
             since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -778,6 +815,7 @@ def _suggest() -> None:
                     "tags": meta.get("tags", []),
                     "summary": doc.get("summary", ""),
                     "engagement": doc.get("engagement", 0),
+                    "citation_count": meta.get("citation_count", 0),
                 })
 
             result = summarizer.suggest_papers(unread_enriched, recent_enriched)
@@ -813,6 +851,12 @@ def _suggest() -> None:
     except remarkable_client.RmapiAuthError as e:
         print(f"\n  {e}\n")
         return
+    except requests.exceptions.ConnectionError:
+        print(
+            "\n  Could not connect to the internet."
+            "\n  Check your network connection and try again.\n"
+        )
+        return
     except Exception:
         log.exception("Unexpected error in suggest")
         raise
@@ -820,32 +864,207 @@ def _suggest() -> None:
         release_lock()
 
 
+def _init_step5(save_to_env) -> None:
+    """Step 5: Optional features (AI summaries, email digest)."""
+    print("  " + "-" * 48)
+    print("  Optional Features")
+    print("  " + "-" * 48)
+    print()
+
+    # AI Summaries
+    print("  AI Summaries")
+    print()
+    print("  With an Anthropic API key, each paper you read gets:")
+    print("    - A one-liner summary (shown in your Reading Log)")
+    print("    - A paragraph overview of methods and findings")
+    print("    - 4-6 key learnings distilled from your highlights")
+    print()
+    print("  Without a key, papers use their abstract as fallback.")
+    print()
+    anthropic_key = _prompt_with_default(
+        "  Anthropic API key (Enter to skip)", "ANTHROPIC_API_KEY", sensitive=True,
+    )
+    if anthropic_key:
+        save_to_env("ANTHROPIC_API_KEY", anthropic_key)
+        print("  AI summaries enabled.")
+    else:
+        print("  Skipped.")
+    print()
+
+    # Email Digest
+    print("  Email Digest")
+    print()
+    print("  Get a weekly email summarizing what you've read, plus")
+    print("  daily suggestions for what to read next from your queue.")
+    print()
+    print("  Requires a free Resend account: https://resend.com")
+    print()
+    resend_key = _prompt_with_default(
+        "  Resend API key (Enter to skip)", "RESEND_API_KEY", sensitive=True,
+    )
+    if resend_key:
+        save_to_env("RESEND_API_KEY", resend_key)
+        email_to = _prompt_with_default("  Your email address", "DIGEST_TO")
+        if email_to:
+            save_to_env("DIGEST_TO", email_to)
+        print("  Email digest enabled.")
+    else:
+        print("  Skipped.")
+
+
+def _init_done(env_path) -> None:
+    """Print post-setup instructions and offer automatic syncing."""
+    print()
+    print("  " + "=" * 48)
+    print("  Setup complete!")
+    print("  " + "=" * 48)
+    print()
+    print(f"  Config saved to: {env_path}")
+    print()
+    print("  " + "-" * 48)
+    print("  How it works")
+    print("  " + "-" * 48)
+    print()
+    print("  There are just four commands:")
+    print()
+    print("    distillate --sync")
+    print("      Syncs everything in both directions:")
+    print("      Zotero -> reMarkable (new papers)")
+    print("      reMarkable -> notes (papers you finished reading)")
+    print()
+    print("    distillate --status")
+    print("      Shows queue health and reading stats at a glance.")
+    print()
+    print("    distillate --suggest")
+    print("      Picks 3 papers from your queue and moves them")
+    print("      to the front of your Distillate folder. Unread")
+    print("      suggestions are moved back to Inbox automatically.")
+    print()
+    print("    distillate --digest")
+    print("      Shows a summary of what you read this week.")
+    print()
+    print("  Your workflow:")
+    print("    1. Save a paper to Zotero (browser connector)")
+    print("    2. distillate --sync (PDF lands on your reMarkable)")
+    print("    3. Read and highlight on your reMarkable")
+    print("    4. Move the document to Distillate/Read")
+    print("    5. distillate --sync (annotated PDF + notes are ready)")
+    print()
+
+    # Offer automated sync
+    print("  " + "-" * 48)
+    print("  Automatic syncing")
+    print("  " + "-" * 48)
+    print()
+    print("  Distillate can run automatically every 15 minutes")
+    print("  so your papers stay in sync without running it manually.")
+    print()
+
+    import platform
+    if platform.system() == "Darwin":
+        setup_auto = input("  Set up automatic syncing? [Y/n] ").strip().lower()
+        if setup_auto != "n":
+            import subprocess
+            scripts_dir = Path(__file__).parent.parent / "scripts"
+            launchd_script = scripts_dir / "install-launchd.sh"
+            if launchd_script.exists():
+                print()
+                result = subprocess.run(
+                    ["bash", str(launchd_script)],
+                    capture_output=False,
+                )
+                if result.returncode == 0:
+                    print()
+                    print("  Automatic syncing enabled (every 15 minutes).")
+                else:
+                    print()
+                    print("  Could not set up automatic syncing.")
+                    print(f"  You can try manually: bash {launchd_script}")
+            else:
+                print("  Launch script not found. You can set it up manually:")
+                print("    crontab -e")
+                print("    */15 * * * * distillate")
+        else:
+            print("  Skipped. You can set it up later:")
+            print("    bash ./scripts/install-launchd.sh")
+    else:
+        print("  Add this to your crontab (crontab -e):")
+        print("    */15 * * * * distillate")
+
+    print()
+    print("  " + "=" * 48)
+    print("  Run 'distillate' now to sync your first papers!")
+    print("  " + "=" * 48)
+    print()
+
+
+def _mask_value(value: str) -> str:
+    """Mask a config value for display, showing first/last 4 chars."""
+    if len(value) > 12:
+        return value[:4] + "..." + value[-4:]
+    return value
+
+
+def _prompt_with_default(prompt: str, env_key: str, sensitive: bool = False) -> str | None:
+    """Prompt user, showing existing value as default. Returns None if skipped."""
+    current = os.environ.get(env_key, "")
+    if current:
+        display = _mask_value(current) if sensitive else current
+        user_input = input(f"{prompt} [{display}]: ").strip()
+    else:
+        user_input = input(f"{prompt}: ").strip()
+
+    if not user_input and current:
+        return current
+    return user_input or None
+
+
 def _init_wizard() -> None:
     """Interactive setup wizard for first-time users."""
     from distillate.config import save_to_env, ENV_PATH
 
+    # Detect existing config for re-run shortcut
+    has_existing = ENV_PATH.exists() and os.environ.get("ZOTERO_API_KEY", "")
+
     print()
-    print("  Welcome to Distillate")
-    print("  " + "=" * 48)
-    print()
-    print("  Distillate automates your research paper workflow:")
-    print()
-    print("    1. You save a paper to Zotero (browser connector)")
-    print("    2. Distillate uploads the PDF to your reMarkable")
-    print("    3. You read and highlight on the reMarkable")
-    print("    4. When done, move the document to the Read folder")
-    print("    5. Distillate extracts your highlights, creates an")
-    print("       annotated PDF, writes a note, and archives it")
-    print()
-    print("  Power-user features (optional):")
-    print("    - AI summaries & key learnings (with Anthropic API)")
-    print("    - Daily reading suggestions & weekly digest emails")
-    print("      (with a free Resend account)")
-    print()
-    print("  Let's get you set up. This takes about 2 minutes.")
-    print()
-    print(f"  Config will be saved to: {ENV_PATH}")
-    print()
+    if has_existing:
+        print("  Distillate Setup")
+        print("  " + "=" * 48)
+        print()
+        print(f"  Existing config found at: {ENV_PATH}")
+        print()
+        print("    1. Re-run full setup")
+        print("    2. Configure optional features (AI, email)")
+        print()
+        choice = input("  Your choice [2]: ").strip()
+        if choice != "1":
+            print()
+            _init_step5(save_to_env)
+            _init_done(ENV_PATH)
+            return
+        print()
+    else:
+        print("  Welcome to Distillate")
+        print("  " + "=" * 48)
+        print()
+        print("  Distillate automates your research paper workflow:")
+        print()
+        print("    1. You save a paper to Zotero (browser connector)")
+        print("    2. Distillate uploads the PDF to your reMarkable")
+        print("    3. You read and highlight on the reMarkable")
+        print("    4. When done, move the document to the Read folder")
+        print("    5. Distillate extracts your highlights, creates an")
+        print("       annotated PDF, writes a note, and archives it")
+        print()
+        print("  Power-user features (optional):")
+        print("    - AI summaries & key learnings (with Anthropic API)")
+        print("    - Daily reading suggestions & weekly digest emails")
+        print("      (with a free Resend account)")
+        print()
+        print("  Let's get you set up. This takes about 2 minutes.")
+        print()
+        print(f"  Config will be saved to: {ENV_PATH}")
+        print()
 
     # -- Step 1: Zotero --
 
@@ -861,7 +1080,7 @@ def _init_wizard() -> None:
     print("  You need a Zotero API key with read/write library access.")
     print("  Create one here: https://www.zotero.org/settings/keys/new")
     print()
-    api_key = input("  API key: ").strip()
+    api_key = _prompt_with_default("  API key", "ZOTERO_API_KEY", sensitive=True)
     if not api_key:
         print("\n  Error: A Zotero API key is required to continue.")
         return
@@ -869,7 +1088,7 @@ def _init_wizard() -> None:
     print()
     print("  Your user ID is the number shown on the same page.")
     print()
-    user_id = input("  User ID: ").strip()
+    user_id = _prompt_with_default("  User ID", "ZOTERO_USER_ID")
     if not user_id:
         print("\n  Error: A Zotero user ID is required to continue.")
         return
@@ -903,7 +1122,18 @@ def _init_wizard() -> None:
     print()
 
     import shutil
-    if shutil.which("rmapi"):
+    already_registered = bool(os.environ.get("REMARKABLE_DEVICE_TOKEN", ""))
+
+    if already_registered:
+        print("  reMarkable already registered.")
+        print()
+        register = input("  Re-register? [y/N] ").strip().lower()
+        if register == "y":
+            from distillate.remarkable_auth import register_interactive
+            register_interactive()
+        else:
+            print("  Keeping existing registration.")
+    elif shutil.which("rmapi"):
         print("  rmapi found.")
         print()
         print("  You need to authorize this device once.")
@@ -984,7 +1214,20 @@ def _init_wizard() -> None:
     print("    - A reading statistics dashboard")
     print("    - 'Open in Obsidian' deep links from Zotero")
     print()
-    use_obsidian = input("  Use an Obsidian vault? [Y/n] ").strip().lower()
+
+    # Default to Obsidian if vault path already set
+    existing_vault = os.environ.get("OBSIDIAN_VAULT_PATH", "")
+    existing_output = os.environ.get("OUTPUT_PATH", "")
+    if existing_vault:
+        obsidian_default = "Y"
+    elif existing_output:
+        obsidian_default = "n"
+    else:
+        obsidian_default = "Y"
+
+    use_obsidian = input(f"  Use an Obsidian vault? [{obsidian_default}/{'n' if obsidian_default == 'Y' else 'Y'}] ").strip().lower()
+    if not use_obsidian:
+        use_obsidian = obsidian_default.lower()
 
     if use_obsidian != "n":
         print()
@@ -992,7 +1235,7 @@ def _init_wizard() -> None:
         print("    Open Obsidian > Settings > Files and Links")
         print("    The path is shown under 'Vault path'")
         print()
-        vault_path = input("  Vault path: ").strip()
+        vault_path = _prompt_with_default("  Vault path", "OBSIDIAN_VAULT_PATH")
         if vault_path:
             vault_path = str(Path(vault_path).expanduser().resolve())
             save_to_env("OBSIDIAN_VAULT_PATH", vault_path)
@@ -1008,7 +1251,7 @@ def _init_wizard() -> None:
         print("  the annotated PDFs and markdown notes, but not")
         print("  the Obsidian-specific features listed above.")
         print()
-        folder = input("  Output folder path (Enter to skip): ").strip()
+        folder = _prompt_with_default("  Output folder path (Enter to skip)", "OUTPUT_PATH")
         if folder:
             folder = str(Path(folder).expanduser().resolve())
             save_to_env("OUTPUT_PATH", folder)
@@ -1036,7 +1279,11 @@ def _init_wizard() -> None:
     print("    1. Keep in Zotero (uses Zotero storage)")
     print("    2. Remove from Zotero after sync (saves space)")
     print()
-    storage = input("  Your choice [1]: ").strip()
+    existing_keep = os.environ.get("KEEP_ZOTERO_PDF", "true")
+    default_storage = "2" if existing_keep.lower() == "false" else "1"
+    storage = input(f"  Your choice [{default_storage}]: ").strip()
+    if not storage:
+        storage = default_storage
     if storage == "2":
         save_to_env("KEEP_ZOTERO_PDF", "false")
         print("  PDFs will be removed from Zotero after upload.")
@@ -1047,134 +1294,14 @@ def _init_wizard() -> None:
 
     # -- Step 5: Optional features --
 
-    print("  " + "-" * 48)
-    print("  Step 5 of 5: Optional Features")
-    print("  " + "-" * 48)
-    print()
-
-    # AI Summaries
-    print("  AI Summaries")
-    print()
-    print("  With an Anthropic API key, each paper you read gets:")
-    print("    - A one-liner summary (shown in your Reading Log)")
-    print("    - A paragraph overview of methods and findings")
-    print("    - 4-6 key learnings distilled from your highlights")
-    print()
-    print("  Without a key, papers use their abstract as fallback.")
-    print()
-    anthropic_key = input("  Anthropic API key (Enter to skip): ").strip()
-    if anthropic_key:
-        save_to_env("ANTHROPIC_API_KEY", anthropic_key)
-        print("  AI summaries enabled.")
-    else:
-        print("  Skipped.")
-    print()
-
-    # Email Digest
-    print("  Email Digest")
-    print()
-    print("  Get a weekly email summarizing what you've read, plus")
-    print("  daily suggestions for what to read next from your queue.")
-    print()
-    print("  Requires a free Resend account: https://resend.com")
-    print()
-    resend_key = input("  Resend API key (Enter to skip): ").strip()
-    if resend_key:
-        save_to_env("RESEND_API_KEY", resend_key)
-        email_to = input("  Your email address: ").strip()
-        if email_to:
-            save_to_env("DIGEST_TO", email_to)
-        print("  Email digest enabled.")
-    else:
-        print("  Skipped.")
+    _init_step5(save_to_env)
 
     # -- Done --
 
-    print()
-    print("  " + "=" * 48)
-    print("  Setup complete!")
-    print("  " + "=" * 48)
-    print()
-    print(f"  Config saved to: {ENV_PATH}")
-    print()
-    print("  " + "-" * 48)
-    print("  How it works")
-    print("  " + "-" * 48)
-    print()
-    print("  There are just four commands:")
-    print()
-    print("    distillate --sync")
-    print("      Syncs everything in both directions:")
-    print("      Zotero -> reMarkable (new papers)")
-    print("      reMarkable -> notes (papers you finished reading)")
-    print()
-    print("    distillate --status")
-    print("      Shows queue health and reading stats at a glance.")
-    print()
-    print("    distillate --suggest")
-    print("      Picks 3 papers from your queue and moves them")
-    print("      to the front of your Distillate folder. Unread")
-    print("      suggestions are moved back to Inbox automatically.")
-    print()
-    print("    distillate --digest")
-    print("      Shows a summary of what you read this week.")
-    print()
-    print("  Your workflow:")
-    print("    1. Save a paper to Zotero (browser connector)")
-    print("    2. distillate --sync (PDF lands on your reMarkable)")
-    print("    3. Read and highlight on your reMarkable")
-    print("    4. Move the document to Distillate/Read")
-    print("    5. distillate --sync (annotated PDF + notes are ready)")
-    print()
-
-    # Offer automated sync
-    print("  " + "-" * 48)
-    print("  Automatic syncing")
-    print("  " + "-" * 48)
-    print()
-    print("  Distillate can run automatically every 15 minutes")
-    print("  so your papers stay in sync without running it manually.")
-    print()
-
-    import platform
-    if platform.system() == "Darwin":
-        setup_auto = input("  Set up automatic syncing? [Y/n] ").strip().lower()
-        if setup_auto != "n":
-            import subprocess
-            scripts_dir = Path(__file__).parent.parent / "scripts"
-            launchd_script = scripts_dir / "install-launchd.sh"
-            if launchd_script.exists():
-                print()
-                result = subprocess.run(
-                    ["bash", str(launchd_script)],
-                    capture_output=False,
-                )
-                if result.returncode == 0:
-                    print()
-                    print("  Automatic syncing enabled (every 15 minutes).")
-                else:
-                    print()
-                    print("  Could not set up automatic syncing.")
-                    print(f"  You can try manually: bash {launchd_script}")
-            else:
-                print("  Launch script not found. You can set it up manually:")
-                print("    crontab -e")
-                print("    */15 * * * * distillate")
-        else:
-            print("  Skipped. You can set it up later:")
-            print("    bash ./scripts/install-launchd.sh")
-    else:
-        print("  Add this to your crontab (crontab -e):")
-        print("    */15 * * * * distillate")
-
-    print()
-    print("  " + "=" * 48)
-    print("  Run 'distillate' now to sync your first papers!")
-    print("  " + "=" * 48)
-    print()
+    _init_done(ENV_PATH)
 
 
-_VERSION = "0.1.1"
+_VERSION = "0.1.2"
 
 _HELP = """\
 Usage: distillate <command>
@@ -1392,6 +1519,19 @@ def main():
                             authors = meta["authors"]
 
                             log.info("Processing: %s", title)
+
+                            # Duplicate check by DOI then title
+                            doi = meta.get("doi", "")
+                            existing = state.find_by_doi(doi) if doi else None
+                            if existing is None:
+                                existing = state.find_by_title(title)
+                            if existing is not None:
+                                log.info(
+                                    "Skipping duplicate: '%s' (already tracked as %s)",
+                                    title, existing["zotero_item_key"],
+                                )
+                                zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
+                                continue
 
                             # Find PDF attachment
                             attachment = zotero_client.get_pdf_attachment(item_key)
@@ -1743,6 +1883,29 @@ def main():
     except remarkable_client.RmapiAuthError as e:
         print(f"\n  {e}\n")
         return
+    except requests.exceptions.ConnectionError:
+        print(
+            "\n  Could not connect to the internet."
+            "\n  Check your network connection and try again.\n"
+        )
+        return
+    except requests.exceptions.HTTPError as e:
+        resp = e.response
+        if resp is not None and resp.status_code == 403:
+            print(
+                "\n  Zotero returned 403 Forbidden."
+                "\n  Your API key may be invalid or expired."
+                "\n  Check ZOTERO_API_KEY in your config.\n"
+            )
+            return
+        if resp is not None and resp.status_code == 429:
+            print(
+                "\n  Zotero rate limit reached."
+                "\n  Wait a few minutes and try again.\n"
+            )
+            return
+        log.exception("HTTP error")
+        raise
     except Exception:
         log.exception("Unexpected error")
         raise

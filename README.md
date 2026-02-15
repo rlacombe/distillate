@@ -1,5 +1,7 @@
 # Distillate
 
+*The essence of every paper you read.* &nbsp; [distillate.dev](https://distillate.dev)
+
 Distill research papers from Zotero through reMarkable into structured notes.
 
 [![PyPI](https://img.shields.io/pypi/v/distillate)](https://pypi.org/project/distillate/)
@@ -12,6 +14,7 @@ Save paper in Zotero  ──>  PDF uploaded to reMarkable
                        Read & highlight on reMarkable
                        Move to Read folder when done
                                   │
+                                  V
                        Distillate picks it up:
                        ├── Annotated PDF with highlights
                        ├── Markdown note + AI summary
@@ -83,7 +86,7 @@ pip install "distillate[all]"
 ### 3. Run the setup wizard
 
 ```bash
-distillate init
+distillate --init
 ```
 
 This walks you through:

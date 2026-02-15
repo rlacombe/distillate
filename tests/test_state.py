@@ -149,6 +149,71 @@ class TestDocumentCRUD:
         assert len(result) == 0
 
 
+class TestDuplicateDetection:
+    def test_find_by_doi_found(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Title One", ["A"],
+                        metadata={"doi": "10.1234/test"})
+        result = s.find_by_doi("10.1234/test")
+        assert result is not None
+        assert result["title"] == "Title One"
+
+    def test_find_by_doi_not_found(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Title", ["A"],
+                        metadata={"doi": "10.1234/test"})
+        assert s.find_by_doi("10.9999/other") is None
+
+    def test_find_by_doi_empty(self):
+        from distillate.state import State
+
+        s = State()
+        assert s.find_by_doi("") is None
+        assert s.find_by_doi(None) is None
+
+    def test_find_by_title_found(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "My Great Paper", ["A"])
+        result = s.find_by_title("my great paper")
+        assert result is not None
+        assert result["zotero_item_key"] == "K1"
+
+    def test_find_by_title_case_insensitive(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Attention Is All You Need", ["A"])
+        assert s.find_by_title("ATTENTION IS ALL YOU NEED") is not None
+        assert s.find_by_title("attention is all you need") is not None
+
+    def test_find_by_title_not_found(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Paper A", ["A"])
+        assert s.find_by_title("Paper B") is None
+
+    def test_find_by_title_empty(self):
+        from distillate.state import State
+
+        s = State()
+        assert s.find_by_title("") is None
+        assert s.find_by_title(None) is None
+
+    def test_find_by_title_strips_whitespace(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "  Spaced Title  ", ["A"])
+        assert s.find_by_title("Spaced Title") is not None
+
+
 class TestPromotedPapers:
     def test_promoted_papers_roundtrip(self):
         from distillate.state import State
