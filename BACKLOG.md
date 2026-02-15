@@ -13,13 +13,13 @@
 - ~~Safety improvements~~ — Stale lock, create-then-delete, try-except, per-paper saves.
 - ~~Two-column highlights~~ — y-sorted merging with boundary deduplication.
 - ~~AI reading log~~ — `Reading Log.md` with dates and one-sentence summaries, sorted newest-first.
-- ~~Paper suggestions~~ — `--suggest` daily email, `--promote` moves picks to RM root.
+- ~~Paper suggestions~~ — `--suggest` daily email with picks, auto-promoted to RM root during sync.
 - ~~GitHub Actions~~ — Scheduled `--suggest`, `--digest`, `--sync-state`.
 - ~~Semantic Scholar enrichment~~ — Citation counts at ingestion. `--backfill-s2` for existing papers.
 - ~~Reading analytics dashboard~~ — `Reading Stats.md` Dataview note: monthly breakdown, topics, recent completions.
 - ~~Monthly research themes~~ — `--themes` synthesizes a month's reading into a research narrative.
 - ~~Leafed removal~~ — Never used in practice. Unified into single Read path.
-- ~~Auto-promote~~ — `--promote` runs daily via launchd. Smart demotion skips papers user started reading. Suggestions now use Sonnet.
+- ~~Auto-promote~~ — auto-promote runs during `--sync`. Smart demotion skips papers user started reading. Suggestions use Sonnet.
 - ~~Metadata sync~~ — Auto-detects Zotero metadata changes (tags, authors, DOI, etc.) on each run. Updates state.json and Obsidian note frontmatter.
 - ~~Richer emails~~ — Digest: topic tag pills, highlight count, reading velocity, Obsidian deep links. Suggest: tag pills, velocity, queue health snapshot.
 

@@ -16,6 +16,13 @@ from distillate import config
 log = logging.getLogger(__name__)
 
 
+class RmapiAuthError(RuntimeError):
+    """Raised when rmapi authentication has expired."""
+
+
+_AUTH_ERROR_PATTERNS = ("failed to renew", "401", "unauthorized", "forbidden", "token")
+
+
 def _run(args: List[str], check: bool = True) -> subprocess.CompletedProcess:
     """Run an rmapi command and return the result."""
     rmapi = shutil.which("rmapi")
@@ -29,11 +36,18 @@ def _run(args: List[str], check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=120,
     )
-    if check and result.returncode != 0:
-        raise RuntimeError(
-            f"rmapi {' '.join(args)} failed (exit {result.returncode}): "
-            f"{result.stderr.strip()}"
-        )
+    if result.returncode != 0:
+        combined = (result.stderr + result.stdout).lower()
+        if any(p in combined for p in _AUTH_ERROR_PATTERNS):
+            raise RmapiAuthError(
+                "reMarkable authentication expired. "
+                "Run 'distillate --register' to re-authorize."
+            )
+        if check:
+            raise RuntimeError(
+                f"rmapi {' '.join(args)} failed (exit {result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
     return result
 
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
-# Install macOS Launch Agents for distillate.
-# - Sync agent: runs every 15 minutes
-# - Promote agent: runs daily at 8:30am
+# Install macOS Launch Agent for distillate.
+# - Sync agent: runs every 15 minutes (includes auto-promote)
 # Logs to ~/Library/Logs/.
 #
 set -euo pipefail
@@ -36,11 +35,19 @@ if [[ ":$LAUNCH_PATH:" != *":$RMAPI_DIR:"* ]]; then
     LAUNCH_PATH="${RMAPI_DIR}:${LAUNCH_PATH}"
 fi
 
-# Unload existing agent if present
+# Unload existing agents if present
 if launchctl list "$LABEL" &>/dev/null; then
     echo "Unloading existing agent..."
     launchctl unload "$PLIST" 2>/dev/null || true
 fi
+
+# Clean up old promote agent (replaced by auto-promote in --sync)
+OLD_PROMOTE="$HOME/Library/LaunchAgents/com.distillate.promote.plist"
+if launchctl list "com.distillate.promote" &>/dev/null; then
+    echo "Removing old promote agent (now handled by --sync)..."
+    launchctl unload "$OLD_PROMOTE" 2>/dev/null || true
+fi
+rm -f "$OLD_PROMOTE"
 
 # Ensure LaunchAgents directory exists
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -97,65 +104,3 @@ echo "Useful commands:"
 echo "  launchctl start $LABEL          # run sync now"
 echo "  tail -f $LOG                    # watch logs"
 echo "  launchctl unload $PLIST         # stop sync"
-
-# -- Auto-promote agent (daily at 8:30am) --
-PROMOTE_LABEL="com.distillate.promote"
-PROMOTE_PLIST="$HOME/Library/LaunchAgents/${PROMOTE_LABEL}.plist"
-
-# Unload existing promote agent if present
-if launchctl list "$PROMOTE_LABEL" &>/dev/null; then
-    echo ""
-    echo "Unloading existing promote agent..."
-    launchctl unload "$PROMOTE_PLIST" 2>/dev/null || true
-fi
-
-cat > "$PROMOTE_PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${PROMOTE_LABEL}</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>${EXECUTABLE}</string>
-        <string>--promote</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>${REPO_DIR}</string>
-
-    <key>StartInterval</key>
-    <integer>28800</integer>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>${LAUNCH_PATH}</string>
-    </dict>
-
-    <key>StandardOutPath</key>
-    <string>${LOG}</string>
-    <key>StandardErrorPath</key>
-    <string>${LOG}</string>
-
-    <key>Nice</key>
-    <integer>10</integer>
-</dict>
-</plist>
-EOF
-
-launchctl load "$PROMOTE_PLIST"
-
-echo ""
-echo "Installed and loaded: $PROMOTE_LABEL"
-echo ""
-echo "  Plist:      $PROMOTE_PLIST"
-echo "  Executable: $EXECUTABLE --promote"
-echo "  Schedule:   every 8 hours (fires on wake if overdue)"
-echo "  Log:        $LOG"
-echo ""
-echo "  launchctl start $PROMOTE_LABEL    # run promote now"
-echo "  launchctl unload $PROMOTE_PLIST   # stop promote"

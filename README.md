@@ -23,7 +23,7 @@ Save paper in Zotero  ──>  PDF uploaded to reMarkable
 
 ```bash
 pip install distillate
-distillate init
+distillate --init
 ```
 
 The setup wizard walks you through connecting Zotero, reMarkable, and choosing where your notes go.
@@ -151,8 +151,8 @@ On first run, the script sets a watermark at your current Zotero library version
 distillate                          # Run the full sync workflow
 distillate --dry-run                # Preview what would happen (no changes)
 distillate --reprocess "Title"      # Re-run highlights + summary for a paper
-distillate --suggest                # Get 3 paper suggestions from your queue
-distillate --promote                # Move suggested papers to reMarkable root
+distillate --suggest                # Get 3 paper suggestions, promote to reMarkable root
+distillate --status                 # Show queue health and reading stats
 distillate --digest                 # Send a weekly reading digest email
 distillate --themes 2026-02         # Generate monthly research themes synthesis
 distillate --backfill-s2            # Backfill Semantic Scholar data

@@ -166,7 +166,7 @@ class State:
 
     @property
     def pending_promotions(self) -> List[str]:
-        """Return Zotero item keys picked by --suggest, awaiting --promote."""
+        """Return Zotero item keys picked by --suggest, awaiting promotion."""
         return self._data.get("pending_promotions", [])
 
     @pending_promotions.setter

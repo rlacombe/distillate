@@ -430,6 +430,105 @@ def _sync_state() -> None:
     log.info("Synced state.json to gist %s", gist_id)
 
 
+def _status() -> None:
+    """Print a quick status overview to the terminal."""
+    from datetime import datetime, timedelta, timezone
+
+    from distillate import config
+    from distillate.state import State
+
+    config.setup_logging()
+    state = State()
+    now = datetime.now(timezone.utc)
+
+    print()
+    print("  Distillate")
+    print("  " + "\u2500" * 40)
+
+    # Queue
+    queue = state.documents_with_status("on_remarkable")
+    oldest_days = 0
+    if queue:
+        oldest_uploaded = min(d.get("uploaded_at", "") for d in queue)
+        if oldest_uploaded:
+            try:
+                oldest_days = (now - datetime.fromisoformat(oldest_uploaded)).days
+            except (ValueError, TypeError):
+                pass
+    queue_str = f"{len(queue)} paper{'s' if len(queue) != 1 else ''} waiting"
+    if oldest_days:
+        queue_str += f" (oldest: {oldest_days} days)"
+    print(f"  Queue:     {queue_str}")
+
+    # Promoted
+    promoted = state.promoted_papers
+    if promoted:
+        titles = []
+        for key in promoted:
+            doc = state.get_document(key)
+            if doc:
+                titles.append(doc["title"])
+        if titles:
+            print(f"  Promoted:  {', '.join(titles)}")
+
+    # Last sync
+    last_poll = state.last_poll_timestamp
+    if last_poll:
+        try:
+            poll_dt = datetime.fromisoformat(last_poll)
+            delta = now - poll_dt
+            if delta.total_seconds() < 60:
+                ago = "just now"
+            elif delta.total_seconds() < 3600:
+                mins = int(delta.total_seconds() / 60)
+                ago = f"{mins} min{'s' if mins != 1 else ''} ago"
+            elif delta.total_seconds() < 86400:
+                hours = int(delta.total_seconds() / 3600)
+                ago = f"{hours} hour{'s' if hours != 1 else ''} ago"
+            else:
+                days = delta.days
+                ago = f"{days} day{'s' if days != 1 else ''} ago"
+            print(f"  Last sync: {ago}")
+        except (ValueError, TypeError):
+            pass
+    else:
+        print("  Last sync: never")
+
+    # Reading stats
+    week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+    month_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
+    week_papers = state.documents_processed_since(week_ago.isoformat())
+    month_papers = state.documents_processed_since(month_ago.isoformat())
+
+    def _stats_line(papers, label):
+        count = len(papers)
+        pages = sum(d.get("page_count", 0) for d in papers)
+        words = sum(d.get("highlight_word_count", 0) for d in papers)
+        parts = [f"read {count} paper{'s' if count != 1 else ''}"]
+        if pages:
+            parts.append(f"{pages:,} pages")
+        if words:
+            parts.append(f"{words:,} words highlighted")
+        sep = " \u00b7 "
+        return f"{label}: {sep.join(parts)}"
+
+    print()
+    print(f"  {_stats_line(week_papers, 'This week')}")
+    print(f"  {_stats_line(month_papers, 'This month')}")
+
+    # Awaiting PDF
+    awaiting = state.documents_with_status("awaiting_pdf")
+    if awaiting:
+        print()
+        print(f"  Awaiting PDF: {len(awaiting)} paper{'s' if len(awaiting) != 1 else ''}")
+
+    # Total processed
+    processed = state.documents_with_status("processed")
+    print()
+    print(f"  Total: {len(processed)} papers read, {len(queue)} in queue")
+    print()
+
+
 def _print_digest() -> None:
     """Print a reading digest to the terminal."""
     from datetime import datetime, timedelta, timezone
@@ -483,27 +582,144 @@ def _print_digest() -> None:
         if summary:
             print(f"    {summary}")
 
-    # Queue stats
+    # Reading stats footer (matches email format)
+    month_since = (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)).isoformat()
+    month_papers = state.documents_processed_since(month_since)
     unread = state.documents_with_status("on_remarkable")
-    if unread:
-        print()
-        print(f"  {len(unread)} paper{'s' if len(unread) != 1 else ''} in your reading queue.")
+
+    def _stats_line(docs, label):
+        count = len(docs)
+        pages = sum(d.get("page_count", 0) for d in docs)
+        words = sum(d.get("highlight_word_count", 0) for d in docs)
+        parts = [f"read {count} paper{'s' if count != 1 else ''}"]
+        if pages:
+            parts.append(f"{pages:,} pages")
+        if words:
+            parts.append(f"{words:,} words highlighted")
+        sep = " \u00b7 "
+        return f"{label}: {sep.join(parts)}"
+
     print()
+    print(f"  {_stats_line(papers, 'This week')}")
+    print(f"  {_stats_line(month_papers, 'This month')}")
+    print(f"  Queue: {len(unread)} paper{'s' if len(unread) != 1 else ''} waiting")
+    print()
+
+
+def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
+    """Demote old promoted papers, promote new picks on reMarkable.
+
+    Shared logic used by both _suggest() (manual) and _auto_promote() (sync).
+    Caller must hold the lock and pass a loaded State.
+    """
+    from datetime import datetime, timezone
+
+    from distillate import config
+    from distillate import remarkable_client
+
+    # Demote old promoted papers back to Inbox (skip if user started reading)
+    old_promoted = state.promoted_papers
+    remaining_promoted = []
+    if old_promoted:
+        papers_root_docs = remarkable_client.list_folder(config.RM_FOLDER_PAPERS)
+        for key in old_promoted:
+            doc = state.get_document(key)
+            if not doc or doc["status"] != "on_remarkable":
+                continue
+            rm_name = doc["remarkable_doc_name"]
+            if rm_name not in papers_root_docs:
+                log.info("Skipping demotion (not at Papers root): %s", doc["title"])
+                continue
+
+            stat = remarkable_client.stat_document(config.RM_FOLDER_PAPERS, rm_name)
+            if stat and stat.get("current_page", 0) > 0:
+                log.info("User started reading, not demoting: %s", doc["title"])
+                remaining_promoted.append(key)
+                continue
+
+            if stat is None:
+                log.info("Could not stat document, skipping demotion: %s", doc["title"])
+                remaining_promoted.append(key)
+                continue
+
+            remarkable_client.move_document(
+                rm_name, config.RM_FOLDER_PAPERS, config.RM_FOLDER_INBOX,
+            )
+            log.info("Demoted: %s", doc["title"])
+        state.promoted_papers = remaining_promoted
+        state.save()
+
+    # Move picked papers from Inbox to Papers root
+    inbox_docs = remarkable_client.list_folder(config.RM_FOLDER_INBOX)
+    promoted_keys = list(remaining_promoted)
+
+    for key in pick_keys:
+        if key in promoted_keys:
+            continue
+        doc = state.get_document(key)
+        if not doc or doc["status"] != "on_remarkable":
+            continue
+        rm_name = doc["remarkable_doc_name"]
+        if rm_name in inbox_docs:
+            remarkable_client.move_document(
+                rm_name, config.RM_FOLDER_INBOX, config.RM_FOLDER_PAPERS,
+            )
+            doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
+            promoted_keys.append(key)
+            if verbose:
+                print(f"  Promoted: {doc['title']}")
+            log.info("Promoted: %s", doc["title"])
+
+    state.promoted_papers = promoted_keys
+    state.pending_promotions = []
+    state.save()
+
+
+def _auto_promote(state) -> None:
+    """Check Gist for pending picks from GH Actions and promote them.
+
+    Called during --sync. If GH Actions ran --suggest-email, the picks
+    are stored in pending.json on the Gist. This function reads them
+    and promotes the papers on reMarkable.
+    """
+    from distillate import config
+    from distillate.digest import fetch_pending_from_gist
+
+    if not config.STATE_GIST_ID:
+        return
+
+    pending = fetch_pending_from_gist()
+    if not pending:
+        return
+
+    timestamp = pending.get("timestamp", "")
+    last_processed = state._data.get("last_pending_timestamp", "")
+    if timestamp and timestamp <= last_processed:
+        return  # Already processed this batch
+
+    picks = pending.get("picks", [])
+    if not picks:
+        return
+
+    log.info("Found %d pending pick(s) from GH Actions, promoting...", len(picks))
+    _demote_and_promote(state, picks)
+    state._data["last_pending_timestamp"] = timestamp
+    state.save()
 
 
 def _suggest() -> None:
     """Suggest papers to read next, promote them on reMarkable.
 
-    1. Demotes old promoted papers back to Inbox (unless user started reading)
-    2. Asks Claude for 3 picks from the reading queue
-    3. Prints suggestions to the terminal
-    4. Moves picked papers to the front of the Distillate folder
+    Checks Gist for pending picks from GH Actions first. If none,
+    calls Claude directly. For users without GH Actions, this is
+    the primary way to get suggestions.
     """
     from datetime import datetime, timedelta, timezone
 
     from distillate import config
     from distillate import remarkable_client
     from distillate import summarizer
+    from distillate.digest import fetch_pending_from_gist
     from distillate.state import State, acquire_lock, release_lock
 
     config.setup_logging()
@@ -515,117 +731,88 @@ def _suggest() -> None:
     try:
         state = State()
 
-        # Demote old promoted papers back to Inbox (skip if user started reading)
-        old_promoted = state.promoted_papers
-        remaining_promoted = []
-        if old_promoted:
-            papers_root_docs = remarkable_client.list_folder(config.RM_FOLDER_PAPERS)
-            for key in old_promoted:
-                doc = state.get_document(key)
-                if not doc or doc["status"] != "on_remarkable":
-                    continue
-                rm_name = doc["remarkable_doc_name"]
-                if rm_name not in papers_root_docs:
-                    log.info("Skipping demotion (not at Papers root): %s", doc["title"])
-                    continue
+        # Check Gist for pending picks from GH Actions
+        pick_keys = None
+        if config.STATE_GIST_ID:
+            pending = fetch_pending_from_gist()
+            if pending:
+                timestamp = pending.get("timestamp", "")
+                last_processed = state._data.get("last_pending_timestamp", "")
+                if timestamp and timestamp > last_processed:
+                    pick_keys = pending.get("picks", [])
+                    suggestion_text = pending.get("suggestion_text", "")
+                    if pick_keys and suggestion_text:
+                        print()
+                        print("  Suggested papers to read next:")
+                        print()
+                        for line in suggestion_text.strip().split("\n"):
+                            if line.strip():
+                                print(f"  {line.strip()}")
+                        print()
+                        state._data["last_pending_timestamp"] = timestamp
 
-                stat = remarkable_client.stat_document(config.RM_FOLDER_PAPERS, rm_name)
-                if stat and stat.get("current_page", 0) > 0:
-                    log.info("User started reading, not demoting: %s", doc["title"])
-                    remaining_promoted.append(key)
-                    continue
+        # Fall back to Claude if no pending picks
+        if not pick_keys:
+            unread = state.documents_with_status("on_remarkable")
+            if not unread:
+                print("  No papers in your reading queue.")
+                return
 
-                if stat is None:
-                    log.info("Could not stat document, skipping demotion: %s", doc["title"])
-                    remaining_promoted.append(key)
-                    continue
+            unread_enriched = []
+            for doc in unread:
+                meta = doc.get("metadata", {})
+                unread_enriched.append({
+                    "title": doc["title"],
+                    "tags": meta.get("tags", []),
+                    "paper_type": meta.get("paper_type", ""),
+                    "uploaded_at": doc.get("uploaded_at", ""),
+                })
 
-                remarkable_client.move_document(
-                    rm_name, config.RM_FOLDER_PAPERS, config.RM_FOLDER_INBOX,
-                )
-                log.info("Demoted: %s", doc["title"])
-            state.promoted_papers = remaining_promoted
-            state.save()
+            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            recent = state.documents_processed_since(since)
+            recent_enriched = []
+            for doc in recent:
+                meta = doc.get("metadata", {})
+                recent_enriched.append({
+                    "title": doc["title"],
+                    "tags": meta.get("tags", []),
+                    "summary": doc.get("summary", ""),
+                    "engagement": doc.get("engagement", 0),
+                })
 
-        # Generate suggestions
-        unread = state.documents_with_status("on_remarkable")
-        if not unread:
-            print("  No papers in your reading queue.")
-            return
+            result = summarizer.suggest_papers(unread_enriched, recent_enriched)
+            if not result:
+                log.warning("Could not generate suggestions")
+                pick_keys = []
+            else:
+                # Print suggestions to terminal
+                print()
+                print("  Suggested papers to read next:")
+                print()
+                for line in result.strip().split("\n"):
+                    if line.strip():
+                        print(f"  {line.strip()}")
+                print()
 
-        unread_enriched = []
-        for doc in unread:
-            meta = doc.get("metadata", {})
-            unread_enriched.append({
-                "title": doc["title"],
-                "tags": meta.get("tags", []),
-                "paper_type": meta.get("paper_type", ""),
-                "uploaded_at": doc.get("uploaded_at", ""),
-            })
+                # Parse picks from Claude's response
+                title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
+                pick_keys = []
+                for line in result.strip().split("\n"):
+                    clean = line.strip().replace("**", "")
+                    if not clean:
+                        continue
+                    clean_lower = clean.lower()
+                    suggestion_title = re.sub(r"^\d+\.\s*", "", clean_lower).rstrip(" —-").split(" — ")[0].strip()
+                    for title_lower, key in title_to_key.items():
+                        if (title_lower in clean_lower or suggestion_title in title_lower) and key not in pick_keys:
+                            pick_keys.append(key)
+                            break
 
-        since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        recent = state.documents_processed_since(since)
-        recent_enriched = []
-        for doc in recent:
-            meta = doc.get("metadata", {})
-            recent_enriched.append({
-                "title": doc["title"],
-                "tags": meta.get("tags", []),
-                "summary": doc.get("summary", ""),
-                "engagement": doc.get("engagement", 0),
-            })
+        _demote_and_promote(state, pick_keys, verbose=True)
 
-        result = summarizer.suggest_papers(unread_enriched, recent_enriched)
-        if not result:
-            log.warning("Could not generate suggestions")
-            return
-
-        # Print suggestions to terminal
-        print()
-        print("  Suggested papers to read next:")
-        print()
-        for line in result.strip().split("\n"):
-            if line.strip():
-                print(f"  {line.strip()}")
-        print()
-
-        # Parse picks from Claude's response (bidirectional title matching)
-        title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
-        pick_keys = []
-        for line in result.strip().split("\n"):
-            clean = line.strip().replace("**", "")
-            if not clean:
-                continue
-            clean_lower = clean.lower()
-            suggestion_title = re.sub(r"^\d+\.\s*", "", clean_lower).rstrip(" —-").split(" — ")[0].strip()
-            for title_lower, key in title_to_key.items():
-                if (title_lower in clean_lower or suggestion_title in title_lower) and key not in pick_keys:
-                    pick_keys.append(key)
-                    break
-
-        # Move picked papers from Inbox to Papers root
-        inbox_docs = remarkable_client.list_folder(config.RM_FOLDER_INBOX)
-        promoted_keys = list(remaining_promoted)
-
-        for key in pick_keys:
-            if key in promoted_keys:
-                continue
-            doc = state.get_document(key)
-            if not doc or doc["status"] != "on_remarkable":
-                continue
-            rm_name = doc["remarkable_doc_name"]
-            if rm_name in inbox_docs:
-                remarkable_client.move_document(
-                    rm_name, config.RM_FOLDER_INBOX, config.RM_FOLDER_PAPERS,
-                )
-                doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
-                promoted_keys.append(key)
-                print(f"  Promoted: {doc['title']}")
-
-        state.promoted_papers = promoted_keys
-        state.pending_promotions = []
-        state.save()
-
+    except remarkable_client.RmapiAuthError as e:
+        print(f"\n  {e}\n")
+        return
     except Exception:
         log.exception("Unexpected error in suggest")
         raise
@@ -914,12 +1101,15 @@ def _init_wizard() -> None:
     print("  How it works")
     print("  " + "-" * 48)
     print()
-    print("  There are just three commands:")
+    print("  There are just four commands:")
     print()
     print("    distillate --sync")
     print("      Syncs everything in both directions:")
     print("      Zotero -> reMarkable (new papers)")
     print("      reMarkable -> notes (papers you finished reading)")
+    print()
+    print("    distillate --status")
+    print("      Shows queue health and reading stats at a glance.")
     print()
     print("    distillate --suggest")
     print("      Picks 3 papers from your queue and moves them")
@@ -984,13 +1174,14 @@ def _init_wizard() -> None:
     print()
 
 
-_VERSION = "0.1.0"
+_VERSION = "0.1.1"
 
 _HELP = """\
 Usage: distillate <command>
 
   distillate --sync     Sync Zotero -> reMarkable -> notes
   distillate --init     First-time setup wizard
+  distillate --status   Show queue health and reading stats
   distillate --suggest  Suggest papers to read next from your queue
   distillate --digest   Show your reading digest
 
@@ -1024,6 +1215,10 @@ def main():
     from distillate import config
     config.ensure_loaded()
 
+    if "--status" in sys.argv:
+        _status()
+        return
+
     if "--reprocess" in sys.argv:
         idx = sys.argv.index("--reprocess")
         _reprocess(sys.argv[idx + 1:])
@@ -1046,7 +1241,7 @@ def main():
         _backfill_s2()
         return
 
-    if "--suggest" in sys.argv or "--promote" in sys.argv:
+    if "--suggest" in sys.argv:
         _suggest()
         return
 
@@ -1529,6 +1724,12 @@ def main():
                 log.exception("Failed to process read paper '%s', skipping", rm_name)
                 continue
 
+        # -- Auto-promote pending picks from GH Actions --
+        try:
+            _auto_promote(state)
+        except Exception:
+            log.debug("Auto-promote check failed, continuing", exc_info=True)
+
         state.touch_poll_timestamp()
         state.save()
 
@@ -1539,6 +1740,9 @@ def main():
         else:
             log.info("Nothing to do.")
 
+    except remarkable_client.RmapiAuthError as e:
+        print(f"\n  {e}\n")
+        return
     except Exception:
         log.exception("Unexpected error")
         raise

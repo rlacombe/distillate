@@ -1,14 +1,23 @@
 """Weekly email digest and daily paper suggestions."""
 
+import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 from distillate import config
 from distillate import summarizer
 from distillate.state import State
 
 log = logging.getLogger(__name__)
+
+_SIGNATURE = (
+    '<p style="color:#999;font-size:13px;margin-top:24px;">--<br>'
+    'Sent from <a href="https://distillate.dev" style="color:#999;">distillate</a>.</p>'
+)
 
 
 def _send_email(subject: str, html: str) -> dict | None:
@@ -121,41 +130,35 @@ def _tag_pills_html(tags: list) -> str:
     return " ".join(pills)
 
 
-def _reading_velocity_html(state: State) -> str:
-    """Render reading velocity with highlight stats."""
+def _reading_stats_line(papers: list, label: str) -> str:
+    """Render a single stats line like 'This week: read 3 papers · 65 pages · 3,830 words highlighted'."""
+    count = len(papers)
+    total_pages = sum(d.get("page_count", 0) for d in papers)
+    words = sum(d.get("highlight_word_count", 0) for d in papers)
+
+    parts = [f"{label}: read {count} paper{'s' if count != 1 else ''}"]
+    if total_pages:
+        parts.append(f"{total_pages:,} pages")
+    if words:
+        parts.append(f"{words:,} words highlighted")
+    return " &middot; ".join(parts)
+
+
+def _reading_stats_html(state: State) -> str:
+    """Render reading stats footer with week and month lines."""
     now = datetime.now(timezone.utc)
-    # Use start-of-day so "this week" covers full calendar days
     week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
     month_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
 
     week_papers = state.documents_processed_since(week_ago.isoformat())
     month_papers = state.documents_processed_since(month_ago.isoformat())
-    week_count = len(week_papers)
-    month_count = len(month_papers)
 
-    # Aggregate stats for the week
-    week_total_pages = sum(d.get("page_count", 0) for d in week_papers)
-    week_highlights = sum(d.get("highlight_count", 0) for d in week_papers)
-    week_hl_pages = sum(d.get("highlighted_pages", 0) for d in week_papers)
-    week_words = sum(d.get("highlight_word_count", 0) for d in week_papers)
-
-    stats_parts = []
-    if week_total_pages:
-        stats_parts.append(f"{week_total_pages} pages read")
-    if week_highlights:
-        stats_parts.append(f"{week_highlights} highlights")
-    if week_hl_pages:
-        stats_parts.append(
-            f"{week_hl_pages} page{'s' if week_hl_pages != 1 else ''} annotated"
-        )
-    if week_words:
-        stats_parts.append(f"{week_words} words captured")
-    stats_html = f" ({', '.join(stats_parts)})" if stats_parts else ""
+    week_line = _reading_stats_line(week_papers, "This week")
+    month_line = _reading_stats_line(month_papers, "This month")
 
     return (
-        f'<p style="color:#666;font-size:14px;margin-bottom:16px;">'
-        f'Read {week_count} paper{"s" if week_count != 1 else ""} this week{stats_html}, '
-        f'{month_count} this month.</p>'
+        f'<p style="color:#999;font-size:13px;margin:24px 0 0 0;">{week_line}</p>'
+        f'<p style="color:#999;font-size:13px;margin:0;">{month_line}</p>'
     )
 
 
@@ -203,13 +206,61 @@ def _queue_health_html(state: State) -> str:
     )
 
     return (
-        f'<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">'
-        f'<p style="color:#999;font-size:11px;">'
+        f'<p style="color:#999;font-size:13px;margin:0;">'
         f'Queue: {total} papers waiting'
         f' &middot; oldest: {oldest_days} days'
         f' &middot; this week: +{added_this_week} added, '
         f'-{processed_this_week} read{awaiting_html}</p>'
     )
+
+
+def _push_pending_to_gist(picks: list, suggestion_text: str) -> None:
+    """Write pending.json to the state Gist so local --sync can promote."""
+    gist_id = config.STATE_GIST_ID
+    token = os.environ.get("GH_GIST_TOKEN", "")
+    if not gist_id or not token:
+        return
+
+    pending = {
+        "picks": picks,
+        "suggestion_text": suggestion_text,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        resp = requests.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"token {token}"},
+            json={"files": {"pending.json": {"content": json.dumps(pending)}}},
+            timeout=config.HTTP_TIMEOUT,
+        )
+        if resp.ok:
+            log.info("Pushed pending picks to Gist")
+        else:
+            log.warning("Failed to push pending to Gist: %s", resp.status_code)
+    except Exception:
+        log.debug("Gist push failed", exc_info=True)
+
+
+def fetch_pending_from_gist() -> dict | None:
+    """Read pending.json from the state Gist. Returns dict or None."""
+    gist_id = config.STATE_GIST_ID
+    if not gist_id:
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.github.com/gists/{gist_id}",
+            timeout=config.HTTP_TIMEOUT,
+        )
+        if not resp.ok:
+            return None
+        files = resp.json().get("files", {})
+        content = files.get("pending.json", {}).get("content")
+        if content:
+            return json.loads(content)
+    except Exception:
+        log.debug("Failed to fetch pending from Gist", exc_info=True)
+    return None
 
 
 def send_weekly_digest(days: int = 7) -> None:
@@ -320,13 +371,11 @@ def _paper_html(p):
 
 
 def _build_body(papers, state: State):
-    velocity = _reading_velocity_html(state)
-
+    count = len(papers)
     lines = [
         "<html><body style='font-family: sans-serif; max-width: 600px; "
         "margin: 0 auto; padding: 20px; color: #333;'>",
-        velocity,
-        "<p>Papers I read this week:</p>",
+        f"<p>Paper{'s' if count != 1 else ''} I read this week:</p>",
         "<ul style='padding-left: 20px;'>",
     ]
 
@@ -334,7 +383,9 @@ def _build_body(papers, state: State):
         lines.append(_paper_html(p))
 
     lines.append("</ul>")
+    lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)
 
@@ -382,7 +433,7 @@ def send_suggestion() -> None:
         log.warning("Could not generate suggestions")
         return
 
-    # Store picks for --promote to execute later (works from GH Actions)
+    # Store picks for auto-promote to execute during next sync
     title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
     pending = []
     for line in result.strip().split("\n"):
@@ -398,7 +449,8 @@ def send_suggestion() -> None:
     if pending:
         state.pending_promotions = pending
         state.save()
-        log.info("Stored %d pending promotion(s) for next --promote run", len(pending))
+        log.info("Stored %d pending promotion(s)", len(pending))
+        _push_pending_to_gist(pending, result)
 
     subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
     body = _build_suggestion_body(result, unread, state)
@@ -419,6 +471,7 @@ def send_themes_email(month: str, themes_text: str) -> None:
         "margin: 0 auto; padding: 20px; color: #333;'>"
         f"<h1>Research Themes \u2014 {month}</h1>"
         f"{body_html}"
+        f"{_SIGNATURE}"
         "</body></html>"
     )
 
@@ -434,16 +487,10 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
         url_lookup[doc["title"].lower()] = _paper_url(doc)
         tags_lookup[doc["title"].lower()] = doc.get("metadata", {}).get("tags", [])
 
-    intro = (
-        f"<p>You have {len(unread)} papers in your queue, "
-        f"here are 3 to consider today:</p>"
-    )
-
     lines = [
         "<html><body style='font-family: sans-serif; max-width: 600px; "
         "margin: 0 auto; padding: 20px; color: #333;'>",
-        _reading_velocity_html(state),
-        intro,
+        "<p>Here are 3 papers to consider today:</p>",
         "<ul style='padding-left: 20px;'>",
     ]
 
@@ -512,6 +559,8 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
         )
 
     lines.append("</ul>")
+    lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)

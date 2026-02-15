@@ -185,37 +185,38 @@ class TestTagPillsHtml:
         assert html1 == html2
 
 
-class TestReadingVelocityHtml:
-    """Tests for digest._reading_velocity_html()."""
+class TestReadingStatsHtml:
+    """Tests for digest._reading_stats_html()."""
 
     def test_renders_counts(self):
-        from distillate.digest import _reading_velocity_html
+        from distillate.digest import _reading_stats_html
 
         state = MagicMock()
-        state.documents_processed_since = MagicMock(
-            side_effect=lambda since: [{}] * 2 if "days=7" not in since else [{}] * 5
-        )
-        # Both calls return some docs
         state.documents_processed_since.side_effect = [
-            [{}, {}],       # week count = 2
-            [{}, {}, {}],   # month count = 3
+            [{"page_count": 30, "highlight_word_count": 1500},
+             {"page_count": 35, "highlight_word_count": 2330}],  # week
+            [{"page_count": 30, "highlight_word_count": 1500},
+             {"page_count": 35, "highlight_word_count": 2330},
+             {"page_count": 20, "highlight_word_count": 800}],   # month
         ]
 
-        html = _reading_velocity_html(state)
-        assert "Read 2 papers this week" in html
-        assert "3 this month." in html
+        html = _reading_stats_html(state)
+        assert "This week: read 2 papers" in html
+        assert "65 pages" in html
+        assert "3,830 words highlighted" in html
+        assert "This month: read 3 papers" in html
 
     def test_singular_paper(self):
-        from distillate.digest import _reading_velocity_html
+        from distillate.digest import _reading_stats_html
 
         state = MagicMock()
         state.documents_processed_since.side_effect = [
-            [{}],   # week = 1
-            [{}],   # month = 1
+            [{"page_count": 10, "highlight_word_count": 500}],   # week
+            [{"page_count": 10, "highlight_word_count": 500}],   # month
         ]
 
-        html = _reading_velocity_html(state)
-        assert "Read 1 paper this week" in html
+        html = _reading_stats_html(state)
+        assert "read 1 paper" in html
 
 
 class TestQueueHealthHtml:

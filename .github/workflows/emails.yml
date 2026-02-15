@@ -64,3 +64,5 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           DIGEST_FROM: ${{ secrets.DIGEST_FROM }}
+          STATE_GIST_ID: ${{ secrets.STATE_GIST_ID }}
+          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}

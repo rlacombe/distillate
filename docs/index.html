@@ -96,7 +96,7 @@
       display: inline-block;
       width: 24px;
       height: 24px;
-      background: var(--fg);
+      background: #7c3aed;
       color: var(--bg);
       border-radius: 50%;
       text-align: center;
@@ -144,8 +144,16 @@
 
     .extra strong {
       display: block;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
       font-size: 0.9rem;
+    }
+
+    .extra .subtitle {
+      display: block;
+      font-size: 0.75rem;
+      color: #7c3aed;
+      font-weight: 500;
+      margin-bottom: 6px;
     }
 
     .extra span {
@@ -187,7 +195,7 @@
     }
 
     .links a {
-      color: var(--accent);
+      color: #7c3aed;
       text-decoration: none;
       font-weight: 500;
       font-size: 0.95rem;
@@ -196,12 +204,66 @@
     .links a:hover {
       text-decoration: underline;
     }
+
+    .badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 48px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .badge-purple {
+      background: #ede9fe;
+      color: #6d28d9;
+    }
+
+    .badge-green {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
+    .badge-blue {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .banner {
+      background: #7c3aed;
+      color: white;
+      text-align: center;
+      padding: 10px 24px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+    }
+
+    .banner a {
+      color: white;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
   </style>
 </head>
 <body>
+  <div class="banner">v0.1.1 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">A reading workflow for researchers who use Zotero and reMarkable.</p>
+
+    <div class="badges">
+      <span class="badge badge-purple">PyPI v0.1.1</span>
+      <span class="badge badge-blue">Python 3.10+</span>
+      <span class="badge badge-green">MIT License</span>
+    </div>
 
     <div class="flow">Save paper in Zotero  ──&gt;  PDF on reMarkable
                                │
@@ -228,7 +290,7 @@
       <div class="step">
         <span class="step-number">1</span>
         <strong>Save a paper to Zotero</strong>
-        <p>Use the Zotero browser connector or mobile app. Distillate watches for new papers tagged "inbox".</p>
+        <p>Use the Zotero browser connector or mobile app. Distillate automatically picks up new papers from your library.</p>
       </div>
 
       <div class="step">
@@ -261,18 +323,22 @@
       <div class="extras-grid">
         <div class="extra">
           <strong>AI summaries</strong>
-          <span>One-liner, key learnings, and a paragraph summary for each paper you read (via Claude)</span>
+          <em class="subtitle">Anthropic API</em>
+          <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
         </div>
         <div class="extra">
           <strong>Paper suggestions</strong>
+          <em class="subtitle">Anthropic API</em>
           <span>Pick what to read next from your queue, based on your reading history</span>
         </div>
         <div class="extra">
           <strong>Weekly digest</strong>
+          <em class="subtitle">Free Resend account</em>
           <span>A summary of what you read this week, with stats and queue health</span>
         </div>
         <div class="extra">
           <strong>Obsidian integration</strong>
+          <em class="subtitle">Obsidian vault</em>
           <span>Wiki-links between papers, searchable database, reading stats, deep links from Zotero</span>
         </div>
       </div>
@@ -281,13 +347,13 @@
     <div class="requires">
       <h2>What you need</h2>
       <table>
-        <tr><th>Component</th><th>Notes</th></tr>
-        <tr><td>Zotero account</td><td>Free &mdash; manages your paper library</td></tr>
-        <tr><td>reMarkable tablet</td><td>Where you read and highlight</td></tr>
-        <tr><td>rmapi</td><td>Free &mdash; syncs files with reMarkable Cloud</td></tr>
-        <tr><td>Obsidian or output folder</td><td>Optional &mdash; where notes are saved locally</td></tr>
-        <tr><td>Anthropic API key</td><td>Optional &mdash; for AI summaries</td></tr>
-        <tr><td>Resend API key</td><td>Optional &mdash; for email digest</td></tr>
+        <tr><th>Component</th><th></th><th>Notes</th></tr>
+        <tr><td>Zotero account</td><td><span class="badge badge-green">Free</span></td><td>Manages your paper library</td></tr>
+        <tr><td>reMarkable tablet</td><td><span class="badge badge-purple">Required</span></td><td>Where you read and highlight</td></tr>
+        <tr><td>rmapi</td><td><span class="badge badge-green">Free</span></td><td>Syncs files with reMarkable Cloud</td></tr>
+        <tr><td>Obsidian or output folder</td><td><span class="badge badge-blue">Optional</span></td><td>Where notes are saved locally</td></tr>
+        <tr><td>Anthropic API key</td><td><span class="badge badge-blue">Optional</span></td><td>For AI summaries and suggestions</td></tr>
+        <tr><td>Resend account</td><td><span class="badge badge-blue">Optional</span></td><td>For weekly digest emails</td></tr>
       </table>
     </div>
 

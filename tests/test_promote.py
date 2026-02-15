@@ -132,7 +132,9 @@ class TestPromoteSmartDemotion:
              patch("distillate.state.release_lock"), \
              patch("distillate.config.RM_FOLDER_PAPERS", "Distillate"), \
              patch("distillate.config.RM_FOLDER_INBOX", "Distillate/Inbox"), \
-             patch("distillate.config.ANTHROPIC_API_KEY", ""):
+             patch("distillate.config.ANTHROPIC_API_KEY", ""), \
+             patch("distillate.config.STATE_GIST_ID", ""), \
+             patch("distillate.digest.fetch_pending_from_gist", return_value=None):
             from distillate.main import _suggest
             _suggest()
 
@@ -268,7 +270,9 @@ class TestPromotedAtTimestamp:
              patch("distillate.state.release_lock"), \
              patch("distillate.config.RM_FOLDER_PAPERS", "Distillate"), \
              patch("distillate.config.RM_FOLDER_INBOX", "Distillate/Inbox"), \
-             patch("distillate.config.ANTHROPIC_API_KEY", ""):
+             patch("distillate.config.ANTHROPIC_API_KEY", ""), \
+             patch("distillate.config.STATE_GIST_ID", ""), \
+             patch("distillate.digest.fetch_pending_from_gist", return_value=None):
             from distillate.main import _suggest
             _suggest()
 
