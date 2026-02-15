@@ -9,17 +9,15 @@ Distill research papers from Zotero through reMarkable into structured notes.
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ```
-Save paper in Zotero  ──>  PDF uploaded to reMarkable
-                                  │
-                       Read & highlight on reMarkable
-                       Move to Read folder when done
-                                  │
-                                  V
-                       Distillate picks it up:
-                       ├── Annotated PDF with highlights
-                       ├── Markdown note + AI summary
-                       ├── Reading log entry
-                       └── Paper archived on reMarkable
+$ distillate   # turn papers into notes!
+
+Save to Zotero  ──>  syncs to reMarkable
+                                │
+                   Read & highlight on tablet
+                   Just move to Read when done
+                                │
+                                V
+                   Distillate does the rest!
 ```
 
 ## Quick Start

@@ -18,6 +18,8 @@ from distillate.config import CONFIG_DIR
 
 log = logging.getLogger(__name__)
 
+log = logging.getLogger(__name__)
+
 # State file: prefer CWD (for dev installs), then config dir
 STATE_PATH = CONFIG_DIR / "state.json"
 if not STATE_PATH.exists() and (Path.cwd() / "state.json").exists():
@@ -35,7 +37,14 @@ _DEFAULT_STATE = {
 def _load_raw() -> Dict[str, Any]:
     if not STATE_PATH.exists():
         return copy.deepcopy(_DEFAULT_STATE)
-    return json.loads(STATE_PATH.read_text())
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning("Corrupt state file, backing up and starting fresh: %s", exc)
+        backup = STATE_PATH.with_suffix(".json.bak")
+        STATE_PATH.rename(backup)
+        log.warning("Backed up corrupt state to %s", backup)
+        return copy.deepcopy(_DEFAULT_STATE)
 
 
 def _save_raw(data: Dict[str, Any]) -> None:

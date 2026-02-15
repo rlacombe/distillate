@@ -19,6 +19,28 @@ def isolate_state(tmp_path, monkeypatch):
     yield tmp_path
 
 
+class TestCorruptStateRecovery:
+    def test_corrupt_json_recovers_to_defaults(self, tmp_path):
+        from distillate.state import STATE_PATH, State
+
+        STATE_PATH.write_text("{invalid json!!!")
+        s = State()
+        assert s.zotero_library_version == 0
+        assert s.documents == {}
+
+        # Corrupt file should be backed up
+        backup = STATE_PATH.with_suffix(".json.bak")
+        assert backup.exists()
+        assert backup.read_text() == "{invalid json!!!"
+
+    def test_empty_file_recovers_to_defaults(self, tmp_path):
+        from distillate.state import STATE_PATH, State
+
+        STATE_PATH.write_text("")
+        s = State()
+        assert s.zotero_library_version == 0
+
+
 class TestStateBasics:
     def test_fresh_state_has_defaults(self):
         from distillate.state import State

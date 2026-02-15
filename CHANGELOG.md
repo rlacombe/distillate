@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3 — 2026-02-15
+
+### Bug fixes
+
+- **Title propagation**: changing a paper title in Zotero now updates `--status` and promoted papers list
+- **`stat_document()` false negatives**: papers stuck in promoted list because empty rmapi stat output was treated as failure
+- **Corrupt state recovery**: corrupted `state.json` is backed up and reset instead of crashing
+- **rmapi timeout handling**: network timeouts now show a clean error instead of an unhandled exception
+
+### Improvements
+
+- **`--status` promoted list**: show last 3 promoted papers, one per line (was all on one unreadable line)
+- **ASCII flow refresh**: `$ distillate   # turn papers into notes!` shell-comment style
+
 ## 0.1.2 — 2026-02-15
 
 ### Features

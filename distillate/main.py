@@ -461,16 +461,18 @@ def _status() -> None:
         queue_str += f" (oldest: {oldest_days} days)"
     print(f"  Queue:     {queue_str}")
 
-    # Promoted
+    # Promoted (show last 3)
     promoted = state.promoted_papers
     if promoted:
         titles = []
-        for key in promoted:
+        for key in promoted[-3:]:
             doc = state.get_document(key)
             if doc:
                 titles.append(doc["title"])
         if titles:
-            print(f"  Promoted:  {', '.join(titles)}")
+            print(f"  Promoted:  {titles[0]}")
+            for t in titles[1:]:
+                print(f"             {t}")
 
     # Last sync
     last_poll = state.last_poll_timestamp
@@ -1677,6 +1679,7 @@ def main():
                             new_meta[field] = old_meta[field]
 
                     doc["metadata"] = new_meta
+                    doc["title"] = new_meta.get("title", doc["title"])
                     doc["authors"] = new_meta.get("authors", doc["authors"])
 
                     # Update Obsidian note frontmatter for processed papers
