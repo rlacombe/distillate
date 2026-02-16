@@ -236,6 +236,47 @@ class TestDuplicateDetection:
         assert s.find_by_title("Spaced Title") is not None
 
 
+class TestRemoveDocument:
+    def test_remove_existing(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Title One", ["A"])
+        assert s.has_document("K1")
+        assert s.remove_document("K1") is True
+        assert not s.has_document("K1")
+
+    def test_remove_nonexistent(self):
+        from distillate.state import State
+
+        s = State()
+        assert s.remove_document("NOPE") is False
+
+    def test_remove_cleans_promoted_list(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Title One", ["A"])
+        s.promoted_papers = ["K1", "K2"]
+        s.pending_promotions = ["K1"]
+
+        s.remove_document("K1")
+        assert "K1" not in s.promoted_papers
+        assert "K2" in s.promoted_papers
+        assert "K1" not in s.pending_promotions
+
+    def test_remove_persists(self):
+        from distillate.state import State
+
+        s = State()
+        s.add_document("K1", "A1", "md5", "doc1", "Title", ["A"])
+        s.remove_document("K1")
+        s.save()
+
+        s2 = State()
+        assert not s2.has_document("K1")
+
+
 class TestPromotedPapers:
     def test_promoted_papers_roundtrip(self):
         from distillate.state import State

@@ -341,6 +341,9 @@ def create_paper_note(
     else:
         abstract_md = ""
 
+    # DOI link in note body
+    doi_link_md = f"[Open paper](https://doi.org/{doi})\n\n" if doi else ""
+
     content = f"""\
 ---
 title: "{_escape_yaml(title)}"
@@ -355,9 +358,12 @@ tags:
 
 # {title}
 
-{oneliner_md}{summary_md}{learnings_md}{pdf_embed}{abstract_md}## Highlights
+{doi_link_md}{oneliner_md}{summary_md}{learnings_md}{pdf_embed}{abstract_md}## Highlights
 
 {highlights_md}
+
+## My Notes
+
 """
     note_path.write_text(content)
     log.info("Created note: %s", note_path)

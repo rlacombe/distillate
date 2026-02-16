@@ -14,7 +14,7 @@ CONFIG_DIR = Path(
         / "distillate"
     )
 )
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 # .env file: prefer CWD (for dev installs), then config dir
 ENV_PATH = CONFIG_DIR / ".env"
@@ -51,6 +51,7 @@ def save_to_env(key: str, value: str) -> None:
         text = text.rstrip("\n") + f"\n{replacement}\n"
 
     ENV_PATH.write_text(text)
+    os.chmod(ENV_PATH, 0o600)
     os.environ[key] = value
 
 
@@ -130,10 +131,47 @@ def _validate_optional() -> None:
         )
 
 
+LOG_FILE = CONFIG_DIR / "distillate.log"
+
+
+_logging_configured = False
+
+
 def setup_logging() -> None:
-    """Configure logging for the workflow. Call once at each entry point."""
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    """Configure logging for the workflow. Call once at each entry point.
+
+    When stdout is a TTY and LOG_LEVEL != DEBUG, console shows only warnings
+    while full INFO logging goes to a file. In non-TTY (cron/launchd) or
+    DEBUG mode, everything goes to console as before.
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    _logging_configured = True
+
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+
+    if sys.stdout.isatty() and LOG_LEVEL != "DEBUG":
+        # TTY: console gets warnings only, file gets everything
+        root = logging.getLogger()
+        root.setLevel(level)
+
+        console = logging.StreamHandler()
+        console.setLevel(logging.WARNING)
+        console.setFormatter(logging.Formatter("%(message)s"))
+        root.addHandler(console)
+
+        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler.setLevel(level)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root.addHandler(file_handler)
+    else:
+        # Non-TTY or DEBUG: everything to console
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )

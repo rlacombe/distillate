@@ -18,8 +18,6 @@ from distillate.config import CONFIG_DIR
 
 log = logging.getLogger(__name__)
 
-log = logging.getLogger(__name__)
-
 # State file: prefer CWD (for dev installs), then config dir
 STATE_PATH = CONFIG_DIR / "state.json"
 if not STATE_PATH.exists() and (Path.cwd() / "state.json").exists():
@@ -173,6 +171,18 @@ class State:
         doc = self._data["documents"].get(zotero_item_key)
         if doc:
             doc["status"] = "deleted"
+
+    def remove_document(self, zotero_item_key: str) -> bool:
+        """Remove a document from tracking. Returns True if found and removed."""
+        if zotero_item_key not in self._data["documents"]:
+            return False
+        del self._data["documents"][zotero_item_key]
+        # Clean up from promoted and pending lists
+        for list_key in ("promoted_papers", "pending_promotions"):
+            lst = self._data.get(list_key, [])
+            if zotero_item_key in lst:
+                lst.remove(zotero_item_key)
+        return True
 
     def documents_with_status(self, status: str) -> List[Dict[str, Any]]:
         return [

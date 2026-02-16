@@ -65,6 +65,15 @@ class TestSaveToEnv:
         assert env_file.exists()
         assert "BRAND_NEW=val" in env_file.read_text()
 
+    def test_sets_env_file_permissions(self, tmp_path, monkeypatch):
+        from distillate import config
+
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr(config, "ENV_PATH", env_file)
+
+        config.save_to_env("SECRET", "value")
+        assert env_file.stat().st_mode & 0o777 == 0o600
+
     def test_sets_os_environ(self, tmp_path, monkeypatch):
         from distillate import config
 

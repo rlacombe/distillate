@@ -424,10 +424,15 @@ def _sync_state() -> None:
         log.info("No state.json to sync")
         return
 
-    subprocess.run(
-        ["gh", "gist", "edit", gist_id, "-f", "state.json", str(STATE_PATH)],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["gh", "gist", "edit", gist_id, "-f", "state.json", str(STATE_PATH)],
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("Timed out syncing state to gist %s", gist_id)
+        return
     log.info("Synced state.json to gist %s", gist_id)
 
 
@@ -460,6 +465,22 @@ def _status() -> None:
     if oldest_days:
         queue_str += f" (oldest: {oldest_days} days)"
     print(f"  Queue:     {queue_str}")
+
+    # List queue papers (up to 10)
+    if queue:
+        sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""))
+        for doc in sorted_queue[:10]:
+            age = ""
+            uploaded = doc.get("uploaded_at", "")
+            if uploaded:
+                try:
+                    days = (now - datetime.fromisoformat(uploaded)).days
+                    age = f" ({days}d)"
+                except (ValueError, TypeError):
+                    pass
+            print(f"    - {doc['title']}{age}")
+        if len(queue) > 10:
+            print(f"    ... and {len(queue) - 10} more")
 
     # Promoted (show last 3)
     promoted = state.promoted_papers
@@ -567,6 +588,98 @@ def _status() -> None:
         for o in optional:
             print(f"    - Optional: {o}")
     print()
+
+
+def _list() -> None:
+    """List all tracked papers grouped by status."""
+    from distillate import config
+    from distillate.state import State
+
+    config.setup_logging()
+    state = State()
+
+    groups = [
+        ("On reMarkable", "on_remarkable"),
+        ("Processing", "processing"),
+        ("Awaiting PDF", "awaiting_pdf"),
+        ("Processed", "processed"),
+    ]
+
+    total = 0
+    print()
+    for label, status in groups:
+        docs = state.documents_with_status(status)
+        if not docs:
+            continue
+        total += len(docs)
+        print(f"  {label} ({len(docs)})")
+        for doc in docs:
+            parts = [doc["title"]]
+            authors = doc.get("authors") or []
+            if authors and authors[0].strip():
+                first_author = authors[0].split(",")[0].split()[-1]
+                parts.append(first_author)
+            if status == "processed" and doc.get("processed_at"):
+                parts.append(doc["processed_at"][:10])
+            elif doc.get("uploaded_at"):
+                parts.append(doc["uploaded_at"][:10])
+            print(f"    - {' · '.join(parts)}")
+        print()
+
+    if total == 0:
+        print("  No papers tracked yet.")
+        print("  Run 'distillate --import' to add existing papers.")
+        print()
+
+
+def _remove(args: list[str]) -> None:
+    """Remove a paper from tracking by title substring match."""
+    from distillate import config
+    from distillate.state import State
+
+    config.setup_logging()
+
+    if not args:
+        print("Usage: distillate --remove \"Paper Title\"")
+        return
+
+    query = " ".join(args).strip().strip('"').strip("'")
+    state = State()
+    query_lower = query.lower()
+
+    matches = []
+    for key, doc in state.documents.items():
+        if query_lower in doc.get("title", "").lower():
+            matches.append((key, doc))
+
+    if not matches:
+        print(f"\n  No papers matching '{query}'.\n")
+        return
+
+    if len(matches) == 1:
+        key, doc = matches[0]
+        print(f"\n  Found: {doc['title']} [{doc['status']}]")
+        confirm = input("  Remove this paper from tracking? [y/N] ").strip().lower()
+        if confirm == "y":
+            state.remove_document(key)
+            state.save()
+            print("  Removed.\n")
+        else:
+            print("  Cancelled.\n")
+        return
+
+    print(f"\n  Found {len(matches)} papers matching '{query}':\n")
+    for i, (key, doc) in enumerate(matches, 1):
+        print(f"    {i}. {doc['title']} [{doc['status']}]")
+    print()
+    choice = input("  Remove which? (number, or Enter to cancel) ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(matches):
+        key, doc = matches[int(choice) - 1]
+        state.remove_document(key)
+        state.save()
+        print(f"  Removed: {doc['title']}\n")
+    else:
+        print("  Cancelled.\n")
 
 
 def _print_digest() -> None:
@@ -1167,8 +1280,8 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 zotero_client.delete_attachment(att_key)
             elif not new_att:
                 log.warning("Could not create linked attachment for '%s', keeping imported PDF", title)
-        elif not config.KEEP_ZOTERO_PDF:
-            zotero_client.delete_attachment(att_key)
+        else:
+            log.warning("Could not save local PDF for '%s', keeping Zotero copy", title)
 
     # Semantic Scholar enrichment
     try:
@@ -1227,6 +1340,9 @@ def _init_step5(save_to_env) -> None:
     print()
     print("  Without a key, papers use their abstract as fallback.")
     print()
+    print("  Note: your highlights and abstracts are sent to the Claude API")
+    print("  for processing. No data is stored by Anthropic.")
+    print()
     anthropic_key = _prompt_with_default(
         "  Anthropic API key (Enter to skip)", "ANTHROPIC_API_KEY", sensitive=True,
     )
@@ -1254,9 +1370,9 @@ def _init_step5(save_to_env) -> None:
         if email_to:
             save_to_env("DIGEST_TO", email_to)
         print()
-        print("  Emails are sent from onboarding@resend.dev by default.")
-        print("  To use a custom sender, set DIGEST_FROM in your .env")
-        print("  (requires a verified domain in Resend).")
+        print("  Resend's free tier includes one custom domain (3,000 emails/month).")
+        print("  Add your domain at resend.com/domains, then set DIGEST_FROM")
+        print("  in your .env (e.g. digest@yourdomain.com).")
         print()
         print("  Email digest enabled.")
     else:
@@ -1450,7 +1566,7 @@ def _init_done(env_path) -> None:
     print("  How it works")
     print("  " + "-" * 48)
     print()
-    print("  There are six commands:")
+    print("  There are seven commands:")
     print()
     print("    distillate --import")
     print("      Import existing papers from your Zotero library.")
@@ -1462,6 +1578,9 @@ def _init_done(env_path) -> None:
     print()
     print("    distillate --status")
     print("      Shows queue health and reading stats at a glance.")
+    print()
+    print("    distillate --list")
+    print("      List all tracked papers grouped by status.")
     print()
     print("    distillate --suggest")
     print("      Picks 3 papers from your queue and moves them")
@@ -1705,6 +1824,9 @@ def _init_wizard() -> None:
     print("  Distillate uses rmapi to sync PDFs with your reMarkable")
     print("  via the reMarkable Cloud.")
     print()
+    print("  Important: enable 'Text recognition' in your reMarkable")
+    print("  settings for highlight extraction to work.")
+    print()
 
     import shutil
     already_registered = bool(os.environ.get("REMARKABLE_DEVICE_TOKEN", ""))
@@ -1885,25 +2007,35 @@ def _init_wizard() -> None:
     _init_done(ENV_PATH)
 
 
-_VERSION = "0.1.5"
+_VERSION = "0.1.6"
 
 _HELP = """\
 Usage: distillate [command]
 
-  distillate              Sync Zotero -> reMarkable -> notes (default)
-  distillate --import     Import existing papers from Zotero
-  distillate --status     Show queue health and reading stats
-  distillate --suggest    Get paper suggestions for your queue
-  distillate --digest     Show your reading digest
-  distillate --schedule   Set up or manage automatic syncing
-  distillate --init       Run the setup wizard
+  distillate              Sync papers: Zotero -> reMarkable -> notes
+
+Commands:
+  --import                Import existing papers from Zotero
+  --status                Show queue health and reading stats
+  --list                  List all tracked papers
+  --suggest               Pick papers for your queue and promote to tablet
+  --digest                Show your reading digest
+  --schedule              Set up automatic syncing (launchd/cron)
+  --init                  Run the setup wizard
+
+Management:
+  --remove "Title"        Remove a paper from tracking
+  --reprocess "Title"     Re-extract highlights and regenerate note
+
+Advanced:
+  --dry-run               Preview sync without making changes
+  --themes 2026-02        Generate monthly research themes note
+  --backfill-s2           Refresh Semantic Scholar data for all papers
+  --sync-state            Push state.json to a GitHub Gist
 
 Options:
   -h, --help              Show this help
   -V, --version           Show version
-
-Advanced:
-  --reprocess "Title"     Re-extract highlights for a paper
 """
 
 
@@ -1925,16 +2057,26 @@ def main():
         register_interactive()
         return
 
+    # Commands that only need local state (no Zotero credentials)
+    if "--status" in sys.argv:
+        _status()
+        return
+
+    if "--list" in sys.argv:
+        _list()
+        return
+
+    if "--remove" in sys.argv:
+        idx = sys.argv.index("--remove")
+        _remove(sys.argv[idx + 1:])
+        return
+
     from distillate import config
     config.ensure_loaded()
 
     if "--import" in sys.argv:
         idx = sys.argv.index("--import")
         _import(sys.argv[idx + 1:])
-        return
-
-    if "--status" in sys.argv:
-        _status()
         return
 
     if "--reprocess" in sys.argv:
@@ -2047,8 +2189,8 @@ def main():
                         )
                         if new_att and att_key and not config.KEEP_ZOTERO_PDF:
                             zotero_client.delete_attachment(att_key)
-                    elif att_key and not config.KEEP_ZOTERO_PDF:
-                        zotero_client.delete_attachment(att_key)
+                    else:
+                        log.warning("Could not save local PDF for '%s', keeping Zotero copy", title)
                     zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
                     state.set_status(item_key, "on_remarkable")
                     state.save()
@@ -2059,6 +2201,7 @@ def main():
             state.save()
 
         # -- Step 1: Poll Zotero for new papers --
+        print("  Checking Zotero...")
         log.info("Step 1: Checking Zotero for new papers...")
 
         current_version = zotero_client.get_library_version()
@@ -2100,6 +2243,8 @@ def main():
                     items = zotero_client.get_items_by_keys(new_keys)
                     new_papers = zotero_client.filter_new_papers(items)
                     log.info("Found %d new papers", len(new_papers))
+                    if new_papers:
+                        print(f"  Found {len(new_papers)} new paper{'s' if len(new_papers) != 1 else ''}")
 
                     # Ensure reMarkable folders exist and get existing docs
                     if new_papers:
@@ -2112,6 +2257,9 @@ def main():
 
                     for paper in new_papers:
                         try:
+                            paper_title = paper.get("data", {}).get("title", "")
+                            if paper_title:
+                                print(f"  Uploading: \"{paper_title}\"")
                             if _upload_paper(paper, state, existing_on_rm):
                                 sent_count += 1
                         except Exception:
@@ -2175,21 +2323,55 @@ def main():
             state.save()
 
         # -- Step 2: Poll reMarkable for read papers --
+        print("  Checking reMarkable...")
         log.info("Step 2: Checking reMarkable for read papers...")
 
         read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
+
+        # Resume any papers left in "processing" state from a previous crash
+        processing = state.documents_with_status("processing")
         on_remarkable = state.documents_with_status("on_remarkable")
+
+        # Combine: processing docs first (resume), then newly found read docs
+        docs_to_process = []
+        for doc in processing:
+            rm_name = doc["remarkable_doc_name"]
+            if rm_name in read_docs:
+                log.info("Resuming processing for '%s'", doc["title"])
+                docs_to_process.append(doc)
+            else:
+                # Paper is no longer in Read/ — it may have been moved to
+                # Saved/ by a previous successful run whose state save failed.
+                # Skip it rather than reprocessing with empty data.
+                log.info(
+                    "Skipping '%s' (processing state but not in Read/)",
+                    doc["title"],
+                )
+                state.mark_processed(doc["zotero_item_key"])
+                state.save()
 
         for doc in on_remarkable:
             rm_name = doc["remarkable_doc_name"]
+            if rm_name in read_docs:
+                docs_to_process.append(doc)
 
-            if rm_name not in read_docs:
-                continue
+        for doc in docs_to_process:
+            rm_name = doc["remarkable_doc_name"]
 
+            print(f"  Processing: \"{doc['title']}\"")
             log.info("Found read paper: %s", rm_name)
             item_key = doc["zotero_item_key"]
 
             try:
+                # Update Zotero tag and save intermediate state BEFORE
+                # expensive work so we can resume if interrupted
+                if doc["status"] != "processing":
+                    zotero_client.replace_tag(
+                        item_key, config.ZOTERO_TAG_INBOX, config.ZOTERO_TAG_READ,
+                    )
+                    state.set_status(item_key, "processing")
+                    state.save()
+
                 highlights = None
 
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -2203,8 +2385,12 @@ def main():
 
                     if bundle_ok and zip_path.exists():
                         # Extract highlighted text
+                        print("    Extracting highlights...")
                         highlights = renderer.extract_highlights(zip_path)
-                        if not highlights:
+                        if highlights:
+                            hl_count = sum(len(v) for v in highlights.values())
+                            print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
+                        else:
                             log.info("No text highlights found for '%s'", rm_name)
                             print(
                                 f"  Warning: no highlights found for '{doc['title']}'."
@@ -2233,6 +2419,7 @@ def main():
                         )
 
                     pdf_filename = None
+                    saved = None
                     if render_ok and pdf_path.exists():
                         annotated_bytes = pdf_path.read_bytes()
                         saved = obsidian.save_annotated_pdf(doc["title"], annotated_bytes)
@@ -2258,11 +2445,6 @@ def main():
                     elif linked:
                         zotero_client.delete_attachment(linked["key"])
 
-                # Update Zotero tag
-                zotero_client.replace_tag(
-                    item_key, config.ZOTERO_TAG_INBOX, config.ZOTERO_TAG_READ,
-                )
-
                 # Flatten highlights for summarizer (needs raw text, not pages)
                 meta = doc.get("metadata", {})
                 flat_highlights = [
@@ -2270,6 +2452,7 @@ def main():
                 ] or None
 
                 # Extract key learnings first (summary uses them)
+                print("    Generating summary...")
                 learnings = summarizer.extract_insights(
                     doc["title"],
                     highlights=flat_highlights,
@@ -2293,6 +2476,7 @@ def main():
                 )
 
                 # Create Obsidian note with page-grouped highlights
+                print("    Creating note...")
                 obsidian.ensure_dataview_note()
                 obsidian.ensure_stats_note()
                 obsidian.create_paper_note(
@@ -2365,9 +2549,16 @@ def main():
 
         # -- Step 3: Notify --
         if sent_count or synced_count:
+            parts = []
+            if sent_count:
+                parts.append(f"{sent_count} sent")
+            if synced_count:
+                parts.append(f"{synced_count} synced")
+            print(f"  Done: {', '.join(parts)}")
             log.info("Done: %d sent, %d synced", sent_count, synced_count)
             notify.notify_summary(sent_count, synced_count)
         else:
+            print("  Nothing to do.")
             log.info("Nothing to do.")
 
     except remarkable_client.RmapiAuthError as e:

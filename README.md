@@ -4,6 +4,10 @@
 
 Distill research papers from Zotero through reMarkable into structured notes.
 
+## Why Distillate?
+
+An open-source CLI with no cloud backend. Your notes, highlights, and PDFs are plain files on your machine — markdown you can read, move, or version-control however you like. AI summaries and email digests are optional; the core workflow needs only Zotero and reMarkable.
+
 [![PyPI](https://img.shields.io/pypi/v/distillate)](https://pypi.org/project/distillate/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -37,6 +41,7 @@ The setup wizard walks you through connecting Zotero, reMarkable, and choosing w
 | [Zotero](https://www.zotero.org/) | Yes | Paper library + browser connector for saving papers |
 | [reMarkable](https://remarkable.com/) tablet | Yes | Read & highlight papers with the built-in highlighter |
 | [rmapi](https://github.com/ddvk/rmapi) | Yes | CLI bridge to reMarkable Cloud |
+| Text recognition (on reMarkable) | Yes | Enable in Settings for highlight extraction |
 | [Obsidian](https://obsidian.md/) vault | No | Rich note integration (Dataview, reading stats, deep links) |
 | Plain folder | No | Alternative to Obsidian — just markdown notes + PDFs |
 | [Anthropic API key](https://console.anthropic.com/) | No | AI-generated summaries and key learnings |
@@ -97,7 +102,7 @@ This walks you through:
 <details>
 <summary>Manual setup (without the wizard)</summary>
 
-Create `~/.config/distillate/.env` (or copy [.env.example](.env.example)):
+Create `~/.config/distillate/.env` (or copy [.env.example](https://github.com/rlacombe/distillate/blob/main/.env.example)):
 
 ```
 ZOTERO_API_KEY=your_key
@@ -153,7 +158,8 @@ On first run, the script sets a watermark at your current Zotero library version
 distillate                          # Sync Zotero -> reMarkable -> notes (default)
 distillate --import                 # Import existing papers from Zotero
 distillate --status                 # Show queue health and reading stats
-distillate --suggest                # Get paper suggestions for your queue
+distillate --list                   # List all tracked papers
+distillate --suggest                # Pick papers and promote to tablet home
 distillate --digest                 # Show your reading digest
 distillate --schedule               # Set up or manage automatic syncing
 distillate --init                   # Run the setup wizard
@@ -163,11 +169,12 @@ distillate --init                   # Run the setup wizard
 <summary>Advanced commands</summary>
 
 ```bash
-distillate --reprocess "Title"      # Re-run highlights + summary for a paper
-distillate --dry-run                # Preview what would happen (no changes)
-distillate --themes 2026-02         # Generate monthly research themes synthesis
-distillate --backfill-s2            # Backfill Semantic Scholar data
-distillate --sync-state             # Push state to a GitHub Gist
+distillate --remove "Title"         # Remove a paper from tracking
+distillate --reprocess "Title"      # Re-extract highlights and regenerate note
+distillate --dry-run                # Preview sync without making changes
+distillate --themes 2026-02         # Generate monthly research themes note
+distillate --backfill-s2            # Refresh Semantic Scholar data for all papers
+distillate --sync-state             # Push state.json to a GitHub Gist
 distillate --register               # Register a reMarkable device
 ```
 
@@ -246,6 +253,27 @@ All settings live in `.env` (either `~/.config/distillate/.env` or your working 
 | `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for suggestions and themes |
 | `RESEND_API_KEY` | *(empty)* | Resend API key for email features |
 | `DIGEST_TO` | *(empty)* | Email address for digests |
+| `DIGEST_FROM` | `onboarding@resend.dev` | Sender email (Resend free tier includes 1 custom domain) |
+| `KEEP_ZOTERO_PDF` | `true` | Keep PDF in Zotero after upload (`false` frees storage) |
+| `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose console output |
+| `STATE_GIST_ID` | *(empty)* | GitHub Gist ID for cross-machine state sync |
+
+## Troubleshooting
+
+**`rmapi: command not found`**
+Install rmapi ([macOS](https://github.com/ddvk/rmapi#macos): `brew install rmapi`). If using `--schedule`, launchd has a minimal PATH — use the full path to rmapi or add it to your shell profile.
+
+**No highlights found**
+Enable "Text recognition" in your reMarkable settings (Settings > General > Text recognition). Highlights made before enabling this won't have extractable text.
+
+**Zotero API errors (403 / 400)**
+Your API key needs read/write permissions. Generate a new key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) with "Allow library access" and "Allow write access" checked.
+
+**Paper not uploading**
+Zotero must have the actual PDF stored (not just a link). Check that the paper has an "Imported" attachment, not a "Linked" one. Web-only attachments can't be synced.
+
+**Paper stuck in inbox**
+On your reMarkable, move the document from `Distillate/Inbox` to `Distillate/Read`, then run `distillate` again. The next sync picks up papers from the Read folder.
 
 ## Your workflow
 

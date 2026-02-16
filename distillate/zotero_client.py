@@ -244,8 +244,10 @@ def download_pdf_from_url(url: str) -> Optional[bytes]:
         if resp.headers.get("content-type", "").startswith("application/pdf") or len(resp.content) > 10000:
             log.info("Downloaded PDF from %s (%d bytes)", pdf_url, len(resp.content))
             return resp.content
+    except requests.exceptions.Timeout:
+        log.debug("Timed out downloading PDF from %s", pdf_url)
     except Exception:
-        log.debug("Failed to download PDF from %s", pdf_url, exc_info=True)
+        log.warning("Could not download PDF from %s", pdf_url, exc_info=True)
 
     return None
 
