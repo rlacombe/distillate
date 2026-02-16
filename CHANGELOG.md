@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.4 — 2026-02-15
+
+### Features
+
+- **`--import` command**: import existing papers from your Zotero library (interactive selection or `--import all`)
+- **`--schedule` command**: set up, check, or remove automatic syncing (launchd on macOS, cron instructions on Linux)
+- **Init seed**: setup wizard now offers to import existing papers at the end
+
+### Improvements
+
+- **`_upload_paper()` helper**: extracted reusable per-paper upload logic from sync loop
+- **Command order**: commands now follow workflow lifecycle across `--help`, landing page, and README
+- **ASCII flow**: concrete outputs ("Notes + highlights + annotated PDF") instead of vague ending
+
 ## 0.1.3 — 2026-02-15
 
 ### Bug fixes

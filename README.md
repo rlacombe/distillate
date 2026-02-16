@@ -17,7 +17,7 @@ Save to Zotero  ──>  syncs to reMarkable
                    Just move to Read when done
                                 │
                                 V
-                   Distillate does the rest!
+               Notes + highlights + annotated PDF
 ```
 
 ## Quick Start
@@ -144,23 +144,33 @@ distillate
 8. Updates the Reading Log and tags the paper `read` in Zotero
 9. Moves processed documents to `Distillate/Saved` on reMarkable
 
-On first run, the script sets a watermark at your current Zotero library version. Only papers added *after* this point will be synced.
+On first run, the script sets a watermark at your current Zotero library version. Only papers added *after* this point will be synced. To import existing papers, use `distillate --import`.
 
 ### Commands
 
 ```bash
-distillate                          # Run the full sync workflow
-distillate --dry-run                # Preview what would happen (no changes)
-distillate --reprocess "Title"      # Re-run highlights + summary for a paper
-distillate --suggest                # Get 3 paper suggestions, promote to reMarkable root
+distillate                          # Sync Zotero -> reMarkable -> notes (default)
+distillate --import                 # Import existing papers from Zotero
 distillate --status                 # Show queue health and reading stats
-distillate --digest                 # Send a weekly reading digest email
+distillate --suggest                # Get paper suggestions for your queue
+distillate --digest                 # Show your reading digest
+distillate --schedule               # Set up or manage automatic syncing
+distillate --init                   # Run the setup wizard
+```
+
+<details>
+<summary>Advanced commands</summary>
+
+```bash
+distillate --reprocess "Title"      # Re-run highlights + summary for a paper
+distillate --dry-run                # Preview what would happen (no changes)
 distillate --themes 2026-02         # Generate monthly research themes synthesis
 distillate --backfill-s2            # Backfill Semantic Scholar data
 distillate --sync-state             # Push state to a GitHub Gist
 distillate --register               # Register a reMarkable device
-distillate --init                   # Run the setup wizard
 ```
+
+</details>
 
 ### How highlights work
 
@@ -184,10 +194,18 @@ Without an API key, papers use their abstract as a fallback.
 
 ## Scheduling
 
-### macOS (launchd)
+```bash
+distillate --schedule
+```
+
+Sets up automatic syncing every 15 minutes. On macOS, creates a launchd agent. On Linux, shows crontab instructions.
+
+### Manual setup
+
+<details>
+<summary>macOS (launchd)</summary>
 
 ```bash
-# Install automatic sync (every 15 min) + auto-promote (every 8 hours)
 ./scripts/install-launchd.sh
 
 # Useful commands
@@ -196,11 +214,16 @@ tail -f ~/Library/Logs/distillate.log      # Watch logs
 ./scripts/uninstall-launchd.sh             # Remove schedule
 ```
 
-### Linux (cron)
+</details>
+
+<details>
+<summary>Linux (cron)</summary>
 
 ```
 */15 * * * * /path/to/.venv/bin/distillate >> /var/log/distillate.log 2>&1
 ```
+
+</details>
 
 ## Configuration
 

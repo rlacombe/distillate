@@ -82,8 +82,7 @@
       display: flex;
       flex-wrap: wrap;
       gap: 6px 18px;
-      margin-top: 32px;
-      margin-bottom: 48px;
+      margin-top: 24px;
       padding: 0;
       justify-content: center;
     }
@@ -206,6 +205,45 @@
       color: var(--muted);
     }
 
+    .commands {
+      margin-bottom: 48px;
+    }
+
+    .command-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .command {
+      display: flex;
+      align-items: baseline;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      gap: 16px;
+    }
+
+    .command:last-child {
+      border-bottom: none;
+    }
+
+    .command code {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85rem;
+      white-space: nowrap;
+      min-width: 260px;
+    }
+
+    .command span {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    @media (max-width: 480px) {
+      .command { flex-direction: column; gap: 2px; }
+      .command code { min-width: auto; }
+    }
+
     .requires {
       margin-bottom: 48px;
     }
@@ -309,14 +347,14 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.1.3 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.1.4 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">The essence of every paper you read.</p>
     <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.1.3</span>
+      <span class="badge badge-purple">PyPI v0.1.4</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
@@ -329,7 +367,7 @@ Save to Zotero  ──&gt;  syncs to reMarkable
                    Just move to Read when done
                                 │
                                 V
-                   Distillate does the rest!</div>
+               Notes + highlights + annotated PDF</div>
 
     <div class="install">
       <code>$ pip install distillate
@@ -374,6 +412,16 @@ $ distillate --init</code>
       <h2>Want more?</h2>
       <div class="extras-grid">
         <div class="extra">
+          <strong>Scheduling</strong>
+          <em class="extra-subtitle">launchd &amp; cron</em>
+          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
+        </div>
+        <div class="extra">
+          <strong>Obsidian integration</strong>
+          <em class="extra-subtitle">Obsidian vault</em>
+          <span>Searchable database, reading stats, deep links from Zotero</span>
+        </div>
+        <div class="extra">
           <strong>AI summaries</strong>
           <em class="extra-subtitle">Anthropic API</em>
           <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
@@ -384,34 +432,28 @@ $ distillate --init</code>
           <span>Pick what to read next from your queue, based on your reading history</span>
         </div>
         <div class="extra">
-          <strong>Weekly digest</strong>
+          <strong>Email digest</strong>
           <em class="extra-subtitle">Free Resend account</em>
-          <span>A summary of what you read this week, with stats and queue health</span>
-        </div>
-        <div class="extra">
-          <strong>Obsidian integration</strong>
-          <em class="extra-subtitle">Obsidian vault</em>
-          <span>Searchable database, reading stats, deep links from Zotero</span>
+          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
         </div>
         <div class="extra">
           <strong>Citation data</strong>
           <em class="extra-subtitle">Semantic Scholar</em>
           <span>See how influential each paper is with citation counts from Semantic Scholar</span>
         </div>
-        <div class="extra">
-          <strong>Scheduling</strong>
-          <em class="extra-subtitle">launchd &amp; cron</em>
-          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
-        </div>
       </div>
+    </div>
 
-      <div class="integrations">
-        <a href="https://www.zotero.org/" style="color:#cc2936;">Zotero</a>
-        <a href="https://remarkable.com/" style="color:#1a1a1a;">reMarkable</a>
-        <a href="https://obsidian.md/" style="color:#7c3aed;">Obsidian</a>
-        <a href="https://www.semanticscholar.org/" style="color:#1857b6;">Semantic Scholar</a>
-        <a href="https://www.anthropic.com/" style="color:#c96442;">Anthropic</a>
-        <a href="https://resend.com/" style="color:#1a1a1a;">Resend</a>
+    <div class="commands">
+      <h2>Commands</h2>
+      <div class="command-list">
+        <div class="command"><code>distillate</code><span>Sync Zotero -> reMarkable -> notes (default)</span></div>
+        <div class="command"><code>distillate --import</code><span>Import existing papers from Zotero</span></div>
+        <div class="command"><code>distillate --status</code><span>Show queue health and reading stats</span></div>
+        <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
+        <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
+        <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
+        <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
       </div>
     </div>
 
@@ -425,6 +467,15 @@ $ distillate --init</code>
         <tr><td>Anthropic API key</td><td><span class="badge badge-blue">Optional</span></td><td>For AI summaries and suggestions</td></tr>
         <tr><td>Resend account</td><td><span class="badge badge-blue">Optional</span></td><td>For weekly digest emails</td></tr>
       </table>
+
+      <div class="integrations">
+        <a href="https://www.zotero.org/" style="color:#cc2936;">Zotero</a>
+        <a href="https://remarkable.com/" style="color:#1a1a1a;">reMarkable</a>
+        <a href="https://obsidian.md/" style="color:#7c3aed;">Obsidian</a>
+        <a href="https://www.semanticscholar.org/" style="color:#1857b6;">Semantic Scholar</a>
+        <a href="https://www.anthropic.com/" style="color:#c96442;">Anthropic</a>
+        <a href="https://resend.com/" style="color:#1a1a1a;">Resend</a>
+      </div>
     </div>
 
     <div class="links">

@@ -126,6 +126,21 @@ def get_changed_item_keys(since_version: int) -> Tuple[Dict[str, int], int]:
     return resp.json(), new_version
 
 
+def get_recent_papers(limit: int = 100) -> List[Dict[str, Any]]:
+    """Fetch recent top-level items sorted by dateAdded (newest first).
+
+    Returns items that pass filter_new_papers() — i.e. valid paper types
+    without workflow tags already applied.
+    """
+    resp = _get("/items/top", params={
+        "sort": "dateAdded",
+        "direction": "desc",
+        "limit": str(limit),
+        "format": "json",
+    })
+    return filter_new_papers(resp.json())
+
+
 def get_items_by_keys(keys: List[str]) -> List[Dict[str, Any]]:
     """Fetch full item data for a list of item keys (max 50 per call)."""
     items = []
