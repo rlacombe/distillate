@@ -6,8 +6,6 @@ on:
     - cron: '0 13 * * *'
     # Weekly digest on Sunday at 9am ET (2pm UTC)
     - cron: '0 14 * * 0'
-    # Monthly themes on 1st at 10am ET (3pm UTC)
-    - cron: '0 15 1 * *'
   workflow_dispatch:
     inputs:
       command:
@@ -18,7 +16,6 @@ on:
         options:
           - '--suggest-email'
           - '--send-digest'
-          - '--themes'
 
 jobs:
   send-email:
@@ -49,8 +46,6 @@ jobs:
             echo "args=${{ inputs.command }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.schedule }}" = "0 14 * * 0" ]; then
             echo "args=--send-digest" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 15 1 * *" ]; then
-            echo "args=--themes" >> "$GITHUB_OUTPUT"
           else
             echo "args=--suggest-email" >> "$GITHUB_OUTPUT"
           fi
@@ -58,6 +53,7 @@ jobs:
       - name: Run command
         run: .venv/bin/distillate ${{ steps.cmd.outputs.args }}
         env:
+          DISTILLATE_CONFIG_DIR: .
           ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
           ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -66,3 +62,4 @@ jobs:
           DIGEST_FROM: ${{ secrets.DIGEST_FROM }}
           STATE_GIST_ID: ${{ secrets.STATE_GIST_ID }}
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+          OBSIDIAN_VAULT_NAME: ${{ secrets.OBSIDIAN_VAULT_NAME }}

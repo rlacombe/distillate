@@ -444,6 +444,12 @@ def _status() -> None:
     from distillate.state import State
 
     config.setup_logging()
+
+    from distillate.state import STATE_PATH
+    if not STATE_PATH.exists() and not config.ENV_PATH.exists():
+        print("\n  No papers tracked yet. Run 'distillate --init' to get started.\n")
+        return
+
     state = State()
     now = datetime.now(timezone.utc)
 
@@ -481,6 +487,19 @@ def _status() -> None:
             print(f"    - {doc['title']}{age}")
         if len(queue) > 10:
             print(f"    ... and {len(queue) - 10} more")
+
+    # Ready to process (in Read/ on reMarkable)
+    try:
+        from distillate import remarkable_client
+        read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
+        if read_docs:
+            print(f"  Ready:     {len(read_docs)} paper{'s' if len(read_docs) != 1 else ''} in Read/")
+            for name in read_docs[:5]:
+                print(f"    - {name}")
+            if len(read_docs) > 5:
+                print(f"    ... and {len(read_docs) - 5} more")
+    except Exception:
+        pass  # rmapi unavailable — skip
 
     # Promoted (show last 3)
     promoted = state.promoted_papers
@@ -540,13 +559,14 @@ def _status() -> None:
     print(f"  {_stats_line(week_papers, 'This week')}")
     print(f"  {_stats_line(month_papers, 'This month')}")
 
-    # Awaiting PDF (show titles)
+    # Awaiting PDF (show titles with guidance)
     awaiting = state.documents_with_status("awaiting_pdf")
     if awaiting:
         print()
         print(f"  Awaiting PDF: {len(awaiting)} paper{'s' if len(awaiting) != 1 else ''}")
         for doc in awaiting:
             print(f"    - {doc['title']}")
+        print("    Sync the PDF in Zotero, then re-run distillate.")
 
     # Pending promotions
     pending_promo = state.pending_promotions
@@ -624,6 +644,8 @@ def _list() -> None:
             elif doc.get("uploaded_at"):
                 parts.append(doc["uploaded_at"][:10])
             print(f"    - {' · '.join(parts)}")
+        if status == "awaiting_pdf":
+            print("    Sync the PDF in Zotero, then re-run distillate.")
         print()
 
     if total == 0:
@@ -1040,18 +1062,16 @@ def _suggest() -> None:
                     print()
 
                 # Parse picks from Claude's response
+                from distillate.digest import match_suggestion_to_title
                 title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
+                known_titles = [doc["title"] for doc in unread]
                 pick_keys = []
                 for line in result.strip().split("\n"):
-                    clean = line.strip().replace("**", "")
-                    if not clean:
-                        continue
-                    clean_lower = clean.lower()
-                    suggestion_title = re.sub(r"^\d+\.\s*", "", clean_lower).rstrip(" —-").split(" — ")[0].strip()
-                    for title_lower, key in title_to_key.items():
-                        if (title_lower in clean_lower or suggestion_title in title_lower) and key not in pick_keys:
+                    matched = match_suggestion_to_title(line, known_titles)
+                    if matched:
+                        key = title_to_key.get(matched.lower())
+                        if key and key not in pick_keys:
                             pick_keys.append(key)
-                            break
 
         # Only demote/promote if suggestions succeeded (issue #9)
         if suggestions_ok:
@@ -2007,7 +2027,7 @@ def _init_wizard() -> None:
     _init_done(ENV_PATH)
 
 
-_VERSION = "0.1.6"
+_VERSION = "0.1.7"
 
 _HELP = """\
 Usage: distillate [command]
@@ -2029,7 +2049,6 @@ Management:
 
 Advanced:
   --dry-run               Preview sync without making changes
-  --themes 2026-02        Generate monthly research themes note
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --sync-state            Push state.json to a GitHub Gist
 
@@ -2112,11 +2131,6 @@ def main():
     if "--suggest-email" in sys.argv:
         from distillate import digest
         digest.send_suggestion()
-        return
-
-    if "--themes" in sys.argv:
-        idx = sys.argv.index("--themes")
-        _themes(sys.argv[idx + 1:])
         return
 
     if "--sync-state" in sys.argv:
@@ -2393,8 +2407,11 @@ def main():
                         else:
                             log.info("No text highlights found for '%s'", rm_name)
                             print(
-                                f"  Warning: no highlights found for '{doc['title']}'."
-                                "\n  Is text recognition enabled on your reMarkable?"
+                                f"  Warning: no highlights found for '{doc['title']}'.\n"
+                                "  To fix this:\n"
+                                "    1. Enable text recognition (Settings > General > Text recognition)\n"
+                                "    2. Use the highlighter tool, not a pen\n"
+                                f"    3. Then: distillate --reprocess \"{doc['title']}\""
                             )
 
                         # Get page count for engagement score

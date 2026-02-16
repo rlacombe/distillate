@@ -269,8 +269,9 @@ def create_paper_note(
 ) -> Optional[Path]:
     """Create a markdown note for a read paper in the Read subfolder.
 
-    Returns the path to the created note, or None if output is unconfigured
-    or the note already exists.
+    Overwrites any existing note, preserving the user's ``## My Notes``
+    section.  Returns the path to the created note, or None if output is
+    unconfigured.
     """
     rd = _read_dir()
     if rd is None:
@@ -279,9 +280,15 @@ def create_paper_note(
     sanitized = _sanitize_note_name(title)
     note_path = rd / f"{sanitized}.md"
 
+    # Preserve user's "My Notes" section before overwriting
+    preserved_notes = ""
     if note_path.exists():
-        log.warning("Note already exists, skipping: %s", note_path)
-        return None
+        log.info("Overwriting existing note: %s", note_path)
+        existing = note_path.read_text()
+        my_notes_marker = "\n## My Notes\n"
+        idx = existing.find(my_notes_marker)
+        if idx >= 0:
+            preserved_notes = existing[idx + len(my_notes_marker):]
 
     today = date_read[:10] if date_read else date.today().isoformat()
 
@@ -365,6 +372,8 @@ tags:
 ## My Notes
 
 """
+    if preserved_notes:
+        content = content.rstrip("\n") + "\n" + preserved_notes
     note_path.write_text(content)
     log.info("Created note: %s", note_path)
     return note_path

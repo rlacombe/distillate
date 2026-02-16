@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.7 — 2026-02-16
+
+Friction reduction, power-user documentation, and tech debt cleanup.
+
+### Features
+
+- **`--status` shows Read/ folder**: papers waiting in Distillate/Read/ on your reMarkable are now listed, so you can confirm a paper is ready for processing
+- **Power users guide**: new standalone page at distillate.dev/power-users.html documenting GitHub Actions automation, engagement scores, reprocessing, custom AI models, storage management, debug mode, and state sync
+
+### Improvements
+
+- **Better no-highlights guidance**: when no highlights are found, shows a numbered checklist (text recognition, highlighter tool, `--reprocess`) instead of a one-line warning
+- **Awaiting PDF explanation**: `--status` and `--list` now explain why papers are stuck and what to do about it
+- **Note overwrite on re-sync**: `create_paper_note` now overwrites existing notes instead of silently skipping — no more stale notes after re-sync
+- **First-run `--status` onboarding**: shows "No papers tracked yet. Run `distillate --init` to get started." when state and config are empty
+- **Unified suggestion title-matching**: extracted shared `match_suggestion_to_title()` helper, replacing three duplicate implementations across `digest.py` and `main.py`
+- **`extract_insights` uses Haiku**: key learnings extraction now uses the fast model (Haiku) instead of Sonnet — equivalent quality at lower cost
+- **GH Actions workflow fixes**: added `DISTILLATE_CONFIG_DIR` and `OBSIDIAN_VAULT_NAME` to workflow environment
+
+### Removed
+
+- **`--themes` entry point disabled**: monthly research themes synthesis is removed from `--help`, CLI routing, and GH Actions workflow. The underlying code is preserved for future use when users have enough papers to make it useful.
+
 ## 0.1.6 — 2026-02-16
 
 First-impression hardening: make the first 5 minutes bulletproof.

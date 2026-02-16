@@ -14,6 +14,25 @@ from distillate.state import State
 
 log = logging.getLogger(__name__)
 
+def match_suggestion_to_title(line: str, known_titles: list[str]) -> str | None:
+    """Match a suggestion line from Claude to a known paper title.
+
+    Given a line like '1. Some Title — reason', checks bidirectionally
+    against each known title (case-insensitive). Returns the matched
+    title (original case) or None.
+    """
+    clean = line.strip().replace("**", "")
+    if not clean:
+        return None
+    clean_lower = clean.lower()
+    suggestion_title = re.sub(r"^\d+\.\s*", "", clean_lower).rstrip(" —-").split(" — ")[0].strip()
+    for title in known_titles:
+        title_lower = title.lower()
+        if title_lower in clean_lower or suggestion_title in title_lower:
+            return title
+    return None
+
+
 _SIGNATURE = (
     '<p style="color:#999;font-size:13px;margin-top:24px;">--<br>'
     'Sent from <a href="https://distillate.dev" style="color:#999;">distillate</a>.</p>'
@@ -441,17 +460,14 @@ def send_suggestion() -> None:
 
     # Store picks for auto-promote to execute during next sync
     title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
+    known_titles = [doc["title"] for doc in unread]
     pending = []
     for line in result.strip().split("\n"):
-        clean = line.strip().replace("**", "")
-        if not clean:
-            continue
-        clean_lower = clean.lower()
-        suggestion_title = re.sub(r"^\d+\.\s*", "", clean_lower).rstrip(" —-").split(" — ")[0].strip()
-        for title_lower, key in title_to_key.items():
-            if (title_lower in clean_lower or suggestion_title in title_lower) and key not in pending:
+        matched = match_suggestion_to_title(line, known_titles)
+        if matched:
+            key = title_to_key.get(matched.lower())
+            if key and key not in pending:
                 pending.append(key)
-                break
     if pending:
         state.pending_promotions = pending
         state.save()
@@ -487,6 +503,7 @@ def send_themes_email(month: str, themes_text: str) -> None:
 def _build_suggestion_body(suggestion_text, unread, state: State):
     """Build HTML body from Claude's suggestion text."""
     # Build title -> doc lookup from full unread list
+    known_titles = [doc["title"] for doc in unread]
     url_lookup = {}
     tags_lookup = {}
     for doc in unread:
@@ -521,23 +538,19 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
         url = ""
         tags = []
         matched_title = ""
-        rest_lower = rest.lower()
-        suggestion_title = rest_lower.rstrip(" —-").split(" — ")[0].strip()
-        for title_lower in tags_lookup:
-            if title_lower in rest_lower or suggestion_title in title_lower:
-                url = url_lookup.get(title_lower, "")
-                tags = tags_lookup.get(title_lower, [])
-                # Find the original-cased title in rest
-                idx = rest_lower.find(title_lower)
-                if idx >= 0:
-                    matched_title = rest[idx:idx + len(title_lower)]
-                else:
-                    matched_title = rest[:len(suggestion_title)]
-                break
+        matched = match_suggestion_to_title(line, known_titles)
+        if matched:
+            matched_lower = matched.lower()
+            url = url_lookup.get(matched_lower, "")
+            tags = tags_lookup.get(matched_lower, [])
+            rest_lower = rest.lower()
+            idx = rest_lower.find(matched_lower)
+            if idx >= 0:
+                matched_title = rest[idx:idx + len(matched_lower)]
 
         # Split into title and reason at " — " or " - "
         if matched_title:
-            # Replace title with bold version
+            # Known title found literally in rest
             title_end = rest.lower().index(matched_title.lower()) + len(matched_title)
             title_part = rest[:title_end]
             reason_part = rest[title_end:].lstrip(" —-").strip()

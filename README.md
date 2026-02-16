@@ -172,7 +172,6 @@ distillate --init                   # Run the setup wizard
 distillate --remove "Title"         # Remove a paper from tracking
 distillate --reprocess "Title"      # Re-extract highlights and regenerate note
 distillate --dry-run                # Preview sync without making changes
-distillate --themes 2026-02         # Generate monthly research themes note
 distillate --backfill-s2            # Refresh Semantic Scholar data for all papers
 distillate --sync-state             # Push state.json to a GitHub Gist
 distillate --register               # Register a reMarkable device
@@ -250,13 +249,15 @@ All settings live in `.env` (either `~/.config/distillate/.env` or your working 
 | `OUTPUT_PATH` | *(empty)* | Plain folder for notes (alternative to Obsidian) |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key for AI summaries |
 | `CLAUDE_SMART_MODEL` | `claude-sonnet-4-5-20250929` | Model for summaries |
-| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for suggestions and themes |
+| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for suggestions and key learnings |
 | `RESEND_API_KEY` | *(empty)* | Resend API key for email features |
 | `DIGEST_TO` | *(empty)* | Email address for digests |
 | `DIGEST_FROM` | `onboarding@resend.dev` | Sender email (Resend free tier includes 1 custom domain) |
 | `KEEP_ZOTERO_PDF` | `true` | Keep PDF in Zotero after upload (`false` frees storage) |
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose console output |
 | `STATE_GIST_ID` | *(empty)* | GitHub Gist ID for cross-machine state sync |
+
+For GitHub Actions automation, engagement scores, reprocessing, custom AI models, and more — see the [Power users guide](https://distillate.dev/power-users.html).
 
 ## Troubleshooting
 

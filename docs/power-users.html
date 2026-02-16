@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Distillate — Power Users Guide</title>
+  <meta name="description" content="Advanced configuration, automation, and troubleshooting for Distillate.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%237c3aed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v7'/%3E%3Cpath d='M14 2v5a1 1 0 0 0 1 1h5'/%3E%3Cpath d='M3.62 18.8A2.25 2.25 0 1 1 7 15.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a1 1 0 0 1-1.507 0z'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #fafaf9;
+      --fg: #1c1917;
+      --muted: #78716c;
+      --accent: #b45309;
+      --border: #e7e5e4;
+      --code-bg: #f5f5f4;
+      --max-w: 640px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      padding: 0 24px;
+    }
+
+    .container {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 48px 0 64px;
+    }
+
+    .back {
+      display: inline-block;
+      color: #7c3aed;
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 32px;
+    }
+
+    .back:hover {
+      text-decoration: underline;
+    }
+
+    h1 {
+      font-family: Palatino, 'Palatino Linotype', 'Book Antiqua', serif;
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      line-height: 1.1;
+    }
+
+    .subtitle {
+      font-size: 1rem;
+      color: var(--muted);
+      margin-bottom: 48px;
+    }
+
+    h2 {
+      font-family: Palatino, 'Palatino Linotype', 'Book Antiqua', serif;
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-top: 56px;
+      margin-bottom: 16px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+
+    h2:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+
+    h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-top: 28px;
+      margin-bottom: 8px;
+    }
+
+    p {
+      margin-bottom: 12px;
+      font-size: 0.9rem;
+    }
+
+    pre {
+      background: var(--fg);
+      color: var(--bg);
+      padding: 14px 20px;
+      border-radius: 8px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      overflow-x: auto;
+      margin-bottom: 16px;
+    }
+
+    code {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85em;
+      background: var(--code-bg);
+      padding: 2px 5px;
+      border-radius: 3px;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      font-size: inherit;
+    }
+
+    ul, ol {
+      margin-bottom: 12px;
+      padding-left: 24px;
+      font-size: 0.9rem;
+    }
+
+    li {
+      margin-bottom: 6px;
+    }
+
+    .secrets-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+    }
+
+    .secrets-table th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 2px solid var(--border);
+      font-weight: 600;
+    }
+
+    .secrets-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .secrets-table td:first-child {
+      white-space: nowrap;
+    }
+
+    .secrets-table td:last-child {
+      color: var(--muted);
+    }
+
+    .secrets-table code {
+      font-size: 0.8rem;
+    }
+
+    .gotcha {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+    }
+
+    .gotcha strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--accent);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    a {
+      color: #7c3aed;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .colophon {
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .colophon a {
+      color: var(--muted);
+      text-decoration: underline;
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 32px 0 40px; }
+      h1 { font-size: 1.8rem; }
+      h2 { font-size: 1.2rem; }
+      pre { font-size: 0.75rem; padding: 12px 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="https://distillate.dev" class="back">&larr; Back to distillate.dev</a>
+
+    <h1>Power Users Guide</h1>
+    <p class="subtitle">Advanced configuration, automation, and troubleshooting.</p>
+
+    <!-- 1. GitHub Actions Automation -->
+    <h2>GitHub Actions Automation</h2>
+
+    <p>Run paper suggestions and weekly digests automatically from GitHub Actions, without needing a laptop running. Your local machine handles the sync (Zotero to reMarkable to notes); GitHub Actions handles the emails.</p>
+
+    <h3>Architecture</h3>
+
+    <p>The flow works like this:</p>
+    <ol>
+      <li>Run <code>distillate</code> locally to sync papers and process highlights</li>
+      <li>Run <code>distillate --sync-state</code> to upload your <code>state.json</code> to a private GitHub Gist</li>
+      <li>GitHub Actions reads state from the Gist on a schedule</li>
+      <li>Actions runs <code>--suggest-email</code> (daily) or <code>--send-digest</code> (weekly) and sends the email</li>
+    </ol>
+
+    <h3>Step-by-step setup</h3>
+
+    <p><strong>a. Create a private Gist to hold your state</strong></p>
+<pre><code># Create the gist with your current state
+$ gh gist create state.json
+
+# Get the gist ID (you'll need it for the secret)
+$ gh gist list</code></pre>
+
+    <p><strong>b. Create a GitHub classic PAT</strong></p>
+    <p>Go to <a href="https://github.com/settings/tokens">github.com/settings/tokens</a> and create a classic Personal Access Token with the <code>gist</code> scope. This token lets the workflow read your state from the Gist.</p>
+
+    <p><strong>c. Add repository secrets</strong></p>
+    <p>In your fork's Settings &gt; Secrets and variables &gt; Actions, add these secrets:</p>
+
+    <table class="secrets-table">
+      <tr><th>Secret</th><th>Description</th></tr>
+      <tr><td><code>ZOTERO_API_KEY</code></td><td>Your Zotero API key</td></tr>
+      <tr><td><code>ZOTERO_USER_ID</code></td><td>Your Zotero user ID</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>For AI-powered suggestions</td></tr>
+      <tr><td><code>RESEND_API_KEY</code></td><td>For sending emails</td></tr>
+      <tr><td><code>DIGEST_TO</code></td><td>Your email address (recipient)</td></tr>
+      <tr><td><code>DIGEST_FROM</code></td><td>Sender address (configured in Resend)</td></tr>
+      <tr><td><code>STATE_GIST_ID</code></td><td>ID of the private Gist from step (a)</td></tr>
+      <tr><td><code>GH_GIST_TOKEN</code></td><td>Classic PAT with <code>gist</code> scope from step (b)</td></tr>
+      <tr><td><code>OBSIDIAN_VAULT_NAME</code></td><td>Your vault name, for deep-links in emails</td></tr>
+    </table>
+
+    <p><strong>d. The workflow is already included</strong></p>
+    <p>The file <code>.github/workflows/emails.yml</code> is part of the repo. It runs on two schedules:</p>
+<pre><code>schedule:
+  # Daily suggestion at 8am ET (1pm UTC)
+  - cron: '0 13 * * *'
+  # Weekly digest on Sunday at 9am ET (2pm UTC)
+  - cron: '0 14 * * 0'</code></pre>
+
+    <p><strong>e. Keep your state in sync</strong></p>
+    <p>Run <code>distillate --sync-state</code> after each local sync so GitHub Actions has current data. You can add it to your schedule or run it manually.</p>
+
+    <h3>Gotchas</h3>
+
+    <div class="gotcha">
+      <strong>GH_GIST_TOKEN must be a classic PAT</strong>
+      The built-in <code>GITHUB_TOKEN</code> cannot access Gists. You need a classic Personal Access Token with the <code>gist</code> scope. Fine-grained tokens also do not support Gist access.
+    </div>
+
+    <div class="gotcha">
+      <strong>Set OBSIDIAN_VAULT_NAME for deep-links</strong>
+      Without this, digest emails won't include <code>obsidian://</code> links to open notes directly in your vault.
+    </div>
+
+    <div class="gotcha">
+      <strong>State freshness matters</strong>
+      Run <code>--sync-state</code> after every local sync. If the Gist state is stale, suggestions will be based on outdated reading history.
+    </div>
+
+    <h3>Manual trigger</h3>
+    <p>You can trigger the workflow manually from the command line:</p>
+<pre><code>$ gh workflow run emails.yml -f command=--suggest-email
+$ gh workflow run emails.yml -f command=--send-digest</code></pre>
+
+    <!-- 2. Engagement Scores -->
+    <h2>Engagement Scores</h2>
+
+    <p>Every processed paper gets an engagement score from 0 to 100, measuring how deeply you interacted with it. The score appears in your notes (YAML frontmatter), <code>--status</code> output, <code>--digest</code>, and email digests.</p>
+
+    <p>Three components, weighted:</p>
+    <ul>
+      <li><strong>Highlight density (30%)</strong> -- highlights per page, saturates at 1 highlight per page</li>
+      <li><strong>Page coverage (40%)</strong> -- fraction of pages that have at least one highlight</li>
+      <li><strong>Highlight volume (30%)</strong> -- absolute number of highlights, saturates at 20</li>
+    </ul>
+
+    <p>Each component is normalized to 0.0&ndash;1.0, then the weighted sum is scaled to 0&ndash;100:</p>
+<pre><code>score = round((density * 0.3 + coverage * 0.4 + volume * 0.3) * 100)</code></pre>
+
+    <p>A paper you skimmed lightly might score 15&ndash;25. A paper you highlighted thoroughly across most pages will score 70+. The score is a quick signal for which papers you actually engaged with versus those you just scanned.</p>
+
+    <!-- 3. Reprocessing -->
+    <h2>Reprocessing</h2>
+
+    <p>Use <code>--reprocess</code> to re-extract highlights and regenerate notes for a paper that's already been processed. Common reasons:</p>
+
+    <ul>
+      <li><strong>After enabling text recognition on reMarkable</strong> -- highlights made before text recognition was enabled won't have extractable text. Enable it, then reprocess.</li>
+      <li><strong>After upgrading distillate</strong> -- newer versions may have improved highlight extraction or note formatting.</li>
+      <li><strong>To regenerate AI summaries</strong> -- if you changed the model (see Custom AI Models below) or want fresh summaries.</li>
+    </ul>
+
+<pre><code># Substring match on the paper title
+$ distillate --reprocess "Attention Is All"</code></pre>
+
+    <p>What it does: re-downloads the bundle from Saved/ on your reMarkable, re-extracts highlights, re-renders the annotated PDF, regenerates the AI summary, and updates both the markdown note and the reading log.</p>
+
+    <!-- 4. Custom AI Models -->
+    <h2>Custom AI Models</h2>
+
+    <p>Distillate uses two model tiers, configurable via environment variables in your <code>.env</code>:</p>
+
+    <ul>
+      <li><strong><code>CLAUDE_SMART_MODEL</code></strong> (default: <code>claude-sonnet-4-5-20250929</code>) -- used for paper summaries and one-liner descriptions</li>
+      <li><strong><code>CLAUDE_FAST_MODEL</code></strong> (default: <code>claude-haiku-4-5-20251001</code>) -- used for paper suggestions and key learnings</li>
+    </ul>
+
+<pre><code># In your .env file:
+CLAUDE_SMART_MODEL=claude-opus-4-6
+CLAUDE_FAST_MODEL=claude-sonnet-4-5-20250929</code></pre>
+
+    <p>Without <code>ANTHROPIC_API_KEY</code> set, AI features are skipped entirely and papers use their abstract as a fallback summary.</p>
+
+    <!-- 5. Storage Management -->
+    <h2>Storage Management</h2>
+
+    <p>The <code>KEEP_ZOTERO_PDF</code> setting controls whether the original PDF stays in Zotero cloud after being uploaded to your reMarkable.</p>
+
+    <ul>
+      <li><strong><code>true</code> (default)</strong> -- PDF remains in your Zotero library</li>
+      <li><strong><code>false</code></strong> -- PDF is deleted from Zotero cloud after it's confirmed saved locally and uploaded to reMarkable</li>
+    </ul>
+
+<pre><code># In your .env file:
+KEEP_ZOTERO_PDF=false</code></pre>
+
+    <p>This is useful if you're on Zotero's free tier (300 MB storage). The safety order is: the PDF is first saved to your local <code>Distillate/Inbox/</code> folder, then uploaded to reMarkable. Only after both succeed is the Zotero cloud copy removed. Your local copy is always preserved.</p>
+
+    <!-- 6. Debug Mode -->
+    <h2>Debug Mode</h2>
+
+    <p>Set <code>LOG_LEVEL=DEBUG</code> for verbose output:</p>
+
+<pre><code># One-off
+$ LOG_LEVEL=DEBUG distillate
+
+# Persistent (add to .env)
+LOG_LEVEL=DEBUG</code></pre>
+
+    <p>Behavior depends on how distillate is running:</p>
+    <ul>
+      <li><strong>Interactive terminal (TTY)</strong> -- debug output goes directly to the console</li>
+      <li><strong>Scheduled / non-TTY</strong> -- logs go to <code>~/.config/distillate/distillate.log</code></li>
+    </ul>
+
+    <p>Debug output includes: rmapi commands and responses, API call details, file read/write operations, and state changes. Useful for diagnosing issues like "why didn't my paper sync?" or "why are highlights missing?"</p>
+
+    <!-- 7. State Sync and Backup -->
+    <h2>State Sync and Backup</h2>
+
+    <p>Distillate tracks all your papers in a local <code>state.json</code> file. The <code>--sync-state</code> command uploads it to a private GitHub Gist, which enables two things:</p>
+
+    <ul>
+      <li><strong>Cross-machine sync</strong> -- keep the same reading state on your laptop and desktop</li>
+      <li><strong>GitHub Actions automation</strong> -- the workflow reads state from the Gist (see first section)</li>
+    </ul>
+
+<pre><code># Upload state to your Gist
+$ distillate --sync-state</code></pre>
+
+    <p>Requires <code>STATE_GIST_ID</code> and <code>GH_GIST_TOKEN</code> in your <code>.env</code>.</p>
+
+    <h3>Corrupt state recovery</h3>
+    <p>If <code>state.json</code> becomes corrupted (malformed JSON), distillate automatically backs it up as <code>state.json.bak</code> and starts with a fresh state. No data is silently lost -- the backup file preserves whatever was there.</p>
+
+    <h3>Manual inspection</h3>
+    <p><code>state.json</code> is plain JSON. You can read it directly, pipe it through <code>jq</code>, or edit it if you know what you're doing:</p>
+<pre><code># Pretty-print your state
+$ cat state.json | jq .
+
+# Count processed papers
+$ cat state.json | jq '.documents | length'</code></pre>
+
+    <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>. Powered by <a href="https://github.com/ddvk/rmapi">rmapi</a>, <a href="https://github.com/ricklupton/rmscene">rmscene</a>, <a href="https://pymupdf.readthedocs.io/">PyMuPDF</a>, and <a href="https://claude.ai/claude-code">Claude Code</a>.</p>
+  </div>
+</body>
+</html>

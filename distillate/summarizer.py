@@ -100,7 +100,7 @@ def extract_insights(
         f"- So what: why it matters"
     )
 
-    result = _call_claude(prompt, max_tokens=250, model=config.CLAUDE_SMART_MODEL)
+    result = _call_claude(prompt, max_tokens=250, model=config.CLAUDE_FAST_MODEL)
     if not result:
         return []
 
