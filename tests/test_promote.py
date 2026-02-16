@@ -146,7 +146,7 @@ class TestPromoteSmartDemotion:
              patch("distillate.state.release_lock"), \
              patch("distillate.config.RM_FOLDER_PAPERS", "Distillate"), \
              patch("distillate.config.RM_FOLDER_INBOX", "Distillate/Inbox"), \
-             patch("distillate.config.ANTHROPIC_API_KEY", ""), \
+             patch("distillate.config.ANTHROPIC_API_KEY", "sk-test-key"), \
              patch("distillate.config.STATE_GIST_ID", ""), \
              patch("distillate.digest.fetch_pending_from_gist", return_value=None):
             from distillate.main import _suggest
@@ -170,7 +170,28 @@ class TestPromoteSmartDemotion:
         assert "KEY_A" in state.promoted_papers
 
     def test_demotes_unread_paper(self):
-        """Papers with CurrentPage == 0 should be demoted back to Inbox."""
+        """Papers with CurrentPage == 0 should be demoted back to Inbox when suggestions succeed."""
+        doc_a = _make_doc("KEY_A", "Paper A", "Paper_A")
+        doc_b = _make_doc("KEY_B", "Paper B", "Paper_B")
+        state = _make_state({"KEY_A": doc_a, "KEY_B": doc_b}, ["KEY_A"])
+
+        rm = MagicMock()
+        rm.list_folder.return_value = ["Paper_A", "Paper_B"]
+        rm.stat_document.return_value = {"current_page": 0, "modified_client": "..."}
+
+        summarizer = MagicMock()
+        # Suggestions must succeed for demotion to happen (issue #9)
+        summarizer.suggest_papers.return_value = "1. Paper B — great paper"
+
+        self._run_suggest(state, rm, summarizer)
+
+        # Paper A should be demoted (unread, current_page == 0)
+        rm.move_document.assert_any_call(
+            "Paper_A", "Distillate", "Distillate/Inbox"
+        )
+
+    def test_no_demotion_on_suggestion_failure(self):
+        """When suggestions fail, previously promoted papers should NOT be demoted."""
         doc_a = _make_doc("KEY_A", "Paper A", "Paper_A")
         state = _make_state({"KEY_A": doc_a}, ["KEY_A"])
 
@@ -183,9 +204,7 @@ class TestPromoteSmartDemotion:
 
         self._run_suggest(state, rm, summarizer)
 
-        rm.move_document.assert_called_once_with(
-            "Paper_A", "Distillate", "Distillate/Inbox"
-        )
+        rm.move_document.assert_not_called()
 
     def test_skips_demotion_when_stat_fails(self):
         """If stat_document returns None, don't demote (safety)."""
@@ -284,7 +303,7 @@ class TestPromotedAtTimestamp:
              patch("distillate.state.release_lock"), \
              patch("distillate.config.RM_FOLDER_PAPERS", "Distillate"), \
              patch("distillate.config.RM_FOLDER_INBOX", "Distillate/Inbox"), \
-             patch("distillate.config.ANTHROPIC_API_KEY", ""), \
+             patch("distillate.config.ANTHROPIC_API_KEY", "sk-test-key"), \
              patch("distillate.config.STATE_GIST_ID", ""), \
              patch("distillate.digest.fetch_pending_from_gist", return_value=None):
             from distillate.main import _suggest

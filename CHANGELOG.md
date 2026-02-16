@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.5 — 2026-02-16
+
+### Features
+
+- **`--suggest` polish**: structured terminal output matching `--digest` style — per-paper blocks with title, reason, days in queue, and citation count
+- **First-run guidance**: helpful message on first sync explaining watermark and pointing to `--import`
+- **Missing API key UX**: `--suggest` without Anthropic key now shows a clear message instead of silently failing
+
+### Bug fixes
+
+- **Suggest failure no longer demotes**: Claude API errors no longer remove previously promoted papers from your reMarkable
+- **`--schedule` works for pip installs**: plist generation is now inline Python instead of shelling out to a bundled script
+- **OG URL**: fixed `og:url` meta tag to point to distillate.dev instead of GitHub Pages
+
+### Improvements
+
+- **Empty highlights warning**: prints "Is text recognition enabled on your reMarkable?" when no highlights are found
+- **Import progress**: shows per-paper progress (`[3/47] Uploading: Paper Title...`) and separates papers awaiting PDF in final count
+- **`--status` config clarity**: missing optional features labeled as "Optional" instead of appearing as issues
+- **`--status` empty queue hint**: suggests `--import` when queue is empty
+- **Init Step 5 skip hint**: makes it clear optional features can be skipped and configured later via `--init`
+- **Init Step 3 fix**: removed stale wiki-links claim, fixed Obsidian vault path navigation instructions
+- **Init Step 5 DIGEST_FROM**: mentions custom sender domain option when Resend is configured
+- **Register output formatting**: consistent indentation with the rest of the wizard
+- **Top-level error handler**: unhandled exceptions show a clean message with a link to report issues
+- **README model IDs**: synced config table with actual default model identifiers
+
 ## 0.1.4 — 2026-02-15
 
 ### Features

@@ -45,25 +45,25 @@ def get_user_token(device_token: str) -> str:
 
 def register_interactive() -> None:
     """Interactive registration flow. Prompts for code, saves token to .env."""
-    print("reMarkable Device Registration")
-    print("=" * 40)
+    print("  reMarkable Device Registration")
+    print("  " + "=" * 40)
     print()
-    print("1. Go to: https://my.remarkable.com/device/browser/connect")
-    print("2. Copy the one-time code shown on the page")
+    print("  1. Go to: https://my.remarkable.com/device/browser/connect")
+    print("  2. Copy the one-time code shown on the page")
     print()
 
-    code = input("Paste your one-time code: ").strip()
+    code = input("  Paste your one-time code: ").strip()
     if not code:
-        print("Error: No code provided.")
+        print("  Error: No code provided.")
         return
 
     print()
-    print("Exchanging code for device token...")
+    print("  Exchanging code for device token...")
     device_token = register_device(code)
 
-    print("Verifying token...")
+    print("  Verifying token...")
     get_user_token(device_token)
 
     save_to_env("REMARKABLE_DEVICE_TOKEN", device_token)
     print()
-    print("Success! Device token saved to .env")
+    print("  Success! Device token saved to .env")

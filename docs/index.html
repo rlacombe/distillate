@@ -8,7 +8,7 @@
   <meta property="og:title" content="Distillate — The essence of every paper you read">
   <meta property="og:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://rlacombe.github.io/distillate/">
+  <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Distillate — The essence of every paper you read">
   <meta name="twitter:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
@@ -297,6 +297,43 @@
       line-height: 1.6;
     }
 
+    .github-cta {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    .star-btn {
+      display: inline-block;
+      background: var(--fg);
+      color: var(--bg);
+      padding: 10px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 10px;
+      transition: opacity 0.15s;
+    }
+
+    .star-btn:hover {
+      opacity: 0.85;
+    }
+
+    .github-cta span {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .github-cta span a {
+      color: #7c3aed;
+      text-decoration: none;
+    }
+
+    .github-cta span a:hover {
+      text-decoration: underline;
+    }
+
     .badges {
       display: flex;
       gap: 8px;
@@ -347,27 +384,28 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.1.4 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.1.5 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">The essence of every paper you read.</p>
     <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.1.4</span>
+      <span class="badge badge-purple">PyPI v0.1.5</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
 
     <div class="flow">$ distillate   # turn papers into notes!
 
-Save to Zotero  ──&gt;  syncs to reMarkable
-                                │
-                   Read &amp; highlight on tablet
-                   Just move to Read when done
-                                │
-                                V
-               Notes + highlights + annotated PDF</div>
+save to Zotero ──&gt; auto-syncs to reMarkable
+                       │
+        read &amp; highlight on tablet
+        just move to Read/ when done
+                       │
+                       V
+paper: archived. notes: auto-saved.
+&gt; done! next paper?</div>
 
     <div class="install">
       <code>$ pip install distillate
@@ -442,6 +480,11 @@ $ distillate --init</code>
           <span>See how influential each paper is with citation counts from Semantic Scholar</span>
         </div>
       </div>
+    </div>
+
+    <div class="github-cta">
+      <a href="https://github.com/rlacombe/distillate" class="star-btn">Star on GitHub</a>
+      <span>Questions or ideas? <a href="https://github.com/rlacombe/distillate/discussions">Start a discussion</a></span>
     </div>
 
     <div class="commands">

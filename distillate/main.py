@@ -541,26 +541,31 @@ def _status() -> None:
     processed = state.documents_with_status("processed")
     print()
     print(f"  Total: {len(processed)} papers read, {len(queue)} in queue")
+    if not queue and not awaiting:
+        print("  Hint: run 'distillate --import' to add existing papers")
 
     # Config health
     import shutil
-    issues = []
+    problems = []
+    optional = []
     if not config.OBSIDIAN_VAULT_PATH and not config.OUTPUT_PATH:
-        issues.append("No output configured (set OBSIDIAN_VAULT_PATH or OUTPUT_PATH)")
+        problems.append("No output configured (set OBSIDIAN_VAULT_PATH or OUTPUT_PATH)")
     elif config.OBSIDIAN_VAULT_PATH and not Path(config.OBSIDIAN_VAULT_PATH).is_dir():
-        issues.append(f"Vault path missing: {config.OBSIDIAN_VAULT_PATH}")
-    if not config.ANTHROPIC_API_KEY:
-        issues.append("No ANTHROPIC_API_KEY (AI summaries disabled)")
-    if not config.RESEND_API_KEY:
-        issues.append("No RESEND_API_KEY (email digest disabled)")
+        problems.append(f"Vault path missing: {config.OBSIDIAN_VAULT_PATH}")
     if not shutil.which("rmapi"):
-        issues.append("rmapi not found (reMarkable sync will fail)")
+        problems.append("rmapi not found (reMarkable sync will fail)")
+    if not config.ANTHROPIC_API_KEY:
+        optional.append("AI summaries (set ANTHROPIC_API_KEY)")
+    if not config.RESEND_API_KEY:
+        optional.append("Email digest (set RESEND_API_KEY)")
 
-    if issues:
+    if problems or optional:
         print()
         print("  Config:")
-        for issue in issues:
-            print(f"    - {issue}")
+        for p in problems:
+            print(f"    - {p}")
+        for o in optional:
+            print(f"    - Optional: {o}")
     print()
 
 
@@ -745,6 +750,74 @@ def _auto_promote(state) -> None:
     state.save()
 
 
+def _parse_suggestions(text: str) -> list[dict]:
+    """Parse Claude's suggestion response into structured entries.
+
+    Expects lines like: '1. Title — Reason'
+    Returns list of {'title': ..., 'reason': ...}.
+    """
+    entries = []
+    for line in text.strip().split("\n"):
+        clean = line.strip().replace("**", "")
+        if not clean:
+            continue
+        # Match "N. Title — Reason" or "N. Title - Reason"
+        m = re.match(r"^\d+\.\s*(.+?)\s*[—–\-]\s*(.+)$", clean)
+        if m:
+            entries.append({"title": m.group(1).strip(), "reason": m.group(2).strip()})
+    return entries
+
+
+def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
+    """Print formatted suggestion output matching --digest style."""
+    from datetime import datetime
+
+    print()
+    print(f"  Paper suggestions ({len(unread)} in queue)")
+    print("  " + "-" * 48)
+
+    # Build lookup: lowercase title -> doc for metadata enrichment
+    title_to_doc = {doc["title"].lower(): doc for doc in unread}
+
+    for entry in entries:
+        title = entry["title"]
+        reason = entry["reason"]
+
+        # Try to find the matching doc for metadata
+        doc = title_to_doc.get(title.lower())
+        if not doc:
+            # Fuzzy match: check if suggestion title is a substring
+            for t_lower, d in title_to_doc.items():
+                if title.lower() in t_lower or t_lower in title.lower():
+                    doc = d
+                    break
+
+        # Build stats line
+        stats = []
+        if doc:
+            uploaded = doc.get("uploaded_at", "")
+            if uploaded:
+                try:
+                    dt = datetime.fromisoformat(uploaded)
+                    days = (now - dt).days
+                    stats.append(f"{days} days in queue")
+                except (ValueError, TypeError):
+                    pass
+            citations = doc.get("metadata", {}).get("citation_count", 0)
+            if citations:
+                stats.append(f"{citations:,} citations")
+
+        stats_str = f" ({', '.join(stats)})" if stats else ""
+
+        print()
+        print(f"  {title}")
+        if stats_str:
+            print(f"    {stats_str}")
+        print(f"    {reason}")
+
+    print()
+
+
 def _suggest() -> None:
     """Suggest papers to read next, promote them on reMarkable.
 
@@ -768,9 +841,11 @@ def _suggest() -> None:
 
     try:
         state = State()
+        now = datetime.now(timezone.utc)
 
         # Check Gist for pending picks from GH Actions
         pick_keys = None
+        suggestions_ok = False
         if config.STATE_GIST_ID:
             pending = fetch_pending_from_gist()
             if pending:
@@ -780,20 +855,32 @@ def _suggest() -> None:
                     pick_keys = pending.get("picks", [])
                     suggestion_text = pending.get("suggestion_text", "")
                     if pick_keys and suggestion_text:
-                        print()
-                        print("  Suggested papers to read next:")
-                        print()
-                        for line in suggestion_text.strip().split("\n"):
-                            if line.strip():
-                                print(f"  {line.strip()}")
-                        print()
+                        unread = state.documents_with_status("on_remarkable")
+                        entries = _parse_suggestions(suggestion_text)
+                        if entries:
+                            _print_suggestions(entries, unread, now)
+                        else:
+                            # Fall back to raw output if parsing fails
+                            print()
+                            for line in suggestion_text.strip().split("\n"):
+                                if line.strip():
+                                    print(f"  {line.strip()}")
+                            print()
                         state._data["last_pending_timestamp"] = timestamp
+                        suggestions_ok = True
 
         # Fall back to Claude if no pending picks
         if not pick_keys:
             unread = state.documents_with_status("on_remarkable")
             if not unread:
                 print("  No papers in your reading queue.")
+                return
+
+            if not config.ANTHROPIC_API_KEY:
+                print()
+                print("  Paper suggestions require an Anthropic API key.")
+                print("  Run 'distillate --init' to configure AI features.")
+                print()
                 return
 
             unread_enriched = []
@@ -807,7 +894,7 @@ def _suggest() -> None:
                     "citation_count": meta.get("citation_count", 0),
                 })
 
-            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            since = (now - timedelta(days=30)).isoformat()
             recent = state.documents_processed_since(since)
             recent_enriched = []
             for doc in recent:
@@ -825,14 +912,19 @@ def _suggest() -> None:
                 log.warning("Could not generate suggestions")
                 pick_keys = []
             else:
-                # Print suggestions to terminal
-                print()
-                print("  Suggested papers to read next:")
-                print()
-                for line in result.strip().split("\n"):
-                    if line.strip():
-                        print(f"  {line.strip()}")
-                print()
+                suggestions_ok = True
+
+                # Parse and print structured suggestions
+                entries = _parse_suggestions(result)
+                if entries:
+                    _print_suggestions(entries, unread, now)
+                else:
+                    # Fall back to raw output if parsing fails
+                    print()
+                    for line in result.strip().split("\n"):
+                        if line.strip():
+                            print(f"  {line.strip()}")
+                    print()
 
                 # Parse picks from Claude's response
                 title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
@@ -848,7 +940,9 @@ def _suggest() -> None:
                             pick_keys.append(key)
                             break
 
-        _demote_and_promote(state, pick_keys, verbose=True)
+        # Only demote/promote if suggestions succeeded (issue #9)
+        if suggestions_ok:
+            _demote_and_promote(state, pick_keys, verbose=True)
 
     except remarkable_client.RmapiAuthError as e:
         print(f"\n  {e}\n")
@@ -934,10 +1028,19 @@ def _import(args: list[str]) -> None:
         )
 
         imported = 0
-        for paper in papers:
+        awaiting_pdf = 0
+        total = len(papers)
+        for i, paper in enumerate(papers, 1):
+            meta = zotero_client.extract_metadata(paper)
+            print(f"  [{i}/{total}] Uploading: {meta['title']}")
             try:
                 if _upload_paper(paper, state, existing_on_rm):
-                    imported += 1
+                    # Check if it ended up as awaiting_pdf
+                    doc = state.get_document(paper["key"])
+                    if doc and doc.get("status") == "awaiting_pdf":
+                        awaiting_pdf += 1
+                    else:
+                        imported += 1
             except Exception:
                 log.exception(
                     "Failed to import '%s', skipping",
@@ -949,7 +1052,10 @@ def _import(args: list[str]) -> None:
         state.zotero_library_version = current_version
         state.save()
 
-        print(f"\n  Imported {imported} paper{'s' if imported != 1 else ''}.\n")
+        if awaiting_pdf:
+            print(f"\n  Imported {imported} paper{'s' if imported != 1 else ''} ({awaiting_pdf} awaiting PDF).\n")
+        else:
+            print(f"\n  Imported {imported} paper{'s' if imported != 1 else ''}.\n")
 
     except remarkable_client.RmapiAuthError as e:
         print(f"\n  {e}\n")
@@ -1104,8 +1210,11 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
 def _init_step5(save_to_env) -> None:
     """Step 5: Optional features (AI summaries, email digest)."""
     print("  " + "-" * 48)
-    print("  Optional Features")
+    print("  Step 5 of 5: Optional Features")
     print("  " + "-" * 48)
+    print()
+    print("  These are all optional. Press Enter to skip any of them.")
+    print("  You can come back anytime with 'distillate --init'.")
     print()
 
     # AI Summaries
@@ -1144,6 +1253,11 @@ def _init_step5(save_to_env) -> None:
         email_to = _prompt_with_default("  Your email address", "DIGEST_TO")
         if email_to:
             save_to_env("DIGEST_TO", email_to)
+        print()
+        print("  Emails are sent from onboarding@resend.dev by default.")
+        print("  To use a custom sender, set DIGEST_FROM in your .env")
+        print("  (requires a verified domain in Resend).")
+        print()
         print("  Email digest enabled.")
     else:
         print("  Skipped.")
@@ -1222,28 +1336,67 @@ def _schedule_macos() -> None:
 
 
 def _install_launchd() -> None:
-    """Run the install-launchd.sh script."""
+    """Generate and install a launchd plist for automatic syncing."""
+    import plistlib
+    import shutil
     import subprocess
 
-    scripts_dir = Path(__file__).parent.parent / "scripts"
-    launchd_script = scripts_dir / "install-launchd.sh"
-    if launchd_script.exists():
+    label = "com.distillate.sync"
+    plist_path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+    log_path = str(Path.home() / "Library/Logs/distillate.log")
+
+    # Find distillate executable
+    executable = shutil.which("distillate")
+    if not executable:
+        print("  Could not find 'distillate' in PATH.")
+        print("  Make sure it's installed: pip install distillate")
+        return
+
+    # Find rmapi for PATH
+    rmapi_path = shutil.which("rmapi")
+    launch_path = "/usr/local/bin:/usr/bin:/bin"
+    if rmapi_path:
+        rmapi_dir = str(Path(rmapi_path).parent)
+        if rmapi_dir not in launch_path:
+            launch_path = f"{rmapi_dir}:{launch_path}"
+
+    # Unload existing agent
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        capture_output=True,
+    )
+
+    # Ensure directory exists
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write plist
+    plist_data = {
+        "Label": label,
+        "ProgramArguments": [executable],
+        "StartInterval": 900,
+        "EnvironmentVariables": {"PATH": launch_path},
+        "StandardOutPath": log_path,
+        "StandardErrorPath": log_path,
+        "Nice": 10,
+    }
+    with open(plist_path, "wb") as f:
+        plistlib.dump(plist_data, f)
+
+    # Load the agent
+    result = subprocess.run(
+        ["launchctl", "load", str(plist_path)],
+        capture_output=True,
+    )
+
+    if result.returncode == 0:
         print()
-        result = subprocess.run(
-            ["bash", str(launchd_script)],
-            capture_output=False,
-        )
-        if result.returncode == 0:
-            print()
-            print("  Automatic syncing enabled (every 15 minutes).")
-        else:
-            print()
-            print("  Could not set up automatic syncing.")
-            print(f"  You can try manually: bash {launchd_script}")
+        print("  Automatic syncing enabled (every 15 minutes).")
+        print(f"  Log: {log_path}")
     else:
-        print("  Launch script not found. Set up manually:")
-        print("    crontab -e")
-        print("    */15 * * * * distillate")
+        print()
+        print("  Could not load launchd agent.")
+        print(f"  Plist written to: {plist_path}")
+        print("  Try: launchctl load " + str(plist_path))
 
 
 def _schedule_linux() -> None:
@@ -1641,7 +1794,6 @@ def _init_wizard() -> None:
     print("  markdown knowledge base (https://obsidian.md).")
     print()
     print("  With Obsidian, Distillate also creates:")
-    print("    - Wiki-links between your paper notes")
     print("    - A searchable paper database (via Dataview)")
     print("    - A reading statistics dashboard")
     print("    - 'Open in Obsidian' deep links from Zotero")
@@ -1664,8 +1816,8 @@ def _init_wizard() -> None:
     if use_obsidian != "n":
         print()
         print("  To find your vault path in Obsidian:")
-        print("    Open Obsidian > Settings > Files and Links")
-        print("    The path is shown under 'Vault path'")
+        print("    Open Obsidian > Settings > General (bottom of page)")
+        print("    The path is shown under 'Vault location'")
         print()
         vault_path = _prompt_with_default("  Vault path", "OBSIDIAN_VAULT_PATH")
         if vault_path:
@@ -1733,7 +1885,7 @@ def _init_wizard() -> None:
     _init_done(ENV_PATH)
 
 
-_VERSION = "0.1.4"
+_VERSION = "0.1.5"
 
 _HELP = """\
 Usage: distillate [command]
@@ -1922,6 +2074,11 @@ def main():
             )
             state.zotero_library_version = current_version
             state.save()
+            print()
+            print("  First run! Watermark set at Zotero version %d." % current_version)
+            print("  Save a paper to Zotero and run again, or use")
+            print("  'distillate --import' to add existing papers.")
+            print()
         elif current_version == stored_version:
             log.info("Zotero library unchanged (version %d)", current_version)
         else:
@@ -2049,6 +2206,10 @@ def main():
                         highlights = renderer.extract_highlights(zip_path)
                         if not highlights:
                             log.info("No text highlights found for '%s'", rm_name)
+                            print(
+                                f"  Warning: no highlights found for '{doc['title']}'."
+                                "\n  Is text recognition enabled on your reMarkable?"
+                            )
 
                         # Get page count for engagement score
                         stat = remarkable_client.stat_document(
@@ -2242,5 +2403,19 @@ def main():
         release_lock()
 
 
+def _main_wrapper():
+    """Entry point with top-level error handling."""
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as _exc:
+        print(
+            f"\n  Unexpected error: {_exc}"
+            "\n  Please report at: https://github.com/rlacombe/distillate/issues\n"
+        )
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    _main_wrapper()

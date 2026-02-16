@@ -11,13 +11,14 @@ Distill research papers from Zotero through reMarkable into structured notes.
 ```
 $ distillate   # turn papers into notes!
 
-Save to Zotero  ──>  syncs to reMarkable
-                                │
-                   Read & highlight on tablet
-                   Just move to Read when done
-                                │
-                                V
-               Notes + highlights + annotated PDF
+save to Zotero ──> auto-syncs to reMarkable
+                       │
+        read & highlight on tablet
+        just move to Read/ when done
+                       │
+                       V
+paper: archived. notes: auto-saved.
+> done! next paper?
 ```
 
 ## Quick Start
@@ -36,7 +37,7 @@ The setup wizard walks you through connecting Zotero, reMarkable, and choosing w
 | [Zotero](https://www.zotero.org/) | Yes | Paper library + browser connector for saving papers |
 | [reMarkable](https://remarkable.com/) tablet | Yes | Read & highlight papers with the built-in highlighter |
 | [rmapi](https://github.com/ddvk/rmapi) | Yes | CLI bridge to reMarkable Cloud |
-| [Obsidian](https://obsidian.md/) vault | No | Rich note integration (wiki-links, Dataview, stats) |
+| [Obsidian](https://obsidian.md/) vault | No | Rich note integration (Dataview, reading stats, deep links) |
 | Plain folder | No | Alternative to Obsidian — just markdown notes + PDFs |
 | [Anthropic API key](https://console.anthropic.com/) | No | AI-generated summaries and key learnings |
 | [Resend API key](https://resend.com) | No | Email digests and paper suggestions |
@@ -241,8 +242,8 @@ All settings live in `.env` (either `~/.config/distillate/.env` or your working 
 | `OBSIDIAN_PAPERS_FOLDER` | `Distillate` | Subfolder within the vault |
 | `OUTPUT_PATH` | *(empty)* | Plain folder for notes (alternative to Obsidian) |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key for AI summaries |
-| `CLAUDE_SMART_MODEL` | `claude-sonnet-4-5` | Model for summaries |
-| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5` | Model for suggestions and themes |
+| `CLAUDE_SMART_MODEL` | `claude-sonnet-4-5-20250929` | Model for summaries |
+| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for suggestions and themes |
 | `RESEND_API_KEY` | *(empty)* | Resend API key for email features |
 | `DIGEST_TO` | *(empty)* | Email address for digests |
 

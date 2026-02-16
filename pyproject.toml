@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.1.4"
+version = "0.1.5"
 description = "Distill research papers from Zotero through reMarkable into structured notes"
 readme = "README.md"
 license = "MIT"
@@ -41,7 +41,7 @@ Repository = "https://github.com/rlacombe/distillate"
 Issues = "https://github.com/rlacombe/distillate/issues"
 
 [project.scripts]
-distillate = "distillate.main:main"
+distillate = "distillate.main:_main_wrapper"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
