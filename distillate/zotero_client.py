@@ -562,6 +562,60 @@ def create_highlight_annotations(
     return created_keys
 
 
+def update_obsidian_link(parent_key: str, new_url: str) -> bool:
+    """PATCH the existing 'Open in Obsidian' linked_url attachment with a new URL.
+
+    Returns True if the update succeeded.
+    """
+    resp = _get(f"/items/{parent_key}/children")
+    if resp.status_code != 200:
+        return False
+
+    for child in resp.json():
+        data = child.get("data", {})
+        if data.get("title") == "Open in Obsidian" and data.get("linkMode") == "linked_url":
+            patch_resp = _patch(
+                f"/items/{child['key']}",
+                json={"url": new_url},
+                headers={"If-Unmodified-Since-Version": str(child["version"])},
+            )
+            if patch_resp.status_code in (200, 204):
+                log.info("Updated Obsidian link for %s", parent_key)
+                return True
+            log.warning("Failed to update Obsidian link: %s", patch_resp.status_code)
+            return False
+
+    log.debug("No 'Open in Obsidian' attachment found for %s", parent_key)
+    return False
+
+
+def update_linked_attachment_path(parent_key: str, new_title: str, new_path: str) -> bool:
+    """PATCH the existing linked_file attachment with a new title and path.
+
+    Returns True if the update succeeded.
+    """
+    resp = _get(f"/items/{parent_key}/children")
+    if resp.status_code != 200:
+        return False
+
+    for child in resp.json():
+        data = child.get("data", {})
+        if data.get("linkMode") == "linked_file":
+            patch_resp = _patch(
+                f"/items/{child['key']}",
+                json={"title": new_title, "path": new_path},
+                headers={"If-Unmodified-Since-Version": str(child["version"])},
+            )
+            if patch_resp.status_code in (200, 204):
+                log.info("Updated linked attachment path for %s", parent_key)
+                return True
+            log.warning("Failed to update linked attachment: %s", patch_resp.status_code)
+            return False
+
+    log.debug("No linked_file attachment found for %s", parent_key)
+    return False
+
+
 # -- Convenience: extract metadata --
 
 _STOP_WORDS = {"a", "an", "the", "of", "in", "on", "for", "and", "to", "with", "from"}
@@ -587,7 +641,9 @@ def _generate_citekey(authors: list, title: str, date: str) -> str:
             word = cleaned
             break
 
-    year = date[:4] if date and len(date) >= 4 else ""
+    # Extract 4-digit year from various formats (2024-10, 10/2024, 12 February 2026)
+    year_match = re.search(r"\b(\d{4})\b", date) if date else None
+    year = year_match.group(1) if year_match else ""
 
     parts = [p for p in [surname, word, year] if p]
     return "_".join(parts)

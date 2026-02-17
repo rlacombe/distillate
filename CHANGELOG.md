@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.3 — 2026-02-17
+
+Citekey rename, metadata refresh, and naming consistency fixes.
+
+### Features
+
+- **Citekey rename on metadata sync**: when a paper's citekey changes in Zotero (e.g. after adding a publication date), Distillate renames note + PDF files, updates reading log wikilinks, and PATCHes Zotero linked attachments — no orphaned files or broken links
+- **`--refresh-metadata`**: new command to re-extract metadata from Zotero for all tracked papers, with verbose progress output — useful for one-time migrations and fixing stale citekeys
+- **Title sync**: title changes in Zotero propagate to note frontmatter and reading log entries
+- **Zotero PATCH helpers**: `update_obsidian_link()` and `update_linked_attachment_path()` update existing Zotero attachments in place (safer than delete + recreate)
+
+### Bug Fixes
+
+- **Citekey date parsing**: `_generate_citekey()` now extracts 4-digit years from any date format (`10/2024`, `12 February 2026`, `2024-10-15`) — previously only worked with `YYYY-*` format
+- **Inbox PDFs use citekey**: `save_inbox_pdf()` and `delete_inbox_pdf()` now use citekey-based filenames, consistent with Saved folder naming
+- **Frontmatter title updates**: `update_note_frontmatter()` now syncs the `title`, `citekey`, and `pdf` fields
+- **Obsidian Bases template v4**: fixed sort syntax and added `file.ext == "md"` filter to exclude PDFs from Base view
+
 ## 0.2.2 — 2026-02-17
 
 Bug fixes, safety improvements, and dead code cleanup.

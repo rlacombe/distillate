@@ -369,6 +369,125 @@ def _backfill_s2() -> None:
     log.info("Backfilled S2 data for %d paper(s)", count)
 
 
+def _refresh_metadata() -> None:
+    """Re-extract metadata from Zotero for all tracked papers.
+
+    Detects citekey changes (e.g. from date format fixes) and renames
+    note/PDF files accordingly.
+    """
+    from distillate import config, zotero_client, obsidian
+    from distillate.state import State
+
+    config.setup_logging()
+
+    state = State()
+    keys = list(state.documents.keys())
+    if not keys:
+        print("No tracked papers.")
+        return
+
+    print(f"  Fetching metadata for {len(keys)} paper(s) from Zotero...")
+    items = zotero_client.get_items_by_keys(keys)
+    items_by_key = {item["key"]: item for item in items}
+    changed = 0
+    total = len(keys)
+
+    for i, key in enumerate(keys, 1):
+        item = items_by_key.get(key)
+        if not item:
+            continue
+        doc = state.get_document(key)
+        if not doc:
+            continue
+
+        title = doc["title"]
+        old_meta = doc.get("metadata", {})
+        new_meta = zotero_client.extract_metadata(item)
+
+        # Preserve S2 enrichment
+        for field in ("citation_count", "influential_citation_count",
+                      "s2_url", "paper_type"):
+            if field in old_meta:
+                new_meta[field] = old_meta[field]
+
+        # Detect what changed
+        old_ck = old_meta.get("citekey", "")
+        new_ck = new_meta.get("citekey", "")
+        old_title = doc["title"]
+        new_title = new_meta.get("title", old_title)
+        any_change = False
+
+        # Check for citekey change → rename Saved files
+        needs_rename = old_ck != new_ck
+        # Also rename if file on disk doesn't match expected citekey
+        if not needs_rename and new_ck and doc.get("status") == "processed":
+            rd = obsidian._read_dir()
+            if rd and not (rd / f"{new_ck}.md").exists():
+                needs_rename = True
+        if needs_rename and new_ck and doc.get("status") == "processed":
+            print(f"  [{i}/{total}] \"{title[:50]}\"")
+            print(f"    Citekey: {old_ck or '(title)'} -> {new_ck}")
+            obsidian.rename_paper(doc["title"], old_ck, new_ck)
+
+            new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
+            if new_uri:
+                print(f"    Updating Obsidian link in Zotero")
+                zotero_client.update_obsidian_link(key, new_uri)
+
+            rd = obsidian._read_dir()
+            if rd:
+                new_pdf = rd / f"{new_ck}.pdf"
+                if new_pdf.exists():
+                    print(f"    Updating linked PDF in Zotero")
+                    zotero_client.update_linked_attachment_path(
+                        key, new_pdf.name, str(new_pdf),
+                    )
+            any_change = True
+
+        # Rename Inbox PDFs that use title-based names
+        if new_ck and doc.get("status") in ("on_remarkable", "awaiting_pdf"):
+            inbox = obsidian._inbox_dir()
+            if inbox:
+                sanitized = obsidian._sanitize_note_name(doc["title"])
+                old_inbox = inbox / f"{sanitized}.pdf"
+                new_inbox = inbox / f"{new_ck}.pdf"
+                if old_inbox.exists() and not new_inbox.exists():
+                    if not any_change:
+                        print(f"  [{i}/{total}] \"{title[:50]}\"")
+                    old_inbox.rename(new_inbox)
+                    print(f"    Inbox PDF: {old_inbox.name} -> {new_inbox.name}")
+                    log.info("Renamed inbox PDF: %s -> %s", old_inbox.name, new_inbox.name)
+                    print(f"    Updating linked PDF in Zotero")
+                    zotero_client.update_linked_attachment_path(
+                        key, new_inbox.name, str(new_inbox),
+                    )
+                    any_change = True
+
+        # Update title in reading log if it changed
+        if old_title != new_title and doc.get("status") == "processed":
+            if not any_change:
+                print(f"  [{i}/{total}] \"{title[:50]}\"")
+            print(f"    Title: {old_title[:50]} -> {new_title[:50]}")
+            obsidian.update_reading_log_title(old_title, new_title, citekey=new_ck)
+            any_change = True
+
+        doc["metadata"] = new_meta
+        doc["title"] = new_title
+        doc["authors"] = new_meta.get("authors", doc["authors"])
+
+        if doc.get("status") == "processed":
+            obsidian.update_note_frontmatter(doc["title"], new_meta, citekey=new_ck)
+
+        state.save()
+        if any_change:
+            changed += 1
+
+    if changed:
+        print(f"  Updated {changed} paper(s).")
+    else:
+        print(f"  All {total} paper(s) up to date.")
+
+
 def _backfill_highlights(args: list[str]) -> None:
     """Back-propagate highlights to Zotero for already-processed papers.
 
@@ -1337,7 +1456,8 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
             pdf_bytes, config.RM_FOLDER_INBOX, title
         )
         # Save original to Obsidian Inbox folder
-        saved = obsidian.save_inbox_pdf(title, pdf_bytes)
+        citekey = meta.get("citekey", "")
+        saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
         # Create linked attachment, optionally delete imported
         if saved:
             new_att = zotero_client.create_linked_attachment(
@@ -2102,6 +2222,7 @@ Advanced:
   --dry-run               Preview sync without making changes
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
+  --refresh-metadata      Re-extract metadata from Zotero (fixes citekeys)
   --sync-state            Push state.json to a GitHub Gist
 
 Options:
@@ -2179,6 +2300,10 @@ def main():
     if "--backfill-highlights" in sys.argv:
         idx = sys.argv.index("--backfill-highlights")
         _backfill_highlights(sys.argv[idx + 1:])
+        return
+
+    if "--refresh-metadata" in sys.argv:
+        _refresh_metadata()
         return
 
     if "--suggest" in sys.argv:
@@ -2267,7 +2392,8 @@ def main():
                     remarkable_client.upload_pdf_bytes(
                         pdf_bytes, config.RM_FOLDER_INBOX, title
                     )
-                    saved = obsidian.save_inbox_pdf(title, pdf_bytes)
+                    citekey = meta.get("citekey", "")
+                    saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
                     if saved:
                         new_att = zotero_client.create_linked_attachment(
                             item_key, saved.name, str(saved),
@@ -2395,8 +2521,34 @@ def main():
                         if field in old_meta:
                             new_meta[field] = old_meta[field]
 
+                    # Rename files if citekey changed
+                    old_ck = old_meta.get("citekey", "")
+                    new_ck = new_meta.get("citekey", "")
+                    if old_ck != new_ck and new_ck and doc.get("status") == "processed":
+                        if obsidian.rename_paper(doc["title"], old_ck, new_ck):
+                            log.info("Renamed paper files: %s -> %s", old_ck or "(title)", new_ck)
+
+                        new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
+                        if new_uri:
+                            zotero_client.update_obsidian_link(key, new_uri)
+
+                        rd = obsidian._read_dir()
+                        if rd:
+                            new_pdf = rd / f"{new_ck}.pdf"
+                            if new_pdf.exists():
+                                zotero_client.update_linked_attachment_path(
+                                    key, new_pdf.name, str(new_pdf),
+                                )
+
+                    # Update title in reading log if it changed
+                    old_title = doc["title"]
+                    new_title = new_meta.get("title", old_title)
+                    if old_title != new_title and doc.get("status") == "processed":
+                        ck = new_meta.get("citekey", "")
+                        obsidian.update_reading_log_title(old_title, new_title, citekey=ck)
+
                     doc["metadata"] = new_meta
-                    doc["title"] = new_meta.get("title", doc["title"])
+                    doc["title"] = new_title
                     doc["authors"] = new_meta.get("authors", doc["authors"])
 
                     # Update Obsidian note frontmatter for processed papers
@@ -2535,7 +2687,7 @@ def main():
                         )
 
                     # Clean up original from Inbox folder
-                    obsidian.delete_inbox_pdf(doc["title"])
+                    obsidian.delete_inbox_pdf(doc["title"], citekey=citekey)
 
                     # Update linked attachment — use original PDF when
                     # highlights will be Zotero annotations, otherwise

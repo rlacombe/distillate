@@ -136,7 +136,7 @@ class TestUploadPaper:
         )
         monkeypatch.setattr(
             "distillate.obsidian.save_inbox_pdf",
-            lambda *a: None,
+            lambda *a, **kw: None,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.add_tag",

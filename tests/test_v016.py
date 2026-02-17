@@ -187,7 +187,7 @@ class TestPdfDeleteGuard:
         )
         monkeypatch.setattr(
             "distillate.obsidian.save_inbox_pdf",
-            lambda *a: None,  # save fails!
+            lambda *a, **kw: None,  # save fails!
         )
         monkeypatch.setattr(
             "distillate.remarkable_client.sanitize_filename",

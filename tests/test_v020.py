@@ -371,7 +371,7 @@ class TestObsidianBases:
         assert "engagement" in content
 
     def test_ensure_bases_note_idempotent(self, monkeypatch, tmp_path):
-        """ensure_bases_note doesn't overwrite an existing .base file."""
+        """ensure_bases_note is idempotent when template version matches."""
         from distillate import obsidian, config
 
         vault = tmp_path / "vault"
@@ -381,10 +381,28 @@ class TestObsidianBases:
 
         obsidian.ensure_bases_note()
         bases_path = vault / "Distillate" / "Distillate Papers.base"
-        bases_path.write_text("custom content")
+        first_content = bases_path.read_text()
 
         obsidian.ensure_bases_note()
-        assert bases_path.read_text() == "custom content"
+        assert bases_path.read_text() == first_content
+
+    def test_ensure_bases_note_updates_stale_template(self, monkeypatch, tmp_path):
+        """ensure_bases_note overwrites files with outdated template version."""
+        from distillate import obsidian, config
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", str(vault))
+        monkeypatch.setattr(config, "OBSIDIAN_PAPERS_FOLDER", "Distillate")
+
+        bases_path = vault / "Distillate" / "Distillate Papers.base"
+        bases_path.parent.mkdir(parents=True, exist_ok=True)
+        bases_path.write_text("stale content without version marker")
+
+        obsidian.ensure_bases_note()
+        content = bases_path.read_text()
+        assert f"distillate:template:{obsidian._TEMPLATE_VERSION}" in content
+        assert "file.inFolder" in content
 
     def test_ensure_bases_note_skips_non_obsidian(self, monkeypatch, tmp_path):
         """ensure_bases_note does nothing when not in Obsidian mode."""

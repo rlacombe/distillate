@@ -18,7 +18,10 @@ log = logging.getLogger(__name__)
 MARKER_START = "<!-- distillate:start -->"
 MARKER_END = "<!-- distillate:end -->"
 
+_TEMPLATE_VERSION = "4"  # bump when Stats or Bases templates change
+
 _STATS_TEMPLATE = """\
+<!-- distillate:template:{version} -->
 # Distillate Stats
 
 ## Monthly Breakdown
@@ -106,7 +109,7 @@ def _read_dir() -> Optional[Path]:
     return rd
 
 
-def save_inbox_pdf(title: str, pdf_bytes: bytes) -> Optional[Path]:
+def save_inbox_pdf(title: str, pdf_bytes: bytes, citekey: str = "") -> Optional[Path]:
     """Save an original PDF to the Inbox folder.
 
     Returns the path to the saved file, or None if output is unconfigured.
@@ -115,24 +118,26 @@ def save_inbox_pdf(title: str, pdf_bytes: bytes) -> Optional[Path]:
     if inbox is None:
         return None
 
-    sanitized = _sanitize_note_name(title)
-    pdf_path = inbox / f"{sanitized}.pdf"
+    filename = citekey if citekey else _sanitize_note_name(title)
+    pdf_path = inbox / f"{filename}.pdf"
     pdf_path.write_bytes(pdf_bytes)
     log.info("Saved PDF to Inbox: %s", pdf_path)
     return pdf_path
 
 
-def delete_inbox_pdf(title: str) -> None:
+def delete_inbox_pdf(title: str, citekey: str = "") -> None:
     """Delete a PDF from the Inbox folder after processing."""
     inbox = _inbox_dir()
     if inbox is None:
         return
 
-    sanitized = _sanitize_note_name(title)
-    pdf_path = inbox / f"{sanitized}.pdf"
-    if pdf_path.exists():
-        pdf_path.unlink()
-        log.info("Removed from Inbox: %s", pdf_path)
+    # Try citekey-based name first, then title-based
+    for name in ([citekey] if citekey else []) + [_sanitize_note_name(title)]:
+        pdf_path = inbox / f"{name}.pdf"
+        if pdf_path.exists():
+            pdf_path.unlink()
+            log.info("Removed from Inbox: %s", pdf_path)
+            return
 
 
 def delete_paper_note(title: str, citekey: str = "") -> None:
@@ -188,8 +193,15 @@ def ensure_dataview_note() -> None:
         log.info("Removed legacy Papers List: %s", old_path)
 
 
+def _needs_template_update(path: Path) -> bool:
+    """Return True if the file is missing or has an outdated template version."""
+    if not path.exists():
+        return True
+    return f"distillate:template:{_TEMPLATE_VERSION}" not in path.read_text()
+
+
 def ensure_stats_note() -> None:
-    """Create the Distillate Stats dashboard note if it doesn't exist."""
+    """Create or update the Distillate Stats dashboard note."""
     if not _is_obsidian():
         return
     d = _papers_dir()
@@ -203,32 +215,41 @@ def ensure_stats_note() -> None:
         log.info("Renamed Reading Stats -> Distillate Stats")
 
     stats_path = d / "Distillate Stats.md"
-    if not stats_path.exists():
+    if _needs_template_update(stats_path):
         stats_path.write_text(
-            _STATS_TEMPLATE.format(folder=config.OBSIDIAN_PAPERS_FOLDER)
+            _STATS_TEMPLATE.format(
+                folder=config.OBSIDIAN_PAPERS_FOLDER,
+                version=_TEMPLATE_VERSION,
+            )
         )
         log.info("Created Distillate Stats: %s", stats_path)
 
 
 _BASES_TEMPLATE = """\
-filters: file.inFolder("{folder}/Saved")
+# distillate:template:{version}
+filters:
+  and:
+    - file.inFolder("{folder}/Saved")
+    - 'file.ext == "md"'
 views:
   - type: table
     name: All Papers
     order:
-      - date_read: desc
-    fields:
-      - title
-      - date_added
-      - date_read
-      - engagement
-      - highlighted_pages
-      - highlight_word_count
+      - file.name
+      - property.date_added
+      - property.date_read
+      - property.engagement
+      - property.highlighted_pages
+      - property.highlight_word_count
+      - property.page_count
+    sort:
+      - column: property.date_read
+        direction: DESC
 """
 
 
 def ensure_bases_note() -> None:
-    """Create an Obsidian Bases .base file if it doesn't exist.
+    """Create or update the Obsidian Bases .base file.
 
     Bases (Obsidian 1.9+) is the native replacement for Dataview.
     """
@@ -245,9 +266,12 @@ def ensure_bases_note() -> None:
         log.info("Removed legacy Papers.base")
 
     bases_path = d / "Distillate Papers.base"
-    if not bases_path.exists():
+    if _needs_template_update(bases_path):
         bases_path.write_text(
-            _BASES_TEMPLATE.format(folder=config.OBSIDIAN_PAPERS_FOLDER)
+            _BASES_TEMPLATE.format(
+                folder=config.OBSIDIAN_PAPERS_FOLDER,
+                version=_TEMPLATE_VERSION,
+            )
         )
         log.info("Created Bases file: %s", bases_path)
 
@@ -699,6 +723,11 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any], citekey: str =
 
     blocks = _parse_frontmatter_blocks(fm_text)
 
+    # Update title
+    new_title = metadata.get("title", "")
+    if new_title:
+        blocks["title"] = f'title: "{_escape_yaml(new_title)}"'
+
     # Update authors
     authors = metadata.get("authors", [])
     if authors:
@@ -725,10 +754,116 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any], citekey: str =
     if citation_count:
         blocks["citation_count"] = f"citation_count: {citation_count}"
 
+    new_ck = metadata.get("citekey", "")
+    if new_ck:
+        blocks["citekey"] = f'citekey: "{_escape_yaml(new_ck)}"'
+        if _is_obsidian():
+            blocks["pdf"] = f'pdf: "[[{_escape_yaml(new_ck)}.pdf]]"'
+        else:
+            blocks["pdf"] = f'pdf: "{_escape_yaml(new_ck)}.pdf"'
+
     new_fm = _rebuild_frontmatter(blocks)
     new_content = f"---\n{new_fm}\n---\n{body}"
     note_path.write_text(new_content)
     log.info("Updated frontmatter: %s", note_path.name)
+    return True
+
+
+def rename_paper(title: str, old_citekey: str, new_citekey: str) -> bool:
+    """Rename note + PDF files when a paper's citekey changes.
+
+    Also updates wikilinks in the reading log. Returns True if any file
+    was renamed.
+    """
+    rd = _read_dir()
+    if rd is None:
+        return False
+
+    # Candidates for the old filename: explicit old_citekey, then title-based
+    sanitized = _sanitize_note_name(title)
+    candidates = []
+    if old_citekey:
+        candidates.append(old_citekey)
+        # Also try without the year suffix (e.g. old state had malformed key
+        # but file was created with the base citekey before date was added)
+        base = old_citekey.rsplit("_", 1)[0] if "_" in old_citekey else old_citekey
+        if base != old_citekey:
+            candidates.append(base)
+    candidates.append(sanitized)
+
+    renamed = False
+    actual_old_name = None
+
+    for ext in (".md", ".pdf"):
+        dst = rd / f"{new_citekey}{ext}"
+        if dst.exists():
+            log.warning("Rename skip (target exists): %s", dst.name)
+            continue
+        # Try each candidate until we find a source file
+        for candidate in candidates:
+            src = rd / f"{candidate}{ext}"
+            if src.exists():
+                src.rename(dst)
+                log.info("Renamed %s -> %s", src.name, dst.name)
+                renamed = True
+                if actual_old_name is None:
+                    actual_old_name = candidate
+                break
+        else:
+            log.debug("Rename skip (no source found): *%s", ext)
+
+    # Update wikilinks in reading log
+    d = _papers_dir()
+    if d is not None:
+        log_path = d / "Distillate Log.md"
+        if log_path.exists():
+            content = log_path.read_text()
+            # Try all candidates for old wikilinks
+            for candidate in ([actual_old_name] if actual_old_name else candidates):
+                old_link = f"[[{candidate}|"
+                new_link = f"[[{new_citekey}|"
+                if old_link in content:
+                    content = content.replace(old_link, new_link)
+                    log_path.write_text(content)
+                    log.info("Updated reading log links: %s -> %s", candidate, new_citekey)
+                    break
+
+    return renamed
+
+
+def update_reading_log_title(old_title: str, new_title: str, citekey: str = "") -> bool:
+    """Update a paper's display title in the reading log.
+
+    Returns True if the log was modified.
+    """
+    d = _papers_dir()
+    if d is None:
+        return False
+
+    log_path = d / "Distillate Log.md"
+    if not log_path.exists():
+        return False
+
+    content = log_path.read_text()
+
+    if _is_obsidian() and citekey:
+        old_link = f"[[{citekey}|{old_title}]]"
+        new_link = f"[[{citekey}|{new_title}]]"
+    elif _is_obsidian():
+        old_san = _sanitize_note_name(old_title)
+        new_san = _sanitize_note_name(new_title)
+        old_link = f"[[{old_san}|{old_title}]]"
+        new_link = f"[[{new_san}|{new_title}]]"
+    else:
+        old_link = old_title
+        new_link = new_title
+
+    if old_link not in content:
+        return False
+
+    content = content.replace(old_link, new_link)
+    log_path.write_text(content)
+    log.info("Updated reading log title: %s -> %s", old_title[:40], new_title[:40])
     return True
 
 
