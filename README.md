@@ -249,6 +249,7 @@ All settings live in `.env` (either `~/.config/distillate/.env` or your working 
 | `RM_FOLDER_SAVED` | `Distillate/Saved` | Archive folder for processed papers |
 | `OBSIDIAN_VAULT_PATH` | *(empty)* | Path to Obsidian vault |
 | `OBSIDIAN_PAPERS_FOLDER` | `Distillate` | Subfolder within the vault |
+| `OBSIDIAN_VAULT_NAME` | *(empty)* | Vault name for `obsidian://` deep links in emails |
 | `OUTPUT_PATH` | *(empty)* | Plain folder for notes (alternative to Obsidian) |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key for AI summaries |
 | `CLAUDE_SMART_MODEL` | `claude-sonnet-4-5-20250929` | Model for summaries |

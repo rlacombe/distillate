@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.1 — 2026-02-17
+
+UX fixes, CI hardening, and documentation improvements.
+
+### Bug Fixes
+
+- **Unknown CLI flags detected**: `distillate --foo` now prints an error instead of silently triggering a full sync
+- **TTY output for `--reprocess`, `--dry-run`, `--backfill-s2`**: these commands now print to the terminal instead of silently logging to file
+- **Tag pills in suggestion emails**: topic tag pills are now actually rendered (were silently skipped)
+- **Queue health on empty queue**: no longer shows "oldest: 0 days" when no papers are waiting
+- **`--send-digest` feedback**: prints "digest not sent" when no papers processed recently instead of returning silently
+- **Digest email mobile links**: paper titles link to web URLs (works on any device) with Obsidian as a secondary link
+
+### Improvements
+
+- **CI matrix**: added Python 3.11 and 3.13 (matching pyproject.toml classifiers)
+- **Publish safety gate**: PyPI publish workflow now runs tests before building
+- **`.env.example`**: added `SYNC_HIGHLIGHTS` and uncommented `OBSIDIAN_VAULT_NAME`
+- **README config table**: added `OBSIDIAN_VAULT_NAME` setting
+- **`pyproject.toml`**: added Changelog URL to project URLs
+
 ## 0.3.0 — 2026-02-17
 
 Smart metadata enrichment from Semantic Scholar.

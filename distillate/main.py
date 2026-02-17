@@ -55,7 +55,7 @@ def _reprocess(args: list[str]) -> None:
     processed = state.documents_with_status("processed")
 
     if not processed:
-        log.info("No processed papers to reprocess")
+        print("No processed papers to reprocess.")
         return
 
     # Filter to specific title if provided
@@ -63,18 +63,18 @@ def _reprocess(args: list[str]) -> None:
         query = " ".join(args).lower()
         matches = [d for d in processed if query in d["title"].lower()]
         if not matches:
-            log.error("No processed paper matching '%s'", " ".join(args))
-            log.info("Processed papers: %s", ", ".join(d["title"] for d in processed))
+            print(f"No processed paper matching '{' '.join(args)}'")
+            print("Processed papers: " + ", ".join(d["title"] for d in processed))
             return
         processed = matches
 
-    log.info("Reprocessing %d paper(s)...", len(processed))
+    print(f"Reprocessing {len(processed)} paper(s)...")
 
     for doc in processed:
         title = doc["title"]
         rm_name = doc["remarkable_doc_name"]
         item_key = doc["zotero_item_key"]
-        log.info("Reprocessing: %s", title)
+        print(f"  Reprocessing: {title}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             zip_path = Path(tmpdir) / f"{rm_name}.zip"
@@ -245,7 +245,7 @@ def _reprocess(args: list[str]) -> None:
             state.mark_processed(item_key, summary=one_liner)
             state.save()
 
-            log.info("Reprocessed: %s", title)
+        print(f"  Done: {title}")
 
 
 def _dry_run() -> None:
@@ -257,45 +257,45 @@ def _dry_run() -> None:
 
     config.setup_logging()
 
-    log.info("=== DRY RUN — no changes will be made ===")
+    print("=== DRY RUN — no changes will be made ===")
     state = State()
 
     # Retry queue
     awaiting = state.documents_with_status("awaiting_pdf")
     if awaiting:
-        log.info("[dry-run] %d paper(s) awaiting PDF sync:", len(awaiting))
+        print(f"[dry-run] {len(awaiting)} paper(s) awaiting PDF sync:")
         for doc in awaiting:
-            log.info("  - %s", doc["title"])
+            print(f"  - {doc['title']}")
 
     # Step 1: Check Zotero for new papers
     current_version = zotero_client.get_library_version()
     stored_version = state.zotero_library_version
 
     if stored_version == 0:
-        log.info("[dry-run] First run — would set version watermark to %d", current_version)
+        print(f"[dry-run] First run — would set version watermark to {current_version}")
     elif current_version == stored_version:
-        log.info("[dry-run] Zotero library unchanged (version %d)", current_version)
+        print(f"[dry-run] Zotero library unchanged (version {current_version})")
     else:
-        log.info("[dry-run] Zotero library changed: %d → %d", stored_version, current_version)
+        print(f"[dry-run] Zotero library changed: {stored_version} → {current_version}")
         changed_keys, _ = zotero_client.get_changed_item_keys(stored_version)
         new_keys = [k for k in changed_keys if not state.has_document(k)]
         if new_keys:
             items = zotero_client.get_items_by_keys(new_keys)
             new_papers = zotero_client.filter_new_papers(items)
             if new_papers:
-                log.info("[dry-run] Would send %d paper(s) to reMarkable:", len(new_papers))
+                print(f"[dry-run] Would send {len(new_papers)} paper(s) to reMarkable:")
                 for p in new_papers:
                     meta = zotero_client.extract_metadata(p)
-                    log.info("  - %s (%s)", meta["title"], ", ".join(meta["authors"][:2]))
+                    print(f"  - {meta['title']} ({', '.join(meta['authors'][:2])})")
             else:
-                log.info("[dry-run] No new papers to send")
+                print("[dry-run] No new papers to send")
         else:
-            log.info("[dry-run] All changed items already tracked")
+            print("[dry-run] All changed items already tracked")
 
         # Check for metadata changes on tracked papers
         existing_changed = [k for k in changed_keys if state.has_document(k)]
         if existing_changed:
-            log.info("[dry-run] %d tracked paper(s) have Zotero changes (would check metadata)", len(existing_changed))
+            print(f"[dry-run] {len(existing_changed)} tracked paper(s) have Zotero changes (would check metadata)")
 
     # Step 2: Check reMarkable for read papers
     on_remarkable = state.documents_with_status("on_remarkable")
@@ -303,22 +303,22 @@ def _dry_run() -> None:
 
     read_matches = [d for d in on_remarkable if d["remarkable_doc_name"] in read_docs]
     if read_matches:
-        log.info("[dry-run] Would process %d read paper(s):", len(read_matches))
+        print(f"[dry-run] Would process {len(read_matches)} read paper(s):")
         for doc in read_matches:
-            log.info("  - %s", doc["title"])
+            print(f"  - {doc['title']}")
     else:
-        log.info("[dry-run] No read papers to process")
+        print("[dry-run] No read papers to process")
 
     # Summary
     total = len(read_matches)
     if awaiting:
         total += len(awaiting)
     if total:
-        log.info("[dry-run] Total actions: %d paper(s) would be processed", total)
+        print(f"[dry-run] Total actions: {total} paper(s) would be processed")
     else:
-        log.info("[dry-run] Nothing to do")
+        print("[dry-run] Nothing to do")
 
-    log.info("=== DRY RUN complete ===")
+    print("=== DRY RUN complete ===")
 
 
 
@@ -353,18 +353,15 @@ def _backfill_s2() -> None:
         )
         if s2_data:
             semantic_scholar.enrich_metadata(meta, s2_data)
-            log.info(
-                "S2 enriched '%s': %d citations",
-                doc["title"], s2_data["citation_count"],
-            )
+            print(f"  S2 enriched '{doc['title']}': {s2_data['citation_count']} citations")
         else:
-            log.info("S2: no data found for '%s'", doc["title"])
+            print(f"  S2: no data found for '{doc['title']}'")
 
         doc["metadata"] = meta
         state.save()
         count += 1
 
-    log.info("Backfilled S2 data for %d paper(s)", count)
+    print(f"Backfilled S2 data for {count} paper(s).")
 
 
 def _refresh_metadata() -> None:
@@ -2296,13 +2293,21 @@ Advanced:
   --dry-run               Preview sync without making changes
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
-  --refresh-metadata      Re-extract metadata from Zotero (fixes citekeys)
+  --refresh-metadata      Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
 
 Options:
   -h, --help              Show this help
   -V, --version           Show version
 """
+
+_KNOWN_FLAGS = {
+    "--help", "-h", "--version", "-V", "--init", "--register",
+    "--status", "--list", "--remove", "--import", "--reprocess",
+    "--digest", "--schedule", "--send-digest", "--dry-run",
+    "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
+    "--suggest", "--suggest-email", "--sync-state",
+}
 
 
 def main():
@@ -2392,6 +2397,13 @@ def main():
     if "--sync-state" in sys.argv:
         _sync_state()
         return
+
+    # Catch unknown flags before falling through to the sync loop
+    unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in _KNOWN_FLAGS]
+    if unknown:
+        print(f"Unknown option: {unknown[0]}")
+        print("Run 'distillate --help' for available commands.")
+        sys.exit(1)
 
     from distillate import zotero_client
     from distillate import remarkable_client

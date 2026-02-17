@@ -224,10 +224,12 @@ def _queue_health_html(state: State) -> str:
         if awaiting else ""
     )
 
+    oldest_html = f" &middot; oldest: {oldest_days} days" if total else ""
+
     return (
         f'<p style="color:#999;font-size:13px;margin:0;">'
         f'Queue: {total} papers waiting'
-        f' &middot; oldest: {oldest_days} days'
+        f'{oldest_html}'
         f' &middot; this week: +{added_this_week} added, '
         f'-{processed_this_week} read{awaiting_html}</p>'
     )
@@ -294,7 +296,7 @@ def send_weekly_digest(days: int = 7) -> None:
     papers = state.documents_processed_since(since)
 
     if not papers:
-        log.info("No papers processed in the last %d days, skipping digest", days)
+        print(f"No papers processed in the last {days} days — digest not sent.")
         return
 
     subject = _build_subject()
@@ -336,17 +338,22 @@ def _paper_html(p):
     highlight_word_count = p.get("highlight_word_count", 0)
     processed_at = p.get("processed_at", "")
 
-    # Title with Obsidian deep link
+    # Title links to web URL (works on mobile), Obsidian link as secondary
     from distillate import obsidian
     citekey = p.get("metadata", {}).get("citekey", "")
-    obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
-    if obsidian_uri:
+    if url:
         title_html = (
-            f'<a href="{obsidian_uri}" style="color:#333;text-decoration:none;">'
+            f'<a href="{url}" style="color:#333;text-decoration:none;">'
             f'<strong>{title}</strong></a>'
         )
     else:
         title_html = f"<strong>{title}</strong>"
+    obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
+    obsidian_html = (
+        f' <a href="{obsidian_uri}" style="color:#999;font-size:11px;">'
+        f'Open in Obsidian</a>'
+        if obsidian_uri else ""
+    )
 
     # Date read (e.g. "Feb 10")
     date_html = ""
@@ -382,14 +389,10 @@ def _paper_html(p):
         )
 
     summary_html = f" &mdash; {summary}" if summary else ""
-    url_html = (
-        f'<br><a href="{url}" style="color:#666;font-size:13px;">{url}</a>'
-        if url else ""
-    )
 
     return (
         f"<li style='margin-bottom: 14px;'>"
-        f"{title_html}{date_html}{stats_html}{summary_html}{url_html}"
+        f"{title_html}{date_html}{obsidian_html}{stats_html}{summary_html}"
         f"</li>"
     )
 
@@ -545,7 +548,7 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
 
         title_html = f"<strong>{title_part.strip()}</strong>"
         reason_html = f" &mdash; {reason_part}" if reason_part else ""
-        pills_html = "" if tags else ""
+        pills_html = f"<br>{_tag_pills_html(tags)}" if tags else ""
         url_html = (
             f'<br><a href="{url}" style="color:#666;font-size:13px;">{url}</a>'
             if url else ""

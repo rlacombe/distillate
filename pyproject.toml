@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.3.0"
+version = "0.3.1"
 description = "Distill research papers from Zotero through reMarkable into structured notes"
 readme = "README.md"
 license = "MIT"
@@ -39,6 +39,7 @@ all = ["anthropic>=0.40.0", "resend>=2.0.0"]
 Homepage = "https://distillate.dev"
 Repository = "https://github.com/rlacombe/distillate"
 Issues = "https://github.com/rlacombe/distillate/issues"
+Changelog = "https://github.com/rlacombe/distillate/blob/main/CHANGELOG.md"
 
 [project.scripts]
 distillate = "distillate.main:_main_wrapper"
