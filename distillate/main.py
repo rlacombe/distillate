@@ -352,9 +352,7 @@ def _backfill_s2() -> None:
             url=meta.get("url", ""),
         )
         if s2_data:
-            meta["citation_count"] = s2_data["citation_count"]
-            meta["influential_citation_count"] = s2_data["influential_citation_count"]
-            meta["s2_url"] = s2_data["s2_url"]
+            semantic_scholar.enrich_metadata(meta, s2_data)
             log.info(
                 "S2 enriched '%s': %d citations",
                 doc["title"], s2_data["citation_count"],
@@ -375,7 +373,7 @@ def _refresh_metadata() -> None:
     Detects citekey changes (e.g. from date format fixes) and renames
     note/PDF files accordingly.
     """
-    from distillate import config, zotero_client, obsidian
+    from distillate import config, zotero_client, obsidian, semantic_scholar
     from distillate.state import State
 
     config.setup_logging()
@@ -403,19 +401,45 @@ def _refresh_metadata() -> None:
         title = doc["title"]
         old_meta = doc.get("metadata", {})
         new_meta = zotero_client.extract_metadata(item)
+        any_change = False
 
-        # Preserve S2 enrichment
-        for field in ("citation_count", "influential_citation_count",
-                      "s2_url", "paper_type"):
-            if field in old_meta:
-                new_meta[field] = old_meta[field]
+        # Re-query S2 for papers missing date or citation data
+        if not new_meta.get("publication_date") or not old_meta.get("s2_url"):
+            try:
+                s2_data = semantic_scholar.lookup_paper(
+                    doi=new_meta.get("doi", ""), title=doc["title"],
+                    url=new_meta.get("url", ""),
+                )
+                if s2_data:
+                    had_date = bool(new_meta.get("publication_date"))
+                    semantic_scholar.enrich_metadata(new_meta, s2_data)
+                    if not had_date and new_meta.get("publication_date"):
+                        new_meta["citekey"] = zotero_client._generate_citekey(
+                            new_meta["authors"], new_meta["title"],
+                            new_meta["publication_date"],
+                        )
+                        if not any_change:
+                            print(f"  [{i}/{total}] \"{title[:50]}\"")
+                        print(f"    S2 filled date: {new_meta['publication_date']} -> citekey: {new_meta['citekey']}")
+                        any_change = True
+            except Exception:
+                log.debug("S2 lookup failed for '%s'", doc["title"], exc_info=True)
+        else:
+            # Preserve existing S2 enrichment
+            for field in ("citation_count", "influential_citation_count",
+                          "s2_url"):
+                if field in old_meta:
+                    new_meta[field] = old_meta[field]
+
+        # Preserve paper_type if present
+        if "paper_type" in old_meta:
+            new_meta["paper_type"] = old_meta["paper_type"]
 
         # Detect what changed
         old_ck = old_meta.get("citekey", "")
         new_ck = new_meta.get("citekey", "")
         old_title = doc["title"]
         new_title = new_meta.get("title", old_title)
-        any_change = False
 
         # Check for citekey change → rename Saved files
         needs_rename = old_ck != new_ck
@@ -431,37 +455,82 @@ def _refresh_metadata() -> None:
 
             new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
             if new_uri:
-                print(f"    Updating Obsidian link in Zotero")
+                print("    Updating Obsidian link in Zotero")
                 zotero_client.update_obsidian_link(key, new_uri)
 
             rd = obsidian._read_dir()
             if rd:
                 new_pdf = rd / f"{new_ck}.pdf"
                 if new_pdf.exists():
-                    print(f"    Updating linked PDF in Zotero")
+                    print("    Updating linked PDF in Zotero")
                     zotero_client.update_linked_attachment_path(
                         key, new_pdf.name, str(new_pdf),
                     )
             any_change = True
 
-        # Rename Inbox PDFs that use title-based names
+        # Rename Inbox PDFs that don't match expected citekey
         if new_ck and doc.get("status") in ("on_remarkable", "awaiting_pdf"):
             inbox = obsidian._inbox_dir()
             if inbox:
-                sanitized = obsidian._sanitize_note_name(doc["title"])
-                old_inbox = inbox / f"{sanitized}.pdf"
                 new_inbox = inbox / f"{new_ck}.pdf"
-                if old_inbox.exists() and not new_inbox.exists():
-                    if not any_change:
-                        print(f"  [{i}/{total}] \"{title[:50]}\"")
-                    old_inbox.rename(new_inbox)
-                    print(f"    Inbox PDF: {old_inbox.name} -> {new_inbox.name}")
-                    log.info("Renamed inbox PDF: %s -> %s", old_inbox.name, new_inbox.name)
-                    print(f"    Updating linked PDF in Zotero")
-                    zotero_client.update_linked_attachment_path(
-                        key, new_inbox.name, str(new_inbox),
-                    )
-                    any_change = True
+                if not new_inbox.exists():
+                    # Search candidates: old citekey variants, title-based name,
+                    # and glob for any PDF starting with the surname+word prefix
+                    sanitized = obsidian._sanitize_note_name(doc["title"])
+                    candidates = []
+                    if old_ck and old_ck != new_ck:
+                        candidates.append(old_ck)
+                        base = old_ck.rsplit("_", 1)[0] if "_" in old_ck else old_ck
+                        if base != old_ck:
+                            candidates.append(base)
+                    # Also try new citekey base without year
+                    new_base = new_ck.rsplit("_", 1)[0] if "_" in new_ck else new_ck
+                    if new_base != new_ck and new_base not in candidates:
+                        candidates.append(new_base)
+                    candidates.append(sanitized)
+
+                    found = None
+                    for candidate in candidates:
+                        old_inbox = inbox / f"{candidate}.pdf"
+                        if old_inbox.exists():
+                            found = old_inbox
+                            break
+
+                    # Fallback: glob for PDFs starting with surname_word prefix
+                    # (catches malformed citekeys like "lla_bagel_Dec .pdf")
+                    if found is None and "_" in new_ck:
+                        parts = new_ck.split("_")
+                        if len(parts) >= 2:
+                            # Try both old (no accent normalization) and new surname
+                            prefixes = set()
+                            prefixes.add(f"{parts[0]}_{parts[1]}")
+                            # Old surname may differ (e.g. "lla" vs "lala")
+                            raw_authors = new_meta.get("authors", [])
+                            if raw_authors:
+                                import re as _re
+                                raw_s = raw_authors[0].split(",")[0].strip()
+                                old_s = _re.sub(r"[^a-z]", "", raw_s.lower())
+                                if old_s and old_s != parts[0]:
+                                    prefixes.add(f"{old_s}_{parts[1]}")
+                            for prefix in prefixes:
+                                matches = list(inbox.glob(f"{prefix}*.pdf"))
+                                # Exclude the target itself
+                                matches = [m for m in matches if m.name != new_inbox.name]
+                                if len(matches) == 1:
+                                    found = matches[0]
+                                    break
+
+                    if found is not None:
+                        if not any_change:
+                            print(f"  [{i}/{total}] \"{title[:50]}\"")
+                        found.rename(new_inbox)
+                        print(f"    Inbox PDF: {found.name} -> {new_inbox.name}")
+                        log.info("Renamed inbox PDF: %s -> %s", found.name, new_inbox.name)
+                        print("    Updating linked PDF in Zotero")
+                        zotero_client.update_linked_attachment_path(
+                            key, new_inbox.name, str(new_inbox),
+                        )
+                        any_change = True
 
         # Update title in reading log if it changed
         if old_title != new_title and doc.get("status") == "processed":
@@ -1472,18 +1541,23 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
 
     # Semantic Scholar enrichment
     try:
+        had_date = bool(meta.get("publication_date"))
         s2_data = semantic_scholar.lookup_paper(
             doi=meta.get("doi", ""), title=title,
             url=meta.get("url", ""),
         )
         if s2_data:
-            meta["citation_count"] = s2_data["citation_count"]
-            meta["influential_citation_count"] = s2_data["influential_citation_count"]
-            meta["s2_url"] = s2_data["s2_url"]
+            semantic_scholar.enrich_metadata(meta, s2_data)
             log.info(
                 "S2: %d citations",
                 s2_data["citation_count"],
             )
+            # Regenerate citekey if S2 filled a missing date
+            if not had_date and meta.get("publication_date"):
+                meta["citekey"] = zotero_client._generate_citekey(
+                    meta["authors"], meta["title"], meta["publication_date"],
+                )
+                log.info("Regenerated citekey with S2 date: %s", meta["citekey"])
     except Exception:
         log.debug("S2 lookup failed for '%s'", title, exc_info=True)
 
@@ -2524,21 +2598,39 @@ def main():
                     # Rename files if citekey changed
                     old_ck = old_meta.get("citekey", "")
                     new_ck = new_meta.get("citekey", "")
-                    if old_ck != new_ck and new_ck and doc.get("status") == "processed":
-                        if obsidian.rename_paper(doc["title"], old_ck, new_ck):
-                            log.info("Renamed paper files: %s -> %s", old_ck or "(title)", new_ck)
+                    if old_ck != new_ck and new_ck:
+                        status = doc.get("status", "")
 
-                        new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
-                        if new_uri:
-                            zotero_client.update_obsidian_link(key, new_uri)
+                        # Rename Saved note + PDF for processed papers
+                        if status == "processed":
+                            if obsidian.rename_paper(doc["title"], old_ck, new_ck):
+                                log.info("Renamed paper files: %s -> %s", old_ck or "(title)", new_ck)
 
-                        rd = obsidian._read_dir()
-                        if rd:
-                            new_pdf = rd / f"{new_ck}.pdf"
-                            if new_pdf.exists():
-                                zotero_client.update_linked_attachment_path(
-                                    key, new_pdf.name, str(new_pdf),
-                                )
+                            new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
+                            if new_uri:
+                                zotero_client.update_obsidian_link(key, new_uri)
+
+                            rd = obsidian._read_dir()
+                            if rd:
+                                new_pdf = rd / f"{new_ck}.pdf"
+                                if new_pdf.exists():
+                                    zotero_client.update_linked_attachment_path(
+                                        key, new_pdf.name, str(new_pdf),
+                                    )
+
+                        # Rename Inbox PDF for on_remarkable / awaiting_pdf papers
+                        if status in ("on_remarkable", "awaiting_pdf"):
+                            inbox = obsidian._inbox_dir()
+                            if inbox:
+                                old_name = old_ck if old_ck else obsidian._sanitize_note_name(doc["title"])
+                                old_inbox = inbox / f"{old_name}.pdf"
+                                new_inbox = inbox / f"{new_ck}.pdf"
+                                if old_inbox.exists() and not new_inbox.exists():
+                                    old_inbox.rename(new_inbox)
+                                    log.info("Renamed inbox PDF: %s -> %s", old_inbox.name, new_inbox.name)
+                                    zotero_client.update_linked_attachment_path(
+                                        key, new_inbox.name, str(new_inbox),
+                                    )
 
                     # Update title in reading log if it changed
                     old_title = doc["title"]

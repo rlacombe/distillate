@@ -16,7 +16,7 @@ from distillate import config
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.semanticscholar.org"
-_PAPER_FIELDS = "citationCount,influentialCitationCount,url"
+_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year"
 
 # Delay between API calls to avoid rate limits (free tier: ~1 req/sec)
 _REQUEST_DELAY = 1.5
@@ -60,7 +60,34 @@ def lookup_paper(
         "citation_count": citation_count,
         "influential_citation_count": influential,
         "s2_url": s2_url,
+        "publication_date": paper.get("publicationDate") or "",
+        "venue": paper.get("venue") or "",
+        "year": paper.get("year") or 0,
     }
+
+
+def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill missing metadata fields from Semantic Scholar data.
+
+    Zotero remains the source of truth — S2 only fills empty fields.
+    Citation fields are always updated (S2-authoritative).
+    Returns the updated metadata dict.
+    """
+    # Always update citation fields (S2 is authoritative)
+    meta["citation_count"] = s2_data["citation_count"]
+    meta["influential_citation_count"] = s2_data["influential_citation_count"]
+    meta["s2_url"] = s2_data["s2_url"]
+
+    # Fill gaps only
+    if not meta.get("publication_date") and s2_data.get("publication_date"):
+        meta["publication_date"] = s2_data["publication_date"]
+        log.info("S2 filled publication_date: %s", s2_data["publication_date"])
+
+    if not meta.get("journal") and s2_data.get("venue"):
+        meta["journal"] = s2_data["venue"]
+        log.info("S2 filled journal/venue: %s", s2_data["venue"])
+
+    return meta
 
 
 def _extract_arxiv_id(doi: str, url: str) -> str:

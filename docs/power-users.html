@@ -446,7 +446,30 @@ $ distillate --backfill-highlights 5</code></pre>
       Backfill downloads the document bundle from your reMarkable's Saved/ folder. If you've deleted the document from reMarkable, backfill will skip it.
     </div>
 
-    <!-- 9. Citekey Naming -->
+    <!-- 9. Metadata Enrichment -->
+    <h2>Metadata Enrichment</h2>
+
+    <p>When a paper is added, Distillate queries <a href="https://www.semanticscholar.org/">Semantic Scholar</a> to fill gaps in the Zotero metadata. This happens automatically during sync and can also be triggered manually.</p>
+
+    <h3>What gets enriched</h3>
+
+    <ul>
+      <li><strong>Publication date</strong> -- filled from S2 when Zotero has no date (fixes incomplete citekeys like <code>liu_embeddings</code> → <code>liu_embeddings_2024</code>)</li>
+      <li><strong>Venue</strong> -- journal or conference name, filled when Zotero's publication field is empty</li>
+      <li><strong>Citation counts</strong> -- total and influential citations, always updated from S2</li>
+    </ul>
+
+    <p>Zotero is always the source of truth: S2 only fills empty fields, never overwrites existing data.</p>
+
+    <h3>Refresh all papers</h3>
+
+    <p>Use <code>--refresh-metadata</code> to re-fetch metadata from both Zotero and Semantic Scholar for all tracked papers:</p>
+
+<pre><code>$ distillate --refresh-metadata</code></pre>
+
+    <p>This is useful after editing papers in Zotero (adding dates, fixing titles) or as a one-time migration to enrich older papers with S2 data. Shows progress and only reports papers that changed.</p>
+
+    <!-- 10. Citekey Naming -->
     <h2>Citekey Naming</h2>
 
     <p>Notes and annotated PDFs are named using citekeys -- short identifiers like <code>einstein_relativity_1905</code> instead of full paper titles. This makes filenames predictable and compatible with Obsidian plugins that use citekeys.</p>
@@ -457,13 +480,24 @@ $ distillate --backfill-highlights 5</code></pre>
 
     <h3>Automatic fallback</h3>
 
-    <p>Without Better BibTeX, Distillate generates a citekey from the first author's surname, the first meaningful word of the title, and the year:</p>
+    <p>Without Better BibTeX, Distillate generates a citekey from the first author's surname, the first meaningful word of the title, and the year. Accented characters are normalized (e.g. Lála → Lala, Müller → Muller):</p>
 
 <pre><code># "Attention Is All You Need" by Vaswani et al., 2017
 → vaswani_attention_2017
 
 # "Biology needs to become prospective" by Avasthi, 2026
 → avasthi_biology_2026</code></pre>
+
+    <h3>Automatic rename</h3>
+
+    <p>When a paper's citekey changes -- because you edited the date in Zotero, or Semantic Scholar filled a missing year -- Distillate renames everything automatically:</p>
+
+    <ul>
+      <li>Note and PDF files in <code>Distillate/Saved/</code> and <code>Distillate/Inbox/</code></li>
+      <li>Wikilinks in the Reading Log</li>
+      <li>Linked attachments in Zotero (Obsidian link and linked PDF)</li>
+      <li>Frontmatter fields (<code>citekey</code>, <code>pdf</code>)</li>
+    </ul>
 
     <h3>What changes</h3>
 
@@ -474,7 +508,7 @@ $ distillate --backfill-highlights 5</code></pre>
       <li>Reading Log uses <code>[[citekey|title]]</code> wikilinks for stable references</li>
     </ul>
 
-    <!-- 10. Obsidian Plugin Compatibility -->
+    <!-- 11. Obsidian Plugin Compatibility -->
     <h2>Obsidian Plugin Compatibility</h2>
 
     <p>Distillate is designed to complement -- not replace -- existing Obsidian plugins for academic workflows.</p>

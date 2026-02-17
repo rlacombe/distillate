@@ -21,8 +21,7 @@ save to Zotero ──> auto-syncs to reMarkable
         just move to Read/ when done
                        │
                        V
-paper: archived. notes: auto-saved.
-> done! next paper?
+        auto-saves notes + highlights
 ```
 
 ## Quick Start
@@ -143,7 +142,7 @@ distillate
 
 1. Polls Zotero for new papers added since last run
 2. Downloads PDFs and uploads to reMarkable `Distillate/Inbox`
-3. Tags papers `inbox` in Zotero, enriches with Semantic Scholar citation data
+3. Tags papers `inbox` in Zotero, enriches with Semantic Scholar data (citations, publication date, venue)
 4. Checks reMarkable `Distillate/Read` for papers you've finished reading
 5. Extracts highlighted text from the reMarkable document
 6. Renders an annotated PDF with highlights overlaid on the original
@@ -175,6 +174,7 @@ distillate --remove "Title"         # Remove a paper from tracking
 distillate --reprocess "Title"      # Re-extract highlights and regenerate note
 distillate --dry-run                # Preview sync without making changes
 distillate --backfill-highlights     # Back-propagate highlights to Zotero (last 10)
+distillate --refresh-metadata       # Re-fetch metadata from Zotero + Semantic Scholar
 distillate --backfill-s2            # Refresh Semantic Scholar data for all papers
 distillate --sync-state             # Push state.json to a GitHub Gist
 distillate --register               # Register a reMarkable device

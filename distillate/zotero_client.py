@@ -621,6 +621,13 @@ def update_linked_attachment_path(parent_key: str, new_title: str, new_path: str
 _STOP_WORDS = {"a", "an", "the", "of", "in", "on", "for", "and", "to", "with", "from"}
 
 
+def _normalize_ascii(text: str) -> str:
+    """Normalize accented characters to ASCII (e.g. Lála → Lala, Müller → Muller)."""
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def _generate_citekey(authors: list, title: str, date: str) -> str:
     """Generate a citekey from author, title, and date.
 
@@ -632,11 +639,12 @@ def _generate_citekey(authors: list, title: str, date: str) -> str:
     if authors:
         # Extract surname: take part before comma (e.g. "Doe, J." → "Doe")
         raw = authors[0].split(",")[0].strip()
+        raw = _normalize_ascii(raw)
         surname = re.sub(r"[^a-z]", "", raw.lower()) or "unknown"
 
     word = "untitled"
     for w in title.split():
-        cleaned = re.sub(r"[^a-z]", "", w.lower())
+        cleaned = re.sub(r"[^a-z]", "", _normalize_ascii(w).lower())
         if cleaned and cleaned not in _STOP_WORDS:
             word = cleaned
             break

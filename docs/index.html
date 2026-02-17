@@ -393,15 +393,14 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.2.3 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.3.0 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">The essence of every paper you read.</p>
-    <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.<br>
-    An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
+    <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.2.3</span>
+      <span class="badge badge-purple">PyPI v0.3.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
@@ -414,8 +413,7 @@ save to Zotero ──&gt; auto-syncs to reMarkable
         just move to Read/ when done
                        │
                        V
-paper: archived. notes: auto-saved.
-&gt; done! next paper?</div>
+        auto-saves notes + highlights</div>
 
     <div class="install">
       <code>$ pip install distillate
@@ -424,6 +422,7 @@ $ distillate --init</code>
 
     <div class="steps">
       <h2>How it works</h2>
+      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Distill.</p>
 
       <div class="step">
         <span class="step-number">1</span>
@@ -458,6 +457,7 @@ $ distillate --init</code>
 
     <div class="extras">
       <h2>Plug in what you need</h2>
+      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
       <div class="extras-grid">
         <div class="extra">
           <strong>Local-first</strong>
@@ -489,6 +489,16 @@ $ distillate --init</code>
           <em class="extra-subtitle">Free Resend account</em>
           <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
         </div>
+        <div class="extra">
+          <strong>Smart metadata</strong>
+          <em class="extra-subtitle">Semantic Scholar</em>
+          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
+        </div>
+        <div class="extra">
+          <strong>Citekey rename</strong>
+          <em class="extra-subtitle">Automatic</em>
+          <span>When metadata changes in Zotero, notes and PDFs are renamed to match. No orphaned files or broken links.</span>
+        </div>
       </div>
     </div>
 
@@ -506,6 +516,7 @@ $ distillate --init</code>
         <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
         <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
         <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
+        <div class="command"><code>distillate --refresh-metadata</code><span>Re-fetch metadata from Zotero + Semantic Scholar</span></div>
         <div class="command"><code>distillate --list</code><span>List all tracked papers</span></div>
         <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
       </div>

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 — 2026-02-17
+
+Smart metadata enrichment from Semantic Scholar.
+
+### Features
+
+- **Smart metadata from Semantic Scholar**: auto-completes missing publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete
+- **Citekey regeneration**: when Semantic Scholar fills a missing date, the citekey is regenerated (e.g. `liu_embeddings` → `liu_embeddings_2024`) and all files are renamed automatically
+- **`--refresh-metadata` with S2 enrichment**: re-queries Semantic Scholar for papers missing dates or S2 data, in addition to re-fetching from Zotero
+
+### Improvements
+
+- **Landing page copy refresh**: new ASCII flow ending, section subtitles ("Save. Read. Highlight. Distill."), redistributed copy
+
 ## 0.2.3 — 2026-02-17
 
 Citekey rename, metadata refresh, and naming consistency fixes.
