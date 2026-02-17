@@ -41,15 +41,16 @@ def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     for attempt in range(_MAX_RETRIES + 1):
         try:
             resp = requests.request(method, url, timeout=config.HTTP_TIMEOUT, **kwargs)
-            _handle_backoff(resp)
+            backed_off = _handle_backoff(resp)
 
             if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
-                delay = _RETRY_DELAY_BASE * (2 ** attempt)
-                log.warning(
-                    "Zotero returned %d, retrying in %ds (%d/%d)",
-                    resp.status_code, delay, attempt + 1, _MAX_RETRIES,
-                )
-                time.sleep(delay)
+                if not backed_off:
+                    delay = _RETRY_DELAY_BASE * (2 ** attempt)
+                    log.warning(
+                        "Zotero returned %d, retrying in %ds (%d/%d)",
+                        resp.status_code, delay, attempt + 1, _MAX_RETRIES,
+                    )
+                    time.sleep(delay)
                 continue
 
             resp.raise_for_status()
@@ -96,12 +97,15 @@ def _delete(path: str, **kwargs) -> requests.Response:
     )
 
 
-def _handle_backoff(resp: requests.Response) -> None:
+def _handle_backoff(resp: requests.Response) -> bool:
+    """Sleep if Zotero asks for backoff. Returns True if it slept."""
     backoff = resp.headers.get("Backoff") or resp.headers.get("Retry-After")
     if backoff:
         wait = int(backoff)
         log.warning("Zotero asked to back off for %d seconds", wait)
         time.sleep(wait)
+        return True
+    return False
 
 
 # -- Polling --
@@ -457,7 +461,7 @@ def set_note(
     return None
 
 
-def _build_note_html(
+def build_note_html(
     summary: str = "",
     highlights: Optional[Union[List[str], Dict[int, List[str]]]] = None,
 ) -> str:
@@ -498,20 +502,15 @@ def create_highlight_annotations(
     if not highlights:
         return []
 
-    # Check for existing Distillate annotations and remove them
+    # Collect existing Distillate annotations (delete after successful create)
+    old_anns = []
     resp = _get(f"/items/{attachment_key}/children", params={"itemType": "annotation"})
     if resp.status_code == 200:
         existing = resp.json()
-        distillate_anns = [
+        old_anns = [
             a for a in existing
             if any(t.get("tag") == "distillate" for t in a.get("data", {}).get("tags", []))
         ]
-        for a in distillate_anns:
-            _delete(
-                f"/items/{a['key']}",
-                headers={"If-Unmodified-Since-Version": str(a["version"])},
-            )
-            log.debug("Deleted existing Distillate annotation %s", a["key"])
 
     # Build annotation items
     items = []
@@ -532,7 +531,7 @@ def create_highlight_annotations(
             "tags": [{"tag": "distillate"}],
         })
 
-    # Batch in groups of 50
+    # Create new annotations first (safe: tagged "distillate" so no duplicates)
     created_keys: List[str] = []
     for i in range(0, len(items), 50):
         batch = items[i:i + 50]
@@ -546,6 +545,15 @@ def create_highlight_annotations(
                 "Failed to create annotations (batch %d): %s",
                 i // 50, resp.status_code,
             )
+
+    # Delete old annotations only after successful creation
+    if created_keys and old_anns:
+        for a in old_anns:
+            _delete(
+                f"/items/{a['key']}",
+                headers={"If-Unmodified-Since-Version": str(a["version"])},
+            )
+            log.debug("Deleted old Distillate annotation %s", a["key"])
 
     log.info(
         "Created %d Zotero highlight annotation(s) on %s",

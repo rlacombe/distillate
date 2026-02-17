@@ -502,7 +502,7 @@ class TestAnnotationCreation:
         class MockPostResp:
             status_code = 200
             def json(self):
-                return {"successful": {}, "failed": {}}
+                return {"successful": {"0": {"key": "NEW1"}}, "failed": {}}
 
         class MockDelResp:
             status_code = 204

@@ -283,24 +283,10 @@ class TestThemesRemoved:
         from distillate.main import _HELP
         assert "--themes" not in _HELP
 
-    def test_cli_does_not_route_themes(self, monkeypatch):
-        """--themes should not be routed in main()."""
-        import sys
+    def test_themes_function_removed(self):
+        """_themes function should no longer exist in main module."""
         from distillate import main
-
-        monkeypatch.setattr(sys, "argv", ["distillate", "--themes", "2026-02"])
-
-        # Since --themes is removed, it should fall through to the sync path
-        # which will try to load config. We just check it doesn't call _themes.
-        called = []
-        monkeypatch.setattr(main, "_themes", lambda args: called.append(True))
-
-        # It will fail elsewhere (no config), but should NOT call _themes
-        try:
-            main.main()
-        except Exception:
-            pass
-        assert not called
+        assert not hasattr(main, "_themes")
 
 
 # ---------------------------------------------------------------------------

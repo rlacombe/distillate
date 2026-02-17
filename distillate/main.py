@@ -222,7 +222,7 @@ def _reprocess(args: list[str]) -> None:
             # PDF as annotations (avoids duplicate content and accumulating
             # notes from Zotero sync conflicts)
             if not highlights_synced:
-                zotero_note_html = zotero_client._build_note_html(
+                zotero_note_html = zotero_client.build_note_html(
                     summary=summary, highlights=highlights or None,
                 )
                 note_key = zotero_client.set_note(
@@ -451,82 +451,6 @@ def _backfill_highlights(args: list[str]) -> None:
             print(f"    Created {len(ann_keys)} annotation(s)")
 
     print(f"\nDone: back-propagated highlights for {count} paper(s).")
-
-
-def _themes(args: list[str]) -> None:
-    """Generate a monthly research themes synthesis."""
-    from datetime import datetime, timedelta, timezone
-
-    from distillate import config
-    from distillate import digest
-    from distillate import obsidian
-    from distillate import summarizer
-    from distillate.state import State
-
-    config.setup_logging()
-
-    # Determine target month
-    if args:
-        month = args[0]  # e.g. "2026-02"
-    else:
-        # Default to previous month
-        last_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=1)
-        month = last_month.strftime("%Y-%m")
-
-    log.info("Generating themes for %s...", month)
-
-    # Gather papers processed in the target month
-    state = State()
-    # Use first and last day of month as range
-    month_start = f"{month}-01T00:00:00"
-    # Get next month for the upper bound
-    year, mon = int(month[:4]), int(month[5:7])
-    if mon == 12:
-        next_month = f"{year + 1}-01-01T00:00:00"
-    else:
-        next_month = f"{year}-{mon + 1:02d}-01T00:00:00"
-
-    all_processed = state.documents_processed_since(month_start)
-    papers = [
-        p for p in all_processed
-        if (p.get("processed_at") or "") < next_month
-    ]
-
-    if not papers:
-        log.info("No papers processed in %s", month)
-        return
-
-    log.info("Found %d papers for %s", len(papers), month)
-
-    # Build enriched list for synthesis
-    enriched = []
-    for doc in papers:
-        meta = doc.get("metadata", {})
-        enriched.append({
-            "title": doc["title"],
-            "tags": meta.get("tags", []),
-            "summary": doc.get("summary", ""),
-            "paper_type": meta.get("paper_type", ""),
-        })
-
-    # Generate themes
-    themes_text = summarizer.generate_monthly_themes(month, enriched)
-    if not themes_text:
-        log.warning("Could not generate themes for %s", month)
-        return
-
-    # Write Obsidian note
-    note_path = obsidian.create_themes_note(month, themes_text)
-    if note_path:
-        log.info("Themes note: %s", note_path)
-    else:
-        # Print to stdout if Obsidian unconfigured
-        print(f"\n# Research Themes — {month}\n\n{themes_text}")
-
-    # Send email
-    digest.send_themes_email(month, themes_text)
-
-    log.info("Done generating themes for %s", month)
 
 
 def _sync_state() -> None:
@@ -1401,7 +1325,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 zotero_item_key=item_key,
                 zotero_attachment_key=att_key,
                 zotero_attachment_md5=att_md5,
-                remarkable_doc_name=remarkable_client._sanitize_filename(title),
+                remarkable_doc_name=remarkable_client.sanitize_filename(title),
                 title=title,
                 authors=authors,
                 status="awaiting_pdf",
@@ -1419,7 +1343,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
             new_att = zotero_client.create_linked_attachment(
                 item_key, saved.name, str(saved),
             )
-            if new_att and not config.KEEP_ZOTERO_PDF:
+            if new_att and att_key and not config.KEEP_ZOTERO_PDF:
                 zotero_client.delete_attachment(att_key)
             elif not new_att:
                 log.warning("Could not create linked attachment for '%s', keeping imported PDF", title)
@@ -1452,7 +1376,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
         zotero_item_key=item_key,
         zotero_attachment_key=att_key,
         zotero_attachment_md5=att_md5,
-        remarkable_doc_name=remarkable_client._sanitize_filename(title),
+        remarkable_doc_name=remarkable_client.sanitize_filename(title),
         title=title,
         authors=authors,
         status=status,
@@ -2150,7 +2074,11 @@ def _init_wizard() -> None:
     _init_done(ENV_PATH)
 
 
-_VERSION = "0.1.7"
+try:
+    from importlib.metadata import version as _pkg_version
+    _VERSION = _pkg_version("distillate")
+except Exception:
+    _VERSION = "0.0.0"
 
 _HELP = """\
 Usage: distillate [command]
@@ -2450,7 +2378,8 @@ def main():
                     # Compare fields that come from Zotero
                     changed = False
                     for field in ("authors", "tags", "doi", "journal",
-                                  "publication_date", "url", "title"):
+                                  "publication_date", "url", "title",
+                                  "citekey"):
                         if new_meta.get(field) != old_meta.get(field):
                             changed = True
                             break
@@ -2659,9 +2588,6 @@ def main():
 
                 # Create Obsidian note with page-grouped highlights
                 print("    Creating note...")
-                obsidian.ensure_dataview_note()
-                obsidian.ensure_stats_note()
-                obsidian.ensure_bases_note()
                 obsidian.create_paper_note(
                     title=doc["title"],
                     authors=doc["authors"],
@@ -2679,6 +2605,7 @@ def main():
                     topic_tags=meta.get("tags"),
                     citation_count=meta.get("citation_count", 0),
                     key_learnings=learnings,
+                    date_read=doc.get("processed_at", ""),
                     engagement=engagement,
                     highlighted_pages=hl_pages,
                     highlight_word_count=hl_words,
@@ -2712,7 +2639,7 @@ def main():
                 # PDF as annotations (avoids duplicate content and
                 # accumulating notes from Zotero sync conflicts)
                 if not highlights_synced:
-                    zotero_note_html = zotero_client._build_note_html(
+                    zotero_note_html = zotero_client.build_note_html(
                         summary=summary, highlights=highlights or None,
                     )
                     note_key = zotero_client.set_note(

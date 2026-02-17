@@ -107,7 +107,7 @@ def upload_pdf_bytes(pdf_bytes: bytes, folder: str, title: str) -> None:
 
     If a document with the same name already exists, skips the upload.
     """
-    sanitized = _sanitize_filename(title)
+    sanitized = sanitize_filename(title)
     with tempfile.TemporaryDirectory() as tmpdir:
         dest = Path(tmpdir) / f"{sanitized}.pdf"
         dest.write_bytes(pdf_bytes)
@@ -218,7 +218,7 @@ def move_document(doc_name: str, from_folder: str, to_folder: str) -> None:
     log.info("Moved '%s' from /%s/ to /%s/", doc_name, from_folder, to_folder)
 
 
-def _sanitize_filename(name: str) -> str:
+def sanitize_filename(name: str) -> str:
     """Remove characters that are problematic in filenames."""
     bad_chars = '<>:"/\\|?*'
     result = name

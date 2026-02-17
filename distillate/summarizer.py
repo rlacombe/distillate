@@ -186,47 +186,6 @@ def suggest_papers(
     return _call_claude(prompt, max_tokens=300, model=config.CLAUDE_SMART_MODEL)
 
 
-def generate_monthly_themes(
-    month_label: str,
-    papers: List[dict],
-) -> Optional[str]:
-    """Synthesize all papers from a month into a research narrative.
-
-    Returns a 300-500 word first-person synthesis, or None on failure.
-    Each paper dict should have: title, tags, summary, paper_type.
-    """
-    if not config.ANTHROPIC_API_KEY or not papers:
-        return None
-
-    paper_lines = []
-    for p in papers:
-        tags = ", ".join(p.get("tags", []))
-        summary = p.get("summary", "")
-        paper_type = p.get("paper_type", "")
-        type_str = f" [{paper_type}]" if paper_type else ""
-        paper_lines.append(
-            f"- {p['title']} [{tags}]{type_str} — {summary}"
-        )
-
-    papers_text = "\n".join(paper_lines)
-
-    prompt = (
-        f"I read these research papers in {month_label}:\n\n"
-        f"{papers_text}\n\n"
-        f"Write a 300-500 word first-person synthesis of my reading this month. "
-        f"Cover:\n"
-        f"- What themes and topics I explored\n"
-        f"- Connections between papers (shared methods, complementary findings)\n"
-        f"- Gaps or questions that emerged\n"
-        f"- How this month's reading fits into broader research directions\n\n"
-        f"Write in a reflective, personal tone — like a research diary entry. "
-        f"Reference specific papers by name. Don't use bullet points or headers "
-        f"— write flowing prose."
-    )
-
-    return _call_claude(prompt, max_tokens=800)
-
-
 def _call_claude(prompt: str, max_tokens: int = 400, model: Optional[str] = None) -> Optional[str]:
     """Call Claude API and return the response text, or None on failure."""
     try:

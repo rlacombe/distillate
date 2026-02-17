@@ -186,6 +186,8 @@ def _recover_pdf_text(page_text: str, search_text: str) -> Optional[str]:
     page_norm = "".join(norm_chars)
 
     search_norm = re.sub(r"[\s\-\u00ad]+", "", search_text.lower())
+    if not search_norm:
+        return None
 
     pos = page_norm.find(search_norm)
     if pos < 0:

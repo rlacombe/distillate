@@ -131,7 +131,7 @@ class TestUploadPaper:
             lambda *a: None,
         )
         monkeypatch.setattr(
-            "distillate.remarkable_client._sanitize_filename",
+            "distillate.remarkable_client.sanitize_filename",
             lambda n: n,
         )
         monkeypatch.setattr(
@@ -215,7 +215,7 @@ class TestUploadPaper:
             lambda k: None,
         )
         monkeypatch.setattr(
-            "distillate.remarkable_client._sanitize_filename",
+            "distillate.remarkable_client.sanitize_filename",
             lambda n: n,
         )
 
@@ -236,7 +236,7 @@ class TestUploadPaper:
             lambda k: None,
         )
         monkeypatch.setattr(
-            "distillate.remarkable_client._sanitize_filename",
+            "distillate.remarkable_client.sanitize_filename",
             lambda n: n,
         )
         monkeypatch.setattr(

@@ -481,26 +481,6 @@ def send_suggestion() -> None:
     _send_email(subject, body)
 
 
-def send_themes_email(month: str, themes_text: str) -> None:
-    """Send a monthly research themes email."""
-    config.setup_logging()
-
-    # Convert markdown paragraphs to HTML
-    paragraphs = themes_text.strip().split("\n\n")
-    body_html = "\n".join(f"<p>{p.strip()}</p>" for p in paragraphs if p.strip())
-
-    html = (
-        "<html><body style='font-family: sans-serif; max-width: 600px; "
-        "margin: 0 auto; padding: 20px; color: #333;'>"
-        f"<h1>Research Themes \u2014 {month}</h1>"
-        f"{body_html}"
-        f"{_SIGNATURE}"
-        "</body></html>"
-    )
-
-    _send_email(f"Research themes \u2014 {month}", html)
-
-
 def _build_suggestion_body(suggestion_text, unread, state: State):
     """Build HTML body from Claude's suggestion text."""
     # Build title -> doc lookup from full unread list

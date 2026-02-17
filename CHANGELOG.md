@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.2 — 2026-02-17
+
+Bug fixes, safety improvements, and dead code cleanup.
+
+### Bug Fixes
+
+- **`distillate --version`**: was stuck at "0.1.7" — now reads version from package metadata
+- **`date_read` frontmatter**: papers processed in the main sync pipeline now use the actual processing date instead of defaulting to today
+- **`delete_attachment("")` crash**: papers fetched from arXiv (no Zotero PDF) no longer trigger an invalid API call when `KEEP_ZOTERO_PDF=false`
+- **Highlight OCR crash**: `_recover_pdf_text` no longer crashes when a highlight normalizes to an empty string (e.g. pure hyphens)
+- **Double-sleep on Zotero 429**: when Zotero sends a `Retry-After` header, we no longer also apply the exponential backoff delay
+- **Citekey change detection**: Better BibTeX citekey changes are now picked up by metadata sync
+
+### Safety Improvements
+
+- **Annotation create-before-delete**: Zotero highlight annotations are now created before deleting old ones, preventing data loss if the POST fails mid-batch
+- **Missing end marker protection**: if `<!-- distillate:end -->` is accidentally deleted from a note, Distillate warns and appends instead of silently deleting everything after the start marker
+
+### Cleanup
+
+- **Removed dead `_themes()` code**: removed `_themes()`, `generate_monthly_themes()`, `create_themes_note()`, and `send_themes_email()` — unreachable since v0.1.7
+- **Public API functions**: `zotero_client.build_note_html()` and `remarkable_client.sanitize_filename()` are now public (were private but called cross-module)
+- **Removed duplicate migration calls**: `ensure_dataview_note()`, `ensure_stats_note()`, `ensure_bases_note()` no longer run inside the per-paper loop (already run at sync start)
+- **Module-level marker constants**: `MARKER_START` and `MARKER_END` promoted to module-level constants in `obsidian.py`
+
+## 0.2.1 — 2026-02-17
+
+### Bug Fixes
+
+- **Awaiting PDF retry**: papers stuck in `awaiting_pdf` status are now correctly retried when a PDF attachment appears in Zotero
+
 ## 0.2.0 — 2026-02-16
 
 Zotero Round-Trip: highlights flow back from reMarkable to Zotero, citekey-based naming, and Obsidian plugin compatibility.
@@ -10,7 +41,7 @@ Zotero Round-Trip: highlights flow back from reMarkable to Zotero, citekey-based
 - **Citekey-based file naming**: notes and annotated PDFs use Better BibTeX citekeys (e.g. `einstein_relativity_1905.md`) for compatibility with the Obsidian Zotero Integration plugin ecosystem
 - **Note merge for plugin coexistence**: when a note already exists (e.g. from the Zotero Integration plugin), Distillate appends its sections between `<!-- distillate:start/end -->` markers instead of overwriting
 - **Obsidian Bases support**: generates a `Papers.base` file for native table views in Obsidian 1.9+ (alongside existing Dataview template)
-- **`--backfill-highlights [N]`**: back-propagate highlights to Zotero for already-processed papers (processes last N, default 10)
+- **`--backfill-highlights [N]`**: back-propagate highlights to Zotero for already-processed papers (processes last N, default: all)
 - **`--list` command**: list all tracked papers grouped by status
 
 ### Improvements

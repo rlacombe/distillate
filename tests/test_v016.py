@@ -190,7 +190,7 @@ class TestPdfDeleteGuard:
             lambda *a: None,  # save fails!
         )
         monkeypatch.setattr(
-            "distillate.remarkable_client._sanitize_filename",
+            "distillate.remarkable_client.sanitize_filename",
             lambda t: "Test_Paper",
         )
         monkeypatch.setattr(
@@ -368,9 +368,9 @@ class TestStatusQueueContents:
 # ---------------------------------------------------------------------------
 
 class TestCleanOutput:
-    def test_version_is_017(self):
+    def test_version_is_not_hardcoded(self):
         from distillate.main import _VERSION
-        assert _VERSION == "0.1.7"
+        assert _VERSION != "0.1.7"  # should be read from package metadata
 
     def test_help_includes_list_and_remove(self):
         from distillate.main import _HELP

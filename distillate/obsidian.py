@@ -15,6 +15,9 @@ from distillate import config
 
 log = logging.getLogger(__name__)
 
+MARKER_START = "<!-- distillate:start -->"
+MARKER_END = "<!-- distillate:end -->"
+
 _STATS_TEMPLATE = """\
 # Distillate Stats
 
@@ -361,8 +364,8 @@ def create_paper_note(
         f"## Highlights\n\n{highlights_md}\n"
     )
 
-    _MARKER_START = "<!-- distillate:start -->"
-    _MARKER_END = "<!-- distillate:end -->"
+    _MARKER_START = MARKER_START
+    _MARKER_END = MARKER_END
 
     # -- Scenario 2 or 3: existing note --
     if note_path.exists():
@@ -379,7 +382,11 @@ def create_paper_note(
             # Scenario 2: re-sync — replace between markers
             log.info("Re-syncing Distillate sections in: %s", note_path)
             start = existing.index(_MARKER_START)
-            end = existing.index(_MARKER_END) + len(_MARKER_END) if _MARKER_END in existing else len(existing)
+            if _MARKER_END not in existing:
+                log.warning("Missing end marker in %s — appending instead of replacing", note_path)
+                end = start + len(_MARKER_START)
+            else:
+                end = existing.index(_MARKER_END) + len(_MARKER_END)
 
             new_block = (
                 f"{_MARKER_START}\n\n"
@@ -824,44 +831,6 @@ def get_obsidian_uri(title: str, subfolder: str = "Saved", citekey: str = "") ->
     note_name = citekey if citekey else _sanitize_note_name(title)
     file_path = f"{config.OBSIDIAN_PAPERS_FOLDER}/{subfolder}/{note_name}"
     return f"obsidian://open?vault={quote(config.OBSIDIAN_VAULT_NAME)}&file={quote(file_path)}"
-
-
-def _themes_dir() -> Optional[Path]:
-    """Return the Themes subdirectory in the papers folder, or None if unconfigured."""
-    d = _papers_dir()
-    if d is None:
-        return None
-    td = d / "Themes"
-    td.mkdir(parents=True, exist_ok=True)
-    return td
-
-
-def create_themes_note(month: str, content: str) -> Optional[Path]:
-    """Create a monthly themes note in the Themes subfolder.
-
-    month should be like '2026-02'. Returns the path, or None if unconfigured.
-    """
-    td = _themes_dir()
-    if td is None:
-        return None
-
-    note_path = td / f"{month}.md"
-
-    themes_content = f"""\
----
-tags:
-  - themes
-  - monthly-review
-month: {month}
----
-
-# Research Themes — {month}
-
-{content}
-"""
-    note_path.write_text(themes_content)
-    log.info("Created themes note: %s", note_path)
-    return note_path
 
 
 def _sanitize_tag(tag: str) -> str:
