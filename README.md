@@ -6,7 +6,7 @@ Distill research papers from Zotero through reMarkable into structured notes.
 
 ## Why Distillate?
 
-An open-source CLI with no cloud backend. Your notes, highlights, and PDFs are plain files on your machine — markdown you can read, move, or version-control however you like. AI summaries and email digests are optional; the core workflow needs only Zotero and reMarkable.
+An open-source CLI with no cloud backend. Your notes, highlights, and PDFs are plain files on your machine — markdown you can read, move, or version-control however you like. Highlights flow back to Zotero as searchable annotations. AI summaries and email digests are optional; the core workflow needs only Zotero and reMarkable.
 
 [![PyPI](https://img.shields.io/pypi/v/distillate)](https://pypi.org/project/distillate/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -42,7 +42,8 @@ The setup wizard walks you through connecting Zotero, reMarkable, and choosing w
 | [reMarkable](https://remarkable.com/) tablet | Yes | Read & highlight papers with the built-in highlighter |
 | [rmapi](https://github.com/ddvk/rmapi) | Yes | CLI bridge to reMarkable Cloud |
 | Text recognition (on reMarkable) | Yes | Enable in Settings for highlight extraction |
-| [Obsidian](https://obsidian.md/) vault | No | Rich note integration (Dataview, reading stats, deep links) |
+| [Better BibTeX](https://retorque.re/zotero-better-bibtex/) | No | Citekey-based file naming for Obsidian Zotero Integration compatibility |
+| [Obsidian](https://obsidian.md/) vault | No | Rich note integration (Dataview, Bases, reading stats, deep links) |
 | Plain folder | No | Alternative to Obsidian — just markdown notes + PDFs |
 | [Anthropic API key](https://console.anthropic.com/) | No | AI-generated summaries and key learnings |
 | [Resend API key](https://resend.com) | No | Email digests and paper suggestions |
@@ -146,9 +147,10 @@ distillate
 4. Checks reMarkable `Distillate/Read` for papers you've finished reading
 5. Extracts highlighted text from the reMarkable document
 6. Renders an annotated PDF with highlights overlaid on the original
-7. Creates a note with metadata, highlights, and AI summary (if configured)
-8. Updates the Reading Log and tags the paper `read` in Zotero
-9. Moves processed documents to `Distillate/Saved` on reMarkable
+7. Writes highlights back to Zotero as searchable annotations (visible in Zotero's PDF reader)
+8. Creates a note with metadata, highlights, and AI summary (if configured)
+9. Updates the Reading Log and tags the paper `read` in Zotero
+10. Moves processed documents to `Distillate/Saved` on reMarkable
 
 On first run, the script sets a watermark at your current Zotero library version. Only papers added *after* this point will be synced. To import existing papers, use `distillate --import`.
 
@@ -172,6 +174,7 @@ distillate --init                   # Run the setup wizard
 distillate --remove "Title"         # Remove a paper from tracking
 distillate --reprocess "Title"      # Re-extract highlights and regenerate note
 distillate --dry-run                # Preview sync without making changes
+distillate --backfill-highlights     # Back-propagate highlights to Zotero (last 10)
 distillate --backfill-s2            # Refresh Semantic Scholar data for all papers
 distillate --sync-state             # Push state.json to a GitHub Gist
 distillate --register               # Register a reMarkable device
@@ -253,11 +256,21 @@ All settings live in `.env` (either `~/.config/distillate/.env` or your working 
 | `RESEND_API_KEY` | *(empty)* | Resend API key for email features |
 | `DIGEST_TO` | *(empty)* | Email address for digests |
 | `DIGEST_FROM` | `onboarding@resend.dev` | Sender email (Resend free tier includes 1 custom domain) |
+| `SYNC_HIGHLIGHTS` | `true` | Write highlights back to Zotero as annotations |
 | `KEEP_ZOTERO_PDF` | `true` | Keep PDF in Zotero after upload (`false` frees storage) |
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose console output |
 | `STATE_GIST_ID` | *(empty)* | GitHub Gist ID for cross-machine state sync |
 
 For GitHub Actions automation, engagement scores, reprocessing, custom AI models, and more — see the [Power users guide](https://distillate.dev/power-users.html).
+
+## Works with your tools
+
+Distillate is designed to complement your existing workflow:
+
+- **[Better BibTeX](https://retorque.re/zotero-better-bibtex/)** — notes and PDFs are named by citekey (e.g. `einstein_relativity_1905.md`). If Better BibTeX isn't installed, citekeys are generated automatically.
+- **[Obsidian Zotero Integration](https://github.com/mgmeyers/obsidian-zotero-desktop-connector)** — Distillate appends its sections to existing notes (between `<!-- distillate:start/end -->` markers) instead of overwriting them.
+- **[PDF++](https://github.com/RyotaUshio/obsidian-pdf-plus)** — annotated PDFs are stored alongside notes in `Distillate/Saved/` with citekey filenames.
+- **Zotero's built-in PDF reader** — highlights sync back as native Zotero annotations, visible on desktop and mobile.
 
 ## Troubleshooting
 

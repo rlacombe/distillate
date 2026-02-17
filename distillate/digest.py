@@ -338,7 +338,8 @@ def _paper_html(p):
 
     # Title with Obsidian deep link
     from distillate import obsidian
-    obsidian_uri = obsidian.get_obsidian_uri(title)
+    citekey = p.get("metadata", {}).get("citekey", "")
+    obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
     if obsidian_uri:
         title_html = (
             f'<a href="{obsidian_uri}" style="color:#333;text-decoration:none;">'

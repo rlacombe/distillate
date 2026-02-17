@@ -7,11 +7,20 @@
   <meta name="description" content="Automate your paper reading workflow: Zotero to reMarkable to structured notes with highlights and AI summaries.">
   <meta property="og:title" content="Distillate — The essence of every paper you read">
   <meta property="og:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Distillate — The essence of every paper you read">
   <meta name="twitter:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-KX9S2725MF');
+  </script>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%237c3aed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v7'/%3E%3Cpath d='M14 2v5a1 1 0 0 0 1 1h5'/%3E%3Cpath d='M3.62 18.8A2.25 2.25 0 1 1 7 15.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a1 1 0 0 1-1.507 0z'/%3E%3C/svg%3E">
   <style>
     :root {
@@ -384,7 +393,7 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.1.7 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.2.0 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">The essence of every paper you read.</p>
@@ -392,7 +401,7 @@
     An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.1.7</span>
+      <span class="badge badge-purple">PyPI v0.2.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
@@ -448,17 +457,22 @@ $ distillate --init</code>
     </div>
 
     <div class="extras">
-      <h2>Want more?</h2>
+      <h2>Plug in what you need</h2>
       <div class="extras-grid">
+        <div class="extra">
+          <strong>Local-first</strong>
+          <em class="extra-subtitle">Plain files you own</em>
+          <span>Markdown notes and PDFs on your machine. No accounts, no subscriptions, no lock-in. Works with Obsidian or any folder.</span>
+        </div>
         <div class="extra">
           <strong>Scheduling</strong>
           <em class="extra-subtitle">launchd &amp; cron</em>
           <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
         </div>
         <div class="extra">
-          <strong>Local-first</strong>
-          <em class="extra-subtitle">Plain files you own</em>
-          <span>Markdown notes and PDFs on your machine. No accounts, no subscriptions, no lock-in. Works with Obsidian or any folder.</span>
+          <strong>Zotero Round-Trip</strong>
+          <em class="extra-subtitle">Highlights sync back</em>
+          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps</span>
         </div>
         <div class="extra">
           <strong>AI summaries</strong>
@@ -474,11 +488,6 @@ $ distillate --init</code>
           <strong>Email digest</strong>
           <em class="extra-subtitle">Free Resend account</em>
           <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
-        </div>
-        <div class="extra">
-          <strong>Citation data</strong>
-          <em class="extra-subtitle">Semantic Scholar</em>
-          <span>See how influential each paper is with citation counts from Semantic Scholar</span>
         </div>
       </div>
     </div>
@@ -497,6 +506,7 @@ $ distillate --init</code>
         <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
         <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
         <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
+        <div class="command"><code>distillate --list</code><span>List all tracked papers</span></div>
         <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
       </div>
     </div>

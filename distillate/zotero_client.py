@@ -394,17 +394,39 @@ def create_obsidian_link(parent_key: str, obsidian_uri: str) -> Optional[str]:
 # -- Notes --
 
 
-def set_note(parent_key: str, html_content: str) -> Optional[str]:
+def set_note(
+    parent_key: str,
+    html_content: str,
+    note_key: str = "",
+) -> Optional[str]:
     """Create or update a child note on a Zotero item.
 
-    Looks for an existing child note to update. If none exists, creates one.
+    If note_key is provided, updates that note directly (avoids searching
+    children, which can miss notes due to Zotero sync lag). Otherwise
+    searches children for an existing note to update.
     Returns the note's item key on success, None on failure.
     """
+    # Fast path: update existing note by key
+    if note_key:
+        try:
+            resp = _get(f"/items/{note_key}")
+            if resp.status_code == 200:
+                version = resp.json()["version"]
+                _patch(
+                    f"/items/{note_key}",
+                    json={"note": html_content},
+                    headers={"If-Unmodified-Since-Version": str(version)},
+                )
+                log.info("Updated note %s on %s", note_key, parent_key)
+                return note_key
+        except Exception:
+            log.debug("Could not update note %s, will search/create", note_key)
+
+    # Search children for an existing note
     resp = _get(f"/items/{parent_key}/children")
     for child in resp.json():
         data = child.get("data", {})
         if data.get("itemType") == "note":
-            # Update existing note
             version = child["version"]
             _patch(
                 f"/items/{child['key']}",
@@ -461,7 +483,106 @@ def _build_note_html(
     return "\n".join(parts)
 
 
+def create_highlight_annotations(
+    attachment_key: str,
+    highlights: List[Dict[str, Any]],
+) -> List[str]:
+    """Create Zotero highlight annotations on a PDF attachment.
+
+    highlights: list of dicts from renderer.extract_zotero_highlights().
+    Returns list of created annotation item keys.
+    Batches in groups of 50 (Zotero API limit).
+    """
+    import json as _json
+
+    if not highlights:
+        return []
+
+    # Check for existing Distillate annotations and remove them
+    resp = _get(f"/items/{attachment_key}/children", params={"itemType": "annotation"})
+    if resp.status_code == 200:
+        existing = resp.json()
+        distillate_anns = [
+            a for a in existing
+            if any(t.get("tag") == "distillate" for t in a.get("data", {}).get("tags", []))
+        ]
+        for a in distillate_anns:
+            _delete(
+                f"/items/{a['key']}",
+                headers={"If-Unmodified-Since-Version": str(a["version"])},
+            )
+            log.debug("Deleted existing Distillate annotation %s", a["key"])
+
+    # Build annotation items
+    items = []
+    for h in highlights:
+        items.append({
+            "itemType": "annotation",
+            "parentItem": attachment_key,
+            "annotationType": "highlight",
+            "annotationText": h["text"],
+            "annotationComment": "",
+            "annotationColor": h.get("color", "#ffd400"),
+            "annotationPageLabel": h["page_label"],
+            "annotationSortIndex": h["sort_index"],
+            "annotationPosition": _json.dumps({
+                "pageIndex": h["page_index"],
+                "rects": h["rects"],
+            }),
+            "tags": [{"tag": "distillate"}],
+        })
+
+    # Batch in groups of 50
+    created_keys: List[str] = []
+    for i in range(0, len(items), 50):
+        batch = items[i:i + 50]
+        resp = _post("/items", json=batch)
+        if resp.status_code in (200, 201):
+            result = resp.json()
+            successful = result.get("successful", {})
+            created_keys.extend(v["key"] for v in successful.values())
+        else:
+            log.warning(
+                "Failed to create annotations (batch %d): %s",
+                i // 50, resp.status_code,
+            )
+
+    log.info(
+        "Created %d Zotero highlight annotation(s) on %s",
+        len(created_keys), attachment_key,
+    )
+    return created_keys
+
+
 # -- Convenience: extract metadata --
+
+_STOP_WORDS = {"a", "an", "the", "of", "in", "on", "for", "and", "to", "with", "from"}
+
+
+def _generate_citekey(authors: list, title: str, date: str) -> str:
+    """Generate a citekey from author, title, and date.
+
+    Format: surname_word_year (e.g. vaswani_attention_2017).
+    """
+    import re
+
+    surname = "unknown"
+    if authors:
+        # Extract surname: take part before comma (e.g. "Doe, J." → "Doe")
+        raw = authors[0].split(",")[0].strip()
+        surname = re.sub(r"[^a-z]", "", raw.lower()) or "unknown"
+
+    word = "untitled"
+    for w in title.split():
+        cleaned = re.sub(r"[^a-z]", "", w.lower())
+        if cleaned and cleaned not in _STOP_WORDS:
+            word = cleaned
+            break
+
+    year = date[:4] if date and len(date) >= 4 else ""
+
+    parts = [p for p in [surname, word, year] if p]
+    return "_".join(parts)
 
 
 def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -502,13 +623,27 @@ def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
         t["tag"] for t in data.get("tags", [])
         if t["tag"] not in workflow_tags
     ]
+    # Extract citekey from Better BibTeX's "Citation Key:" in extra field
+    extra = data.get("extra", "")
+    citekey = ""
+    for line in extra.splitlines():
+        if line.startswith("Citation Key:"):
+            citekey = line.split(":", 1)[1].strip()
+            break
+
+    # Fallback: generate citekey from first author + first title word + year
+    if not citekey:
+        citekey = _generate_citekey(authors, title, data.get("date", ""))
+
+    publication_date = data.get("date", "")
     return {
         "title": title,
         "authors": authors,
+        "citekey": citekey,
         "doi": data.get("DOI", ""),
         "abstract": data.get("abstractNote", ""),
         "url": data.get("url", ""),
-        "publication_date": data.get("date", ""),
+        "publication_date": publication_date,
         "journal": (
             data.get("publicationTitle")
             or data.get("proceedingsTitle")

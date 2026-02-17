@@ -133,12 +133,12 @@ class TestUpdateNoteFrontmatter:
         assert "Second Author" in updated
         assert "Old Author" not in updated
 
-        # Check tags updated
+        # Check tags updated — "paper" and "read" are stripped as workflow tags
         assert "new-tag" in updated
         assert "ml" in updated
         assert "old-tag" not in updated
-        assert "paper" in updated  # preserved prefix
-        assert "read" in updated
+        assert "  - paper" not in updated
+        assert "  - read\n" not in updated
 
         # Check DOI added
         assert "10.1234/test" in updated

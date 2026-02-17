@@ -94,7 +94,8 @@ def _reprocess(args: list[str]) -> None:
 
             if render_ok and pdf_path.exists():
                 annotated_bytes = pdf_path.read_bytes()
-                saved = obsidian.save_annotated_pdf(title, annotated_bytes)
+                citekey = doc.get("metadata", {}).get("citekey", "")
+                saved = obsidian.save_annotated_pdf(title, annotated_bytes, citekey=citekey)
                 pdf_filename = saved.name if saved else None
                 log.info("Saved annotated PDF to Obsidian vault")
             else:
@@ -106,7 +107,15 @@ def _reprocess(args: list[str]) -> None:
             engagement = _compute_engagement(highlights, page_count)
             doc["engagement"] = engagement
 
-            # Update linked attachment to point to annotated PDF
+            # When syncing highlights to Zotero, replace with original PDF
+            # so Zotero annotations don't overlap baked-in highlights
+            if config.SYNC_HIGHLIGHTS and highlights and saved:
+                original_bytes = renderer.extract_original_pdf(zip_path)
+                if original_bytes:
+                    saved.write_bytes(original_bytes)
+                    log.info("Saved original PDF for Zotero annotations")
+
+            # Update linked attachment
             linked = zotero_client.get_linked_attachment(item_key)
             if saved:
                 new_att = zotero_client.create_linked_attachment(
@@ -150,9 +159,11 @@ def _reprocess(args: list[str]) -> None:
             read_date = doc.get("processed_at", "")
 
             # Recreate Obsidian note (delete existing first)
+            citekey = meta.get("citekey", "")
             obsidian.ensure_dataview_note()
             obsidian.ensure_stats_note()
-            obsidian.delete_paper_note(title)
+            obsidian.ensure_bases_note()
+            obsidian.delete_paper_note(title, citekey=citekey)
             # Compute highlight stats for note and state
             flat_hl = [h for hl in (highlights or {}).values() for h in hl]
             hl_pages = len(highlights) if highlights else 0
@@ -180,21 +191,49 @@ def _reprocess(args: list[str]) -> None:
                 highlighted_pages=hl_pages,
                 highlight_word_count=hl_words,
                 page_count=page_count,
+                citekey=citekey,
             )
 
             # Add Obsidian deep link in Zotero
-            obsidian_uri = obsidian.get_obsidian_uri(title)
+            obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
             if obsidian_uri:
                 zotero_client.create_obsidian_link(item_key, obsidian_uri)
 
-            # Sync note to Zotero
-            zotero_note_html = zotero_client._build_note_html(
-                summary=summary, highlights=highlights or None,
-            )
-            zotero_client.set_note(item_key, zotero_note_html)
+            # Back-propagate highlights to Zotero as PDF annotations
+            highlights_synced = False
+            if config.SYNC_HIGHLIGHTS and highlights:
+                zotero_positions = renderer.extract_zotero_highlights(zip_path)
+                if zotero_positions:
+                    att = zotero_client.get_pdf_attachment(item_key)
+                    if not att:
+                        att = zotero_client.get_linked_attachment(item_key)
+                    if att:
+                        from datetime import datetime, timezone
+                        ann_keys = zotero_client.create_highlight_annotations(
+                            att["key"], zotero_positions,
+                        )
+                        doc["highlights_synced_at"] = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                        doc["zotero_annotation_count"] = len(ann_keys)
+                        highlights_synced = True
+
+            # Sync note to Zotero — only when highlights are NOT on the
+            # PDF as annotations (avoids duplicate content and accumulating
+            # notes from Zotero sync conflicts)
+            if not highlights_synced:
+                zotero_note_html = zotero_client._build_note_html(
+                    summary=summary, highlights=highlights or None,
+                )
+                note_key = zotero_client.set_note(
+                    item_key, zotero_note_html,
+                    note_key=doc.get("zotero_note_key", ""),
+                )
+                if note_key:
+                    doc["zotero_note_key"] = note_key
 
             # Update reading log
-            obsidian.append_to_reading_log(title, one_liner, date_read=read_date)
+            obsidian.append_to_reading_log(title, one_liner, date_read=read_date, citekey=citekey)
 
             # Save summary and highlight count to state
             doc["highlight_count"] = len(flat_hl)
@@ -328,6 +367,90 @@ def _backfill_s2() -> None:
         count += 1
 
     log.info("Backfilled S2 data for %d paper(s)", count)
+
+
+def _backfill_highlights(args: list[str]) -> None:
+    """Back-propagate highlights to Zotero for already-processed papers.
+
+    Usage: distillate --backfill-highlights [N]
+    Processes the last N papers (default: all processed papers).
+    """
+    from datetime import datetime, timezone
+
+    from distillate import config
+    from distillate import remarkable_client
+    from distillate import renderer
+    from distillate import zotero_client
+    from distillate.state import State
+
+    config.setup_logging()
+
+    limit = int(args[0]) if args else 0
+    state = State()
+    processed = state.documents_with_status("processed")
+
+    if not processed:
+        print("No processed papers to backfill.")
+        return
+
+    # Sort by processed_at descending, take last N
+    processed.sort(key=lambda d: d.get("processed_at", ""), reverse=True)
+    if limit:
+        processed = processed[:limit]
+
+    print(f"Back-propagating highlights for {len(processed)} paper(s)...")
+
+    count = 0
+    for doc in processed:
+        title = doc["title"]
+        rm_name = doc["remarkable_doc_name"]
+        item_key = doc["zotero_item_key"]
+
+        # Skip if already synced
+        if doc.get("highlights_synced_at"):
+            print(f"  Skip (already synced): {title[:60]}")
+            continue
+
+        # Find any PDF attachment in Zotero (imported or linked)
+        att = zotero_client.get_pdf_attachment(item_key)
+        if not att:
+            att = zotero_client.get_linked_attachment(item_key)
+        if not att:
+            print(f"  Skip (no PDF attachment): {title[:60]}")
+            continue
+
+        print(f"  Processing: {title[:60]}")
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / f"{rm_name}.zip"
+
+            bundle_ok = remarkable_client.download_document_bundle_to(
+                config.RM_FOLDER_SAVED, rm_name, zip_path,
+            )
+
+            if not bundle_ok or not zip_path.exists():
+                log.warning("Could not download bundle for '%s'", title)
+                print("    Could not download from reMarkable")
+                continue
+
+            positions = renderer.extract_zotero_highlights(zip_path)
+            if not positions:
+                print("    No highlight positions extracted")
+                continue
+
+            ann_keys = zotero_client.create_highlight_annotations(
+                att["key"], positions,
+            )
+            doc["highlights_synced_at"] = datetime.now(timezone.utc).isoformat()
+            doc["zotero_annotation_count"] = len(ann_keys)
+            state.save()
+            count += 1
+            print(f"    Created {len(ann_keys)} annotation(s)")
+
+    print(f"\nDone: back-propagated highlights for {count} paper(s).")
 
 
 def _themes(args: list[str]) -> None:
@@ -2050,6 +2173,7 @@ Management:
 Advanced:
   --dry-run               Preview sync without making changes
   --backfill-s2           Refresh Semantic Scholar data for all papers
+  --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --sync-state            Push state.json to a GitHub Gist
 
 Options:
@@ -2124,6 +2248,11 @@ def main():
         _backfill_s2()
         return
 
+    if "--backfill-highlights" in sys.argv:
+        idx = sys.argv.index("--backfill-highlights")
+        _backfill_highlights(sys.argv[idx + 1:])
+        return
+
     if "--suggest" in sys.argv:
         _suggest()
         return
@@ -2156,6 +2285,11 @@ def main():
         state = State()
         sent_count = 0
         synced_count = 0
+
+        # Migrate legacy Obsidian files on every run
+        obsidian.ensure_dataview_note()   # removes Papers List.md
+        obsidian.ensure_stats_note()      # renames to Distillate Stats
+        obsidian.ensure_bases_note()      # replaces Papers.base → Distillate Papers.base
 
         # -- Retry papers awaiting PDF sync --
         awaiting = state.documents_with_status("awaiting_pdf")
@@ -2329,7 +2463,8 @@ def main():
 
                     # Update Obsidian note frontmatter for processed papers
                     if doc.get("status") == "processed":
-                        obsidian.update_note_frontmatter(doc["title"], new_meta)
+                        ck = new_meta.get("citekey", "")
+                        obsidian.update_note_frontmatter(doc["title"], new_meta, citekey=ck)
 
                     state.save()
 
@@ -2435,11 +2570,24 @@ def main():
                             config.RM_FOLDER_READ, rm_name, pdf_path,
                         )
 
+                    # Extract Zotero highlight positions while zip is available
+                    zotero_positions = []
+                    if config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
+                        zotero_positions = renderer.extract_zotero_highlights(zip_path)
+
+                    # When syncing highlights to Zotero, save the original
+                    # (un-annotated) PDF so Zotero annotations don't overlap
+                    # with baked-in highlights.
+                    original_pdf_bytes = None
+                    if zotero_positions and bundle_ok:
+                        original_pdf_bytes = renderer.extract_original_pdf(zip_path)
+
                     pdf_filename = None
                     saved = None
+                    citekey = doc.get("metadata", {}).get("citekey", "")
                     if render_ok and pdf_path.exists():
                         annotated_bytes = pdf_path.read_bytes()
-                        saved = obsidian.save_annotated_pdf(doc["title"], annotated_bytes)
+                        saved = obsidian.save_annotated_pdf(doc["title"], annotated_bytes, citekey=citekey)
                         if saved:
                             pdf_filename = saved.name
                             log.info("Saved annotated PDF to Obsidian vault")
@@ -2451,11 +2599,19 @@ def main():
                     # Clean up original from Inbox folder
                     obsidian.delete_inbox_pdf(doc["title"])
 
-                    # Update linked attachment to point to annotated PDF
+                    # Update linked attachment — use original PDF when
+                    # highlights will be Zotero annotations, otherwise
+                    # use the annotated PDF.
                     linked = zotero_client.get_linked_attachment(item_key)
-                    if saved:
+                    link_pdf = saved
+                    if original_pdf_bytes and saved:
+                        # Overwrite the saved file with the original PDF
+                        # for Zotero; Obsidian note has text highlights
+                        saved.write_bytes(original_pdf_bytes)
+                        log.info("Saved original PDF for Zotero annotations")
+                    if link_pdf:
                         new_att = zotero_client.create_linked_attachment(
-                            item_key, saved.name, str(saved),
+                            item_key, link_pdf.name, str(link_pdf),
                         )
                         if new_att and linked:
                             zotero_client.delete_attachment(linked["key"])
@@ -2496,6 +2652,7 @@ def main():
                 print("    Creating note...")
                 obsidian.ensure_dataview_note()
                 obsidian.ensure_stats_note()
+                obsidian.ensure_bases_note()
                 obsidian.create_paper_note(
                     title=doc["title"],
                     authors=doc["authors"],
@@ -2517,21 +2674,47 @@ def main():
                     highlighted_pages=hl_pages,
                     highlight_word_count=hl_words,
                     page_count=page_count,
+                    citekey=citekey,
                 )
 
                 # Add Obsidian deep link in Zotero
-                obsidian_uri = obsidian.get_obsidian_uri(doc["title"])
+                obsidian_uri = obsidian.get_obsidian_uri(doc["title"], citekey=citekey)
                 if obsidian_uri:
                     zotero_client.create_obsidian_link(item_key, obsidian_uri)
 
-                # Sync note to Zotero
-                zotero_note_html = zotero_client._build_note_html(
-                    summary=summary, highlights=highlights or None,
-                )
-                zotero_client.set_note(item_key, zotero_note_html)
+                # Back-propagate highlights to Zotero as PDF annotations
+                highlights_synced = False
+                if zotero_positions:
+                    att = zotero_client.get_pdf_attachment(item_key)
+                    if not att:
+                        att = zotero_client.get_linked_attachment(item_key)
+                    if att:
+                        ann_keys = zotero_client.create_highlight_annotations(
+                            att["key"], zotero_positions,
+                        )
+                        from datetime import datetime, timezone
+                        doc["highlights_synced_at"] = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                        doc["zotero_annotation_count"] = len(ann_keys)
+                        highlights_synced = True
+
+                # Sync note to Zotero — only when highlights are NOT on the
+                # PDF as annotations (avoids duplicate content and
+                # accumulating notes from Zotero sync conflicts)
+                if not highlights_synced:
+                    zotero_note_html = zotero_client._build_note_html(
+                        summary=summary, highlights=highlights or None,
+                    )
+                    note_key = zotero_client.set_note(
+                        item_key, zotero_note_html,
+                        note_key=doc.get("zotero_note_key", ""),
+                    )
+                    if note_key:
+                        doc["zotero_note_key"] = note_key
 
                 # Append to reading log
-                obsidian.append_to_reading_log(doc["title"], one_liner)
+                obsidian.append_to_reading_log(doc["title"], one_liner, citekey=citekey)
 
                 # Move to Saved on reMarkable
                 remarkable_client.move_document(

@@ -81,6 +81,7 @@ OBSIDIAN_VAULT_NAME: str = (
 OUTPUT_PATH: str = os.environ.get("OUTPUT_PATH", "").strip()
 
 KEEP_ZOTERO_PDF: bool = os.environ.get("KEEP_ZOTERO_PDF", "true").strip().lower() in ("true", "1", "yes")
+SYNC_HIGHLIGHTS: bool = os.environ.get("SYNC_HIGHLIGHTS", "true").strip().lower() in ("true", "1", "yes")
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 

@@ -11,11 +11,14 @@ import logging
 import re
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from rmscene import read_tree, scene_items as si
 
 log = logging.getLogger(__name__)
+
+# Suppress rmscene "newer format" warning — benign, data is still extracted
+logging.getLogger("rmscene.tagged_block_reader").setLevel(logging.ERROR)
 
 # GlyphRange items on adjacent lines within this y-gap are merged
 _MAX_LINE_GAP = 100.0
@@ -24,6 +27,22 @@ _MAX_LINE_GAP = 100.0
 _HIGHLIGHT_COLOR = (1.0, 0.92, 0.3)  # soft yellow
 _HIGHLIGHT_OPACITY = 0.35
 _HIGHLIGHT_TRIM = 0.20  # shrink quads vertically by this fraction per side
+
+
+def extract_original_pdf(zip_path: Path) -> Optional[bytes]:
+    """Extract the original (un-annotated) PDF from a reMarkable bundle.
+
+    Returns the raw PDF bytes, or None if no PDF is found.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            pdf_names = [n for n in zf.namelist() if n.endswith(".pdf")]
+            if not pdf_names:
+                return None
+            return zf.read(pdf_names[0])
+    except Exception:
+        log.warning("Failed to extract original PDF from %s", zip_path.name, exc_info=True)
+        return None
 
 
 def get_page_count(zip_path: Path) -> int:
@@ -148,6 +167,105 @@ def _merge_cross_page(by_page: Dict[int, List[str]]) -> Dict[int, List[str]]:
     return by_page
 
 
+def _recover_pdf_text(page_text: str, search_text: str) -> Optional[str]:
+    """Find search_text in page_text via whitespace/hyphen-normalized matching.
+
+    reMarkable OCR often strips spaces and hyphens at line breaks, producing
+    concatenated text like ``proofs,standard`` or ``math`` (from ``math-\\n
+    ematics``).  This function normalises both texts, locates the match, then
+    returns the original PDF substring with line-break hyphens rejoined and
+    remaining newlines collapsed to spaces so that PyMuPDF ``search_for`` can
+    find it.
+    """
+    norm_chars: List[str] = []
+    norm_to_orig: List[int] = []
+    for i, ch in enumerate(page_text):
+        if not ch.isspace() and ch not in ("-", "\u00ad"):
+            norm_to_orig.append(i)
+            norm_chars.append(ch.lower())
+    page_norm = "".join(norm_chars)
+
+    search_norm = re.sub(r"[\s\-\u00ad]+", "", search_text.lower())
+
+    pos = page_norm.find(search_norm)
+    if pos < 0:
+        return None
+
+    orig_start = norm_to_orig[pos]
+    orig_end = norm_to_orig[pos + len(search_norm) - 1] + 1
+    raw = page_text[orig_start:orig_end]
+    # Rejoin hyphenated words, collapse remaining newlines to spaces
+    return raw.replace("-\n", "").replace("\n", " ")
+
+
+def _search_highlight_positions(
+    doc: Any,
+    highlights_by_page: Dict[int, List[Tuple[str, Optional[float]]]],
+) -> List[Dict[str, Any]]:
+    """Search for highlight text in a PyMuPDF document and return positions.
+
+    Shared helper used by both render_annotated_pdf() and
+    extract_zotero_highlights().  Returns a list of dicts with keys:
+    text, page_index (0-based), quads (list of pymupdf.Quad), page_height.
+    """
+    import pymupdf
+
+    _RM_HEIGHT = 1872.0
+    _RM_TO_PDF_SCALE = 0.70
+
+    results: List[Dict[str, Any]] = []
+
+    for page_idx, glyph_list in highlights_by_page.items():
+        if page_idx >= len(doc):
+            continue
+        page = doc[page_idx]
+        page_h = page.rect.height
+
+        highlighted: List = []  # list of pymupdf.Rect
+
+        for text, rm_y in glyph_list:
+            quads = page.search_for(text, quads=True)
+            if not quads:
+                # Fallback: recover actual PDF text via normalized matching
+                recovered = _recover_pdf_text(page.get_text("text"), text)
+                if recovered:
+                    quads = page.search_for(recovered, quads=True)
+            if not quads:
+                continue
+
+            groups = _group_quads(quads, page_h)
+
+            if len(groups) > 1 and rm_y is not None:
+                expected_frac = (rm_y / _RM_HEIGHT) * _RM_TO_PDF_SCALE
+                groups = [min(
+                    groups,
+                    key=lambda g: abs(g[0].ul.y / page_h - expected_frac),
+                )]
+
+            selected = groups[0]
+
+            new_quads = []
+            for q in selected:
+                r = q.rect
+                center = pymupdf.Point(
+                    (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2,
+                )
+                if any(hr.contains(center) for hr in highlighted):
+                    continue
+                new_quads.append(q)
+                highlighted.append(r)
+
+            if new_quads:
+                results.append({
+                    "text": text,
+                    "page_index": page_idx,
+                    "quads": new_quads,
+                    "page_height": page_h,
+                })
+
+    return results
+
+
 def render_annotated_pdf(zip_path: Path, output_path: Path) -> bool:
     """Render highlight annotations onto the original PDF using PyMuPDF.
 
@@ -169,7 +287,6 @@ def render_annotated_pdf(zip_path: Path, output_path: Path) -> bool:
         if not highlights_by_page:
             log.info("No highlights to render for %s", zip_path.name)
 
-        # Extract the original PDF from the zip
         with zipfile.ZipFile(zip_path, "r") as zf:
             pdf_names = [n for n in zf.namelist() if n.endswith(".pdf")]
             if not pdf_names:
@@ -178,75 +295,104 @@ def render_annotated_pdf(zip_path: Path, output_path: Path) -> bool:
             pdf_data = zf.read(pdf_names[0])
 
         doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+        positions = _search_highlight_positions(doc, highlights_by_page)
 
-        # RM display height in pixels — used to compute expected y-fraction
-        _RM_HEIGHT = 1872.0
-        # Empirical scale from RM y-fraction to PDF y-fraction
-        _RM_TO_PDF_SCALE = 0.70
-
-        total_hits = 0
-        for page_idx, glyph_list in highlights_by_page.items():
-            if page_idx >= len(doc):
-                continue
-            page = doc[page_idx]
-            page_h = page.rect.height
-
-            # Track highlighted regions to prevent overlaps
-            highlighted: List = []  # list of pymupdf.Rect
-
-            for text, rm_y in glyph_list:
-                quads = page.search_for(text, quads=True)
-                if not quads:
-                    continue
-
-                # Group quads into match clusters — a single match
-                # that spans multiple text runs / lines returns
-                # several consecutive, vertically-close quads.
-                groups = _group_quads(quads, page_h)
-
-                # Pick the best match group using RM y-coordinate
-                if len(groups) > 1 and rm_y is not None:
-                    expected_frac = (rm_y / _RM_HEIGHT) * _RM_TO_PDF_SCALE
-                    groups = [min(
-                        groups,
-                        key=lambda g: abs(g[0].ul.y / page_h - expected_frac),
-                    )]
-
-                selected = groups[0]
-
-                # Deduplicate: skip quads whose center is inside an
-                # already-highlighted region
-                new_quads = []
-                for q in selected:
-                    r = q.rect
-                    center = pymupdf.Point(
-                        (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2,
-                    )
-                    if any(hr.contains(center) for hr in highlighted):
-                        continue
-                    new_quads.append(q)
-                    highlighted.append(r)
-
-                if new_quads:
-                    slimmed = [_slim_quad(pymupdf, q, _HIGHLIGHT_TRIM)
-                               for q in new_quads]
-                    annot = page.add_highlight_annot(slimmed)
-                    annot.set_colors(stroke=_HIGHLIGHT_COLOR)
-                    annot.set_opacity(_HIGHLIGHT_OPACITY)
-                    annot.update()
-                    total_hits += 1
+        for pos in positions:
+            page = doc[pos["page_index"]]
+            slimmed = [_slim_quad(pymupdf, q, _HIGHLIGHT_TRIM)
+                       for q in pos["quads"]]
+            annot = page.add_highlight_annot(slimmed)
+            annot.set_colors(stroke=_HIGHLIGHT_COLOR)
+            annot.set_opacity(_HIGHLIGHT_OPACITY)
+            annot.update()
 
         doc.save(str(output_path), garbage=3, deflate=True)
         doc.close()
         log.info(
             "Rendered annotated PDF with %d highlight(s): %s",
-            total_hits, output_path,
+            len(positions), output_path,
         )
         return True
 
     except Exception:
         log.warning("Failed to render annotated PDF for %s", zip_path.name, exc_info=True)
         return False
+
+
+def extract_zotero_highlights(
+    zip_path: Path,
+    pdf_bytes: Optional[bytes] = None,
+) -> List[Dict[str, Any]]:
+    """Extract highlight positions suitable for Zotero annotation API.
+
+    Returns list of dicts with keys: text, page_index (0-based),
+    page_label (1-based str), rects (list of [x0, y0, x1, y1] in PDF
+    bottom-left coordinates), sort_index, color.
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        log.warning("pymupdf not installed, cannot extract Zotero highlights")
+        return []
+
+    try:
+        highlights_by_page = _extract_highlights_by_page(zip_path)
+        if not highlights_by_page:
+            return []
+
+        if pdf_bytes is None:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                pdf_names = [n for n in zf.namelist() if n.endswith(".pdf")]
+                if not pdf_names:
+                    return []
+                pdf_bytes = zf.read(pdf_names[0])
+
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        positions = _search_highlight_positions(doc, highlights_by_page)
+
+        results: List[Dict[str, Any]] = []
+        for pos in positions:
+            page_idx = pos["page_index"]
+            page_h = pos["page_height"]
+            page = doc[page_idx]
+            page_text = page.get_text("text")
+
+            # Convert quads from PyMuPDF (top-left origin) to PDF (bottom-left)
+            rects = []
+            for q in pos["quads"]:
+                r = q.rect
+                rects.append([
+                    round(r.x0, 3),
+                    round(page_h - r.y1, 3),
+                    round(r.x1, 3),
+                    round(page_h - r.y0, 3),
+                ])
+
+            # Compute sort_index: PPPPP|CCCCCC|TTTTT
+            char_offset = page_text.find(pos["text"])
+            top_y = min(q.rect.y0 for q in pos["quads"])
+            sort_index = (
+                f"{page_idx:05d}"
+                f"|{max(char_offset, 0):06d}"
+                f"|{int(page_h - top_y):05d}"
+            )
+
+            results.append({
+                "text": pos["text"],
+                "page_index": page_idx,
+                "page_label": str(page_idx + 1),
+                "rects": rects,
+                "sort_index": sort_index,
+                "color": "#ffd400",
+            })
+
+        doc.close()
+        log.info("Extracted %d Zotero highlight position(s)", len(results))
+        return results
+
+    except Exception:
+        log.warning("Failed to extract Zotero highlights", exc_info=True)
+        return []
 
 
 # ---------------------------------------------------------------------------

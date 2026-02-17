@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.1.7"
+version = "0.2.0"
 description = "Distill research papers from Zotero through reMarkable into structured notes"
 readme = "README.md"
 license = "MIT"

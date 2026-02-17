@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.0 — 2026-02-16
+
+Zotero Round-Trip: highlights flow back from reMarkable to Zotero, citekey-based naming, and Obsidian plugin compatibility.
+
+### Features
+
+- **Zotero highlight back-sync**: highlights made on reMarkable are written back to Zotero as searchable annotations — visible in Zotero's built-in PDF reader and compatible with the Zotero iOS/Android apps
+- **Citekey-based file naming**: notes and annotated PDFs use Better BibTeX citekeys (e.g. `einstein_relativity_1905.md`) for compatibility with the Obsidian Zotero Integration plugin ecosystem
+- **Note merge for plugin coexistence**: when a note already exists (e.g. from the Zotero Integration plugin), Distillate appends its sections between `<!-- distillate:start/end -->` markers instead of overwriting
+- **Obsidian Bases support**: generates a `Papers.base` file for native table views in Obsidian 1.9+ (alongside existing Dataview template)
+- **`--backfill-highlights [N]`**: back-propagate highlights to Zotero for already-processed papers (processes last N, default 10)
+- **`--list` command**: list all tracked papers grouped by status
+
+### Improvements
+
+- **Tag sanitization**: Zotero tags like `Computer Science - Artificial Intelligence` become nested Obsidian tags (`computer-science/artificial-intelligence`) instead of appearing crossed out
+- **Citekey fallback**: when Better BibTeX isn't installed, generates citekeys automatically from `surname_word_year`
+- **Frontmatter additions**: notes now include `citekey`, `year`, and `aliases` fields for richer Obsidian integration
+- **Saved/ folder rename**: processed papers output folder changed from `Read/` to `Saved/` for clarity
+- **`SYNC_HIGHLIGHTS` config toggle**: control highlight back-propagation (default: on)
+- **Duplicate prevention**: Zotero annotations tagged `distillate` are cleaned up before re-sync to prevent duplicates
+- **Reading log citekey links**: reading log uses `[[citekey|title]]` wikilinks for stable references
+
 ## 0.1.7 — 2026-02-16
 
 Friction reduction, power-user documentation, and tech debt cleanup.

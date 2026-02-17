@@ -15,27 +15,15 @@ from distillate import config
 
 log = logging.getLogger(__name__)
 
-_DATAVIEW_TEMPLATE = """\
-# Papers List
-
-```dataview
-TABLE date_added as "Added", date_read as "Read", default(engagement, "-") as "Eng%", default(highlighted_pages, "-") as "Pages", default(highlight_word_count, "-") as "Words"
-FROM "{folder}"
-WHERE tags AND contains(tags, "read")
-SORT date_read DESC
-```
-"""
-
-
 _STATS_TEMPLATE = """\
-# Reading Stats
+# Distillate Stats
 
 ## Monthly Breakdown
 
 ```dataview
 TABLE length(rows) as "Papers", sum(map(rows, (r) => default(r.page_count, 0))) as "Pages Read", round(sum(map(rows, (r) => default(r.engagement, 0))) / length(rows)) as "Avg Eng%", sum(map(rows, (r) => default(r.highlight_word_count, 0))) as "Words Highlighted"
-FROM "{folder}"
-WHERE tags AND contains(tags, "read")
+FROM "{folder}/Saved"
+WHERE date_read
 GROUP BY dateformat(date_read, "yyyy-MM") as "Month"
 SORT rows[0].date_read DESC
 ```
@@ -44,10 +32,9 @@ SORT rows[0].date_read DESC
 
 ```dataview
 TABLE length(rows) as "Papers", round(sum(map(rows, (r) => default(r.engagement, 0))) / length(rows)) as "Avg Eng%"
-FROM "{folder}"
-WHERE tags AND contains(tags, "read")
+FROM "{folder}/Saved"
+WHERE date_read
 FLATTEN tags as tag
-WHERE tag != "paper" AND tag != "read"
 GROUP BY tag as "Topic"
 SORT round(sum(map(rows, (r) => default(r.engagement, 0))) / length(rows)) DESC
 LIMIT 15
@@ -57,8 +44,8 @@ LIMIT 15
 
 ```dataview
 TABLE date_read as "Read", engagement as "Eng%", highlighted_pages as "Pages", highlight_word_count as "Words"
-FROM "{folder}"
-WHERE tags AND contains(tags, "read") AND engagement > 0
+FROM "{folder}/Saved"
+WHERE date_read AND engagement > 0
 SORT engagement DESC
 LIMIT 10
 ```
@@ -67,8 +54,8 @@ LIMIT 10
 
 ```dataview
 TABLE date_read as "Read", default(engagement, "-") as "Eng%"
-FROM "{folder}"
-WHERE tags AND contains(tags, "read")
+FROM "{folder}/Saved"
+WHERE date_read
 SORT date_read DESC
 LIMIT 10
 ```
@@ -107,11 +94,11 @@ def _inbox_dir() -> Optional[Path]:
 
 
 def _read_dir() -> Optional[Path]:
-    """Return the Read subdirectory in the papers folder, or None if unconfigured."""
+    """Return the Saved subdirectory in the papers folder, or None if unconfigured."""
     d = _papers_dir()
     if d is None:
         return None
-    rd = d / "Read"
+    rd = d / "Saved"
     rd.mkdir(parents=True, exist_ok=True)
     return rd
 
@@ -145,14 +132,15 @@ def delete_inbox_pdf(title: str) -> None:
         log.info("Removed from Inbox: %s", pdf_path)
 
 
-def delete_paper_note(title: str) -> None:
+def delete_paper_note(title: str, citekey: str = "") -> None:
     """Delete an existing paper note if it exists (checks Read/ subfolder)."""
     rd = _read_dir()
     if rd is None:
         return
 
+    filename = citekey if citekey else _sanitize_note_name(title)
     sanitized = _sanitize_note_name(title)
-    note_path = rd / f"{sanitized}.md"
+    note_path = rd / f"{filename}.md"
     if note_path.exists():
         note_path.unlink()
         log.info("Deleted existing note: %s", note_path)
@@ -167,7 +155,7 @@ def delete_paper_note(title: str) -> None:
         log.info("Deleted legacy note: %s", legacy_path)
 
 
-def save_annotated_pdf(title: str, pdf_bytes: bytes) -> Optional[Path]:
+def save_annotated_pdf(title: str, pdf_bytes: bytes, citekey: str = "") -> Optional[Path]:
     """Save an annotated PDF to the Read folder.
 
     Returns the path to the saved file, or None if output is unconfigured.
@@ -176,43 +164,89 @@ def save_annotated_pdf(title: str, pdf_bytes: bytes) -> Optional[Path]:
     if rd is None:
         return None
 
-    sanitized = _sanitize_note_name(title)
-    pdf_path = rd / f"{sanitized}.pdf"
+    filename = citekey if citekey else _sanitize_note_name(title)
+    pdf_path = rd / f"{filename}.pdf"
     pdf_path.write_bytes(pdf_bytes)
     log.info("Saved annotated PDF: %s", pdf_path)
     return pdf_path
 
 
 def ensure_dataview_note() -> None:
-    """Create the Dataview reading log note if it doesn't exist."""
+    """Remove the legacy Papers List note (replaced by Bases)."""
     if not _is_obsidian():
         return
     d = _papers_dir()
     if d is None:
         return
 
-    dataview_path = d / "Papers List.md"
-    if not dataview_path.exists():
-        dataview_path.write_text(
-            _DATAVIEW_TEMPLATE.format(folder=config.OBSIDIAN_PAPERS_FOLDER)
-        )
-        log.info("Created Dataview note: %s", dataview_path)
+    old_path = d / "Papers List.md"
+    if old_path.exists():
+        old_path.unlink()
+        log.info("Removed legacy Papers List: %s", old_path)
 
 
 def ensure_stats_note() -> None:
-    """Create the Reading Stats dashboard note if it doesn't exist."""
+    """Create the Distillate Stats dashboard note if it doesn't exist."""
     if not _is_obsidian():
         return
     d = _papers_dir()
     if d is None:
         return
 
-    stats_path = d / "Reading Stats.md"
+    # Remove legacy name
+    old_path = d / "Reading Stats.md"
+    if old_path.exists():
+        old_path.rename(d / "Distillate Stats.md")
+        log.info("Renamed Reading Stats -> Distillate Stats")
+
+    stats_path = d / "Distillate Stats.md"
     if not stats_path.exists():
         stats_path.write_text(
             _STATS_TEMPLATE.format(folder=config.OBSIDIAN_PAPERS_FOLDER)
         )
-        log.info("Created Reading Stats note: %s", stats_path)
+        log.info("Created Distillate Stats: %s", stats_path)
+
+
+_BASES_TEMPLATE = """\
+filters: file.inFolder("{folder}/Saved")
+views:
+  - type: table
+    name: All Papers
+    order:
+      - date_read: desc
+    fields:
+      - title
+      - date_added
+      - date_read
+      - engagement
+      - highlighted_pages
+      - highlight_word_count
+"""
+
+
+def ensure_bases_note() -> None:
+    """Create an Obsidian Bases .base file if it doesn't exist.
+
+    Bases (Obsidian 1.9+) is the native replacement for Dataview.
+    """
+    if not _is_obsidian():
+        return
+    d = _papers_dir()
+    if d is None:
+        return
+
+    # Remove legacy name
+    old_path = d / "Papers.base"
+    if old_path.exists():
+        old_path.unlink()
+        log.info("Removed legacy Papers.base")
+
+    bases_path = d / "Distillate Papers.base"
+    if not bases_path.exists():
+        bases_path.write_text(
+            _BASES_TEMPLATE.format(folder=config.OBSIDIAN_PAPERS_FOLDER)
+        )
+        log.info("Created Bases file: %s", bases_path)
 
 
 def _render_highlights_md(
@@ -266,39 +300,190 @@ def create_paper_note(
     highlighted_pages: int = 0,
     highlight_word_count: int = 0,
     page_count: int = 0,
+    citekey: str = "",
 ) -> Optional[Path]:
     """Create a markdown note for a read paper in the Read subfolder.
 
-    Overwrites any existing note, preserving the user's ``## My Notes``
-    section.  Returns the path to the created note, or None if output is
-    unconfigured.
+    Supports three scenarios:
+    1. No existing note → create full note with Distillate markers.
+    2. Existing note with ``<!-- distillate:start -->`` marker (re-sync)
+       → replace content between markers, preserve everything else.
+    3. Existing note without marker (e.g. from Zotero Integration plugin)
+       → merge Distillate frontmatter fields into existing frontmatter,
+         append Distillate sections between markers.
+
+    Always preserves the user's ``## My Notes`` section.
+    Returns the path to the created note, or None if output is unconfigured.
     """
     rd = _read_dir()
     if rd is None:
         return None
 
-    sanitized = _sanitize_note_name(title)
-    note_path = rd / f"{sanitized}.md"
+    filename = citekey if citekey else _sanitize_note_name(title)
+    note_path = rd / f"{filename}.md"
 
-    # Preserve user's "My Notes" section before overwriting
-    preserved_notes = ""
+    today = date_read[:10] if date_read else date.today().isoformat()
+
+    # Build highlights section
+    highlights_md = _render_highlights_md(highlights)
+
+    # One-liner blockquote at top
+    oneliner_md = f"> {one_liner}\n\n" if one_liner else ""
+
+    # Summary paragraph
+    summary_md = f"{summary}\n\n" if summary else ""
+
+    # Key ideas as bare bullet list (no header)
+    if key_learnings:
+        learnings_md = "\n".join(f"- {item}" for item in key_learnings) + "\n\n"
+    else:
+        learnings_md = ""
+
+    # Optional abstract section
+    if abstract:
+        abstract_md = f"## Abstract\n\n> {abstract}\n\n"
+    else:
+        abstract_md = ""
+
+    # DOI link in note body
+    doi_link_md = f"[Open paper](https://doi.org/{doi})\n\n" if doi else ""
+
+    # PDF embed
+    if pdf_filename and _is_obsidian():
+        pdf_embed = f"![[{pdf_filename}]]\n\n"
+    else:
+        pdf_embed = ""
+
+    # Build the Distillate-specific content block (between markers)
+    distillate_block = (
+        f"{doi_link_md}{oneliner_md}{summary_md}{learnings_md}"
+        f"{pdf_embed}{abstract_md}"
+        f"## Highlights\n\n{highlights_md}\n"
+    )
+
+    _MARKER_START = "<!-- distillate:start -->"
+    _MARKER_END = "<!-- distillate:end -->"
+
+    # -- Scenario 2 or 3: existing note --
     if note_path.exists():
-        log.info("Overwriting existing note: %s", note_path)
         existing = note_path.read_text()
+
+        # Preserve user's "My Notes" section
+        preserved_notes = ""
         my_notes_marker = "\n## My Notes\n"
         idx = existing.find(my_notes_marker)
         if idx >= 0:
             preserved_notes = existing[idx + len(my_notes_marker):]
 
-    today = date_read[:10] if date_read else date.today().isoformat()
+        if _MARKER_START in existing:
+            # Scenario 2: re-sync — replace between markers
+            log.info("Re-syncing Distillate sections in: %s", note_path)
+            start = existing.index(_MARKER_START)
+            end = existing.index(_MARKER_END) + len(_MARKER_END) if _MARKER_END in existing else len(existing)
 
+            new_block = (
+                f"{_MARKER_START}\n\n"
+                f"{distillate_block}\n"
+                f"## My Notes\n\n"
+                f"{_MARKER_END}"
+            )
+            content = existing[:start] + new_block + existing[end:]
+
+            # Re-insert preserved notes
+            if preserved_notes:
+                my_notes_idx = content.find("\n## My Notes\n")
+                if my_notes_idx >= 0:
+                    insert_at = my_notes_idx + len("\n## My Notes\n")
+                    # Find the marker end after My Notes
+                    marker_end_idx = content.find(f"\n{_MARKER_END}", insert_at)
+                    if marker_end_idx >= 0:
+                        content = (
+                            content[:insert_at]
+                            + preserved_notes.rstrip("\n") + "\n\n"
+                            + content[marker_end_idx:]
+                        )
+
+            # Merge Distillate frontmatter into existing
+            if content.startswith("---\n"):
+                try:
+                    fm_end = content.index("\n---\n", 4)
+                    fm_text = content[4:fm_end]
+                    body = content[fm_end + 5:]
+                    blocks = _parse_frontmatter_blocks(fm_text)
+                    _merge_distillate_frontmatter(
+                        blocks, title=title, authors=authors, date_added=date_added,
+                        today=today, publication_date=publication_date, doi=doi,
+                        journal=journal, url=url, citation_count=citation_count,
+                        engagement=engagement, highlighted_pages=highlighted_pages,
+                        highlight_word_count=highlight_word_count, page_count=page_count,
+                        pdf_filename=pdf_filename, citekey=citekey,
+                        zotero_item_key=zotero_item_key, topic_tags=topic_tags,
+                    )
+                    content = f"---\n{_rebuild_frontmatter(blocks)}\n---\n{body}"
+                except ValueError:
+                    pass
+
+            note_path.write_text(content)
+            log.info("Updated note: %s", note_path)
+            return note_path
+
+        else:
+            # Scenario 3: external note (e.g. Zotero Integration plugin)
+            log.info("Merging Distillate sections into existing note: %s", note_path)
+
+            # Build the marker-wrapped block to append
+            marker_block = (
+                f"\n{_MARKER_START}\n\n"
+                f"{distillate_block}\n"
+                f"## My Notes\n\n"
+                f"{_MARKER_END}\n"
+            )
+            if preserved_notes:
+                marker_block = (
+                    f"\n{_MARKER_START}\n\n"
+                    f"{distillate_block}\n"
+                    f"## My Notes\n\n"
+                    f"{preserved_notes.rstrip(chr(10))}\n\n"
+                    f"{_MARKER_END}\n"
+                )
+
+            # Merge frontmatter
+            if existing.startswith("---\n"):
+                try:
+                    fm_end = existing.index("\n---\n", 4)
+                    fm_text = existing[4:fm_end]
+                    body = existing[fm_end + 5:]
+                    blocks = _parse_frontmatter_blocks(fm_text)
+                    _merge_distillate_frontmatter(
+                        blocks, title=title, authors=authors, date_added=date_added,
+                        today=today, publication_date=publication_date, doi=doi,
+                        journal=journal, url=url, citation_count=citation_count,
+                        engagement=engagement, highlighted_pages=highlighted_pages,
+                        highlight_word_count=highlight_word_count, page_count=page_count,
+                        pdf_filename=pdf_filename, citekey=citekey,
+                        zotero_item_key=zotero_item_key, topic_tags=topic_tags,
+                    )
+                    content = f"---\n{_rebuild_frontmatter(blocks)}\n---\n{body}"
+                except ValueError:
+                    content = existing
+            else:
+                content = existing
+
+            # Remove old My Notes section from body (it's now inside the marker block)
+            my_notes_idx = content.find("\n## My Notes\n")
+            if my_notes_idx >= 0:
+                content = content[:my_notes_idx]
+
+            content = content.rstrip("\n") + marker_block
+            note_path.write_text(content)
+            log.info("Merged note: %s", note_path)
+            return note_path
+
+    # -- Scenario 1: fresh note --
     # Build YAML frontmatter
     authors_yaml = "\n".join(f"  - {a}" for a in authors) if authors else "  - Unknown"
-    all_tags = ["paper", "read"] + (topic_tags or [])
-    tags_yaml = "\n".join(f"  - {t}" for t in all_tags)
-
-    # Build highlights section
-    highlights_md = _render_highlights_md(highlights)
+    all_tags = [_sanitize_tag(t) for t in (topic_tags or [])]
+    tags_yaml = "\n".join(f"  - {t}" for t in all_tags) if all_tags else ""
 
     # Optional frontmatter lines
     optional = ""
@@ -322,58 +507,38 @@ def create_paper_note(
         optional += f"\npage_count: {page_count}"
     if pdf_filename and _is_obsidian():
         pdf_yaml = f'\npdf: "[[{pdf_filename}]]"'
-        pdf_embed = f"![[{pdf_filename}]]\n\n"
     elif pdf_filename:
         pdf_yaml = f'\npdf: "{pdf_filename}"'
-        pdf_embed = ""
     else:
         pdf_yaml = ""
-        pdf_embed = ""
 
-    # One-liner blockquote at top
-    oneliner_md = f"> {one_liner}\n\n" if one_liner else ""
-
-    # Summary paragraph
-    summary_md = f"{summary}\n\n" if summary else ""
-
-    # Key ideas as bare bullet list (no header)
-    if key_learnings:
-        learnings_md = "\n".join(f"- {item}" for item in key_learnings) + "\n\n"
-    else:
-        learnings_md = ""
-
-    # Optional abstract section
-    if abstract:
-        abstract_md = f"## Abstract\n\n> {abstract}\n\n"
-    else:
-        abstract_md = ""
-
-    # DOI link in note body
-    doi_link_md = f"[Open paper](https://doi.org/{doi})\n\n" if doi else ""
+    # Citekey and year frontmatter
+    citekey_yaml = f'\ncitekey: "{citekey}"' if citekey else ""
+    year = publication_date[:4] if publication_date and len(publication_date) >= 4 else ""
+    year_yaml = f"\nyear: {year}" if year else ""
+    aliases_yaml = f'\naliases:\n  - "{_escape_yaml(title)}"' if citekey else ""
 
     content = f"""\
 ---
-title: "{_escape_yaml(title)}"
+title: "{_escape_yaml(title)}"{citekey_yaml}
 authors:
 {authors_yaml}
 date_added: {date_added[:10]}
-date_read: {today}
-zotero: "zotero://select/library/items/{zotero_item_key}"{optional}{pdf_yaml}
+date_read: {today}{year_yaml}
+zotero: "zotero://select/library/items/{zotero_item_key}"{optional}{pdf_yaml}{aliases_yaml}
 tags:
 {tags_yaml}
 ---
 
 # {title}
 
-{doi_link_md}{oneliner_md}{summary_md}{learnings_md}{pdf_embed}{abstract_md}## Highlights
+{_MARKER_START}
 
-{highlights_md}
-
+{distillate_block}
 ## My Notes
 
+{_MARKER_END}
 """
-    if preserved_notes:
-        content = content.rstrip("\n") + "\n" + preserved_notes
     note_path.write_text(content)
     log.info("Created note: %s", note_path)
     return note_path
@@ -410,7 +575,87 @@ def _rebuild_frontmatter(blocks: OrderedDict) -> str:
     return "\n".join(blocks.values())
 
 
-def update_note_frontmatter(title: str, metadata: Dict[str, Any]) -> bool:
+def _merge_distillate_frontmatter(
+    blocks: OrderedDict,
+    *,
+    title: str,
+    authors: List[str],
+    date_added: str,
+    today: str,
+    publication_date: str,
+    doi: str,
+    journal: str,
+    url: str,
+    citation_count: int,
+    engagement: int,
+    highlighted_pages: int,
+    highlight_word_count: int,
+    page_count: int,
+    pdf_filename: Optional[str],
+    citekey: str,
+    zotero_item_key: str,
+    topic_tags: Optional[List[str]],
+) -> None:
+    """Merge Distillate-specific fields into existing frontmatter blocks.
+
+    Only adds/updates fields; never removes existing fields that Distillate
+    doesn't manage.
+    """
+    # Add Distillate fields (don't overwrite existing title/authors from plugin)
+    if "title" not in blocks:
+        blocks["title"] = f'title: "{_escape_yaml(title)}"'
+    if citekey and "citekey" not in blocks:
+        blocks["citekey"] = f'citekey: "{citekey}"'
+    if "date_added" not in blocks:
+        blocks["date_added"] = f"date_added: {date_added[:10]}"
+    blocks["date_read"] = f"date_read: {today}"
+
+    year = publication_date[:4] if publication_date and len(publication_date) >= 4 else ""
+    if year and "year" not in blocks:
+        blocks["year"] = f"year: {year}"
+    blocks["zotero"] = f'zotero: "zotero://select/library/items/{zotero_item_key}"'
+
+    if doi:
+        blocks["doi"] = f'doi: "{_escape_yaml(doi)}"'
+    if journal:
+        blocks["journal"] = f'journal: "{_escape_yaml(journal)}"'
+    if publication_date:
+        blocks["publication_date"] = f'publication_date: "{publication_date}"'
+    if url:
+        blocks["url"] = f'url: "{_escape_yaml(url)}"'
+    if citation_count:
+        blocks["citation_count"] = f"citation_count: {citation_count}"
+    if engagement:
+        blocks["engagement"] = f"engagement: {engagement}"
+    if highlighted_pages:
+        blocks["highlighted_pages"] = f"highlighted_pages: {highlighted_pages}"
+    if highlight_word_count:
+        blocks["highlight_word_count"] = f"highlight_word_count: {highlight_word_count}"
+    if page_count:
+        blocks["page_count"] = f"page_count: {page_count}"
+    if pdf_filename:
+        if _is_obsidian():
+            blocks["pdf"] = f'pdf: "[[{pdf_filename}]]"'
+        else:
+            blocks["pdf"] = f'pdf: "{pdf_filename}"'
+    if citekey and "aliases" not in blocks:
+        blocks["aliases"] = f'aliases:\n  - "{_escape_yaml(title)}"'
+
+    # Merge tags: keep existing tags, add topic_tags (skip paper/read workflow tags)
+    existing_tags: List[str] = []
+    if "tags" in blocks:
+        for line in blocks["tags"].split("\n")[1:]:
+            tag = line.strip().lstrip("- ").strip()
+            if tag and tag not in ("paper", "read"):
+                existing_tags.append(tag)
+
+    new_tags = [_sanitize_tag(t) for t in (topic_tags or [])]
+    merged = list(dict.fromkeys(existing_tags + new_tags))  # dedup, preserve order
+    tags_yaml = "\n".join(f"  - {t}" for t in merged)
+    blocks["tags"] = f"tags:\n{tags_yaml}"
+
+
+def update_note_frontmatter(title: str, metadata: Dict[str, Any], citekey: str = "") -> bool:
     """Update YAML frontmatter on an existing paper note.
 
     Replaces authors, tags, doi, journal, publication_date, url, and
@@ -421,10 +666,17 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any]) -> bool:
     if rd is None:
         return False
 
-    sanitized = _sanitize_note_name(title)
-    note_path = rd / f"{sanitized}.md"
+    filename = citekey if citekey else _sanitize_note_name(title)
+    note_path = rd / f"{filename}.md"
     if not note_path.exists():
-        return False
+        # Fall back to title-based lookup for pre-citekey notes
+        if citekey:
+            sanitized = _sanitize_note_name(title)
+            note_path = rd / f"{sanitized}.md"
+            if not note_path.exists():
+                return False
+        else:
+            return False
 
     content = note_path.read_text()
     if not content.startswith("---\n"):
@@ -446,9 +698,9 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any]) -> bool:
         authors_yaml = "\n".join(f"  - {a}" for a in authors)
         blocks["authors"] = f"authors:\n{authors_yaml}"
 
-    # Update tags (preserve paper + read prefix)
-    all_tags = ["paper", "read"] + (metadata.get("tags") or [])
-    tags_yaml = "\n".join(f"  - {t}" for t in all_tags)
+    # Update tags (topic tags only, skip paper/read workflow tags)
+    all_tags = [_sanitize_tag(t) for t in (metadata.get("tags") or [])]
+    tags_yaml = "\n".join(f"  - {t}" for t in all_tags) if all_tags else ""
     blocks["tags"] = f"tags:\n{tags_yaml}"
 
     # Simple key-value fields — update if new value is non-empty
@@ -477,6 +729,7 @@ def append_to_reading_log(
     title: str,
     summary: str,
     date_read: str = "",
+    citekey: str = "",
 ) -> None:
     """Append a paper entry to the Reading Log note.
 
@@ -488,22 +741,32 @@ def append_to_reading_log(
     if d is None:
         return
 
-    log_path = d / "Reading Log.md"
+    # Rename legacy file
+    old_log = d / "Reading Log.md"
+    if old_log.exists():
+        old_log.rename(d / "Distillate Log.md")
+        log.info("Renamed Reading Log -> Distillate Log")
+
+    log_path = d / "Distillate Log.md"
 
     if not log_path.exists():
-        log_path.write_text("# Reading Log\n\n")
-        log.info("Created Reading Log: %s", log_path)
+        log_path.write_text("# Distillate Log\n\n")
+        log.info("Created Distillate Log: %s", log_path)
 
     existing = log_path.read_text()
     sanitized = _sanitize_note_name(title)
+    note_name = citekey if citekey else sanitized
 
     # Build link marker and entry format based on mode
     if _is_obsidian():
-        link_marker = f"[[{sanitized}|"
-        link_text = f"[[{sanitized}|{title}]]"
+        link_marker = f"[[{note_name}|"
+        link_text = f"[[{note_name}|{title}]]"
     else:
-        link_marker = sanitized
+        link_marker = note_name
         link_text = title
+
+    # Also check for old title-based entries when using citekey
+    old_marker = f"[[{sanitized}|" if (citekey and _is_obsidian()) else None
 
     # Find existing entries and preserve the oldest date
     lines = existing.split("\n")
@@ -512,12 +775,22 @@ def append_to_reading_log(
         if link_marker in line and line.startswith("- "):
             existing_date = line[2:12]  # extract YYYY-MM-DD after "- "
             break
+        if old_marker and old_marker in line and line.startswith("- "):
+            existing_date = line[2:12]
+            break
 
     entry_date = existing_date or (date_read[:10] if date_read else date.today().isoformat())
     bullet = f"- {entry_date} — {link_text} — {summary}"
 
-    # Remove ALL existing entries for this paper, then add new one
-    cleaned = [line for line in lines if link_marker not in line]
+    # Remove ALL existing entries for this paper (both old and new format)
+    def _is_entry_for_paper(line: str) -> bool:
+        if link_marker in line:
+            return True
+        if old_marker and old_marker in line:
+            return True
+        return False
+
+    cleaned = [line for line in lines if not _is_entry_for_paper(line)]
 
     # Separate header from bullet entries
     header_lines = []
@@ -537,10 +810,10 @@ def append_to_reading_log(
     header = "\n".join(header_lines).rstrip("\n") + "\n\n"
     updated = header + "\n".join(entry_lines) + "\n"
     log_path.write_text(updated)
-    log.info("Updated Reading Log: %s", title)
+    log.info("Updated Distillate Log: %s", title)
 
 
-def get_obsidian_uri(title: str, subfolder: str = "Read") -> Optional[str]:
+def get_obsidian_uri(title: str, subfolder: str = "Saved", citekey: str = "") -> Optional[str]:
     """Return an obsidian:// URI that opens the paper note in the vault.
 
     Returns None if vault name is not configured.
@@ -548,8 +821,8 @@ def get_obsidian_uri(title: str, subfolder: str = "Read") -> Optional[str]:
     if not config.OBSIDIAN_VAULT_NAME:
         return None
 
-    sanitized = _sanitize_note_name(title)
-    file_path = f"{config.OBSIDIAN_PAPERS_FOLDER}/{subfolder}/{sanitized}"
+    note_name = citekey if citekey else _sanitize_note_name(title)
+    file_path = f"{config.OBSIDIAN_PAPERS_FOLDER}/{subfolder}/{note_name}"
     return f"obsidian://open?vault={quote(config.OBSIDIAN_VAULT_NAME)}&file={quote(file_path)}"
 
 
@@ -589,6 +862,23 @@ month: {month}
     note_path.write_text(themes_content)
     log.info("Created themes note: %s", note_path)
     return note_path
+
+
+def _sanitize_tag(tag: str) -> str:
+    """Sanitize a tag string for Obsidian compatibility.
+
+    Obsidian tags can't contain spaces. Convert " - " separators (common
+    in Zotero arXiv tags like "Computer Science - AI") to nested tag
+    format, replace remaining spaces with hyphens, and lowercase.
+    """
+    import re
+    # Replace " - " separators (with spaces on both sides) with /
+    tag = re.sub(r'\s+-\s+', '/', tag)
+    # Replace remaining spaces with hyphens
+    tag = tag.replace(' ', '-')
+    # Remove characters invalid in Obsidian tags
+    tag = re.sub(r'[^\w/\-]', '', tag)
+    return tag.lower()
 
 
 def _sanitize_note_name(name: str) -> str:

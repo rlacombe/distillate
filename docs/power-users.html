@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distillate — Power Users Guide</title>
   <meta name="description" content="Advanced configuration, automation, and troubleshooting for Distillate.">
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-KX9S2725MF');
+  </script>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%237c3aed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v7'/%3E%3Cpath d='M14 2v5a1 1 0 0 0 1 1h5'/%3E%3Cpath d='M3.62 18.8A2.25 2.25 0 1 1 7 15.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a1 1 0 0 1-1.507 0z'/%3E%3C/svg%3E">
   <style>
     :root {
@@ -397,6 +405,99 @@ $ cat state.json | jq .
 
 # Count processed papers
 $ cat state.json | jq '.documents | length'</code></pre>
+
+    <!-- 8. Zotero Highlight Back-Propagation -->
+    <h2>Zotero Highlight Back-Propagation</h2>
+
+    <p>When you process a paper, Distillate writes your reMarkable highlights back to Zotero as native annotation items. These are visible in Zotero's built-in PDF reader on desktop and mobile.</p>
+
+    <h3>How it works</h3>
+
+    <ol>
+      <li>Highlighted text is extracted from the reMarkable <code>.rm</code> files</li>
+      <li>Each highlight is located in the original PDF via text search</li>
+      <li>Bounding-box coordinates are converted to Zotero's format (PDF bottom-left origin)</li>
+      <li>Annotations are created via the Zotero Web API with <code>itemType: "annotation"</code></li>
+    </ol>
+
+    <p>All Distillate-created annotations are tagged <code>distillate</code>. On re-sync, existing Distillate annotations are replaced (your manual annotations are never touched).</p>
+
+    <h3>Configuration</h3>
+
+<pre><code># In your .env file (default: true)
+SYNC_HIGHLIGHTS=true</code></pre>
+
+    <p>Set to <code>false</code> to disable highlight back-propagation entirely.</p>
+
+    <h3>Backfilling existing papers</h3>
+
+    <p>If you processed papers before v0.2.0, you can back-propagate their highlights retroactively:</p>
+
+<pre><code># Back-propagate highlights for all processed papers
+$ distillate --backfill-highlights
+
+# Or just the last 5
+$ distillate --backfill-highlights 5</code></pre>
+
+    <p>Papers that already have synced highlights are skipped. To force a re-sync, use <code>--reprocess</code> instead.</p>
+
+    <div class="gotcha">
+      <strong>Requires the document on reMarkable</strong>
+      Backfill downloads the document bundle from your reMarkable's Saved/ folder. If you've deleted the document from reMarkable, backfill will skip it.
+    </div>
+
+    <!-- 9. Citekey Naming -->
+    <h2>Citekey Naming</h2>
+
+    <p>Notes and annotated PDFs are named using citekeys -- short identifiers like <code>einstein_relativity_1905</code> instead of full paper titles. This makes filenames predictable and compatible with Obsidian plugins that use citekeys.</p>
+
+    <h3>Better BibTeX integration</h3>
+
+    <p>If you use <a href="https://retorque.re/zotero-better-bibtex/">Better BibTeX for Zotero</a>, Distillate reads the citekey from the item's <code>extra</code> field (where Better BibTeX stores it as <code>Citation Key: AuthorYear</code>).</p>
+
+    <h3>Automatic fallback</h3>
+
+    <p>Without Better BibTeX, Distillate generates a citekey from the first author's surname, the first meaningful word of the title, and the year:</p>
+
+<pre><code># "Attention Is All You Need" by Vaswani et al., 2017
+→ vaswani_attention_2017
+
+# "Biology needs to become prospective" by Avasthi, 2026
+→ avasthi_biology_2026</code></pre>
+
+    <h3>What changes</h3>
+
+    <ul>
+      <li>Notes are saved as <code>Distillate/Saved/vaswani_attention_2017.md</code></li>
+      <li>Annotated PDFs as <code>Distillate/Saved/vaswani_attention_2017.pdf</code></li>
+      <li>Frontmatter includes <code>citekey</code>, <code>year</code>, and <code>aliases</code> (the full title, so search still works)</li>
+      <li>Reading Log uses <code>[[citekey|title]]</code> wikilinks for stable references</li>
+    </ul>
+
+    <!-- 10. Obsidian Plugin Compatibility -->
+    <h2>Obsidian Plugin Compatibility</h2>
+
+    <p>Distillate is designed to complement -- not replace -- existing Obsidian plugins for academic workflows.</p>
+
+    <h3>Zotero Integration plugin</h3>
+
+    <p>The <a href="https://github.com/mgmeyers/obsidian-zotero-desktop-connector">Obsidian Zotero Integration</a> plugin creates notes from Zotero items. If a note with the same citekey already exists when Distillate processes a paper:</p>
+
+    <ul>
+      <li>Existing content is preserved</li>
+      <li>Distillate appends its sections (highlights, AI summary, key learnings) between <code>&lt;!-- distillate:start --&gt;</code> and <code>&lt;!-- distillate:end --&gt;</code> markers</li>
+      <li>On re-sync, only the content between markers is replaced</li>
+    </ul>
+
+    <p>This means both tools can write to the same note without conflicts.</p>
+
+    <h3>PDF++</h3>
+
+    <p><a href="https://github.com/RyotaUshio/obsidian-pdf-plus">PDF++</a> provides enhanced PDF viewing in Obsidian. Distillate's annotated PDFs are stored alongside notes in <code>Distillate/Saved/</code> with citekey filenames, making them easy to reference from PDF++ links.</p>
+
+    <h3>Obsidian Bases</h3>
+
+    <p>Distillate generates a <code>Papers.base</code> file for <a href="https://obsidian.md/blog/introducing-bases/">Obsidian Bases</a> (available in Obsidian 1.9+), providing a native table view of all your papers with columns for title, dates, engagement score, and highlight counts. The existing Dataview template is also still generated for users on older Obsidian versions.</p>
 
     <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>. Powered by <a href="https://github.com/ddvk/rmapi">rmapi</a>, <a href="https://github.com/ricklupton/rmscene">rmscene</a>, <a href="https://pymupdf.readthedocs.io/">PyMuPDF</a>, and <a href="https://claude.ai/claude-code">Claude Code</a>.</p>
   </div>
