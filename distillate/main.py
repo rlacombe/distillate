@@ -2304,6 +2304,15 @@ def main():
                 try:
                     pdf_bytes = None
 
+                    # Re-check Zotero for a PDF attachment (user may have
+                    # added one since the paper was first imported)
+                    if not att_key:
+                        fresh_att = zotero_client.get_pdf_attachment(item_key)
+                        if fresh_att:
+                            att_key = fresh_att["key"]
+                            doc["zotero_attachment_key"] = att_key
+                            log.info("Found new PDF attachment for '%s'", title)
+
                     # Try Zotero cloud first (if we have an attachment key)
                     if att_key:
                         try:
