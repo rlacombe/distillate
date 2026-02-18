@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 — 2026-02-18
+## 0.3.3 — 2026-02-18
 
 Handwritten notes on PDFs, Windows compatibility, and Zotero WebDAV support.
 
@@ -9,7 +9,6 @@ Handwritten notes on PDFs, Windows compatibility, and Zotero WebDAV support.
 - **Ink layer on PDFs**: handwritten strokes from reMarkable are now rendered onto the annotated PDF, preserving your margin notes and annotations alongside highlights
 - **reMarkable Paper Pro support**: auto-detects Paper Pro's 227 DPI coordinate system and maps ink/highlights accurately (classic RM1/RM2 also supported)
 - **Typed notes from reMarkable**: keyboard-typed text on the reMarkable is extracted and included in Obsidian notes under "Notes from reMarkable"
-- **Handwritten OCR (macOS)**: Apple Vision framework recognizes handwritten text from ink strokes, shown under "Handwritten Notes" in Obsidian (graceful fallback on Linux/Windows)
 - **Zotero WebDAV fallback**: users storing attachments via WebDAV can now download PDFs automatically — configure `ZOTERO_WEBDAV_URL`, `ZOTERO_WEBDAV_USERNAME`, `ZOTERO_WEBDAV_PASSWORD`
 - **Auto-promote from suggestions**: papers suggested via `--suggest` that are later added to Zotero are auto-promoted out of the suggestion pool
 
@@ -21,6 +20,7 @@ Handwritten notes on PDFs, Windows compatibility, and Zotero WebDAV support.
 - **Tag pills in emails**: abbreviated long category names (e.g. "Computer Science" → "CS"), smaller pill size
 - **Email footer overflow**: condensed stats labels for mobile readability
 - **Suggestion emails include already-read papers**: `_sync_tags()` now marks papers as processed when Zotero tag is `read`
+- **Year frontmatter garbled**: dates like "8 September 2024" were parsed as "8 Se" — now extracts 4-digit year correctly from any format
 
 ### Removals
 

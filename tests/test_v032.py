@@ -595,8 +595,8 @@ class TestPaperNoteWithNotes:
     """create_paper_note() should include typed and handwritten note sections."""
 
     def test_typed_notes_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
@@ -617,8 +617,8 @@ class TestPaperNoteWithNotes:
         assert "Note on page 3" in content
 
     def test_handwritten_notes_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
@@ -637,8 +637,8 @@ class TestPaperNoteWithNotes:
         assert "OCR'd handwriting from page 2" in content
 
     def test_no_notes_no_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
