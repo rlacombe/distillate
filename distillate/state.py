@@ -36,7 +36,7 @@ def _load_raw() -> Dict[str, Any]:
     if not STATE_PATH.exists():
         return copy.deepcopy(_DEFAULT_STATE)
     try:
-        return json.loads(STATE_PATH.read_text())
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError) as exc:
         log.warning("Corrupt state file, backing up and starting fresh: %s", exc)
         backup = STATE_PATH.with_suffix(".json.bak")
@@ -51,7 +51,7 @@ def _save_raw(data: Dict[str, Any]) -> None:
         dir=STATE_PATH.parent, prefix=".state_", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
         os.replace(tmp, STATE_PATH)

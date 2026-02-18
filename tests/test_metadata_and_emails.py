@@ -201,10 +201,10 @@ class TestReadingStatsHtml:
         ]
 
         html = _reading_stats_html(state)
-        assert "This week: read 2 papers" in html
+        assert "Week: 2 papers" in html
         assert "65 pages" in html
-        assert "3,830 words highlighted" in html
-        assert "This month: read 3 papers" in html
+        assert "3,830 h/l words" in html
+        assert "Month: 3 papers" in html
 
     def test_singular_paper(self):
         from distillate.digest import _reading_stats_html
@@ -216,7 +216,7 @@ class TestReadingStatsHtml:
         ]
 
         html = _reading_stats_html(state)
-        assert "read 1 paper" in html
+        assert "1 paper" in html
 
 
 class TestQueueHealthHtml:
@@ -240,7 +240,6 @@ class TestQueueHealthHtml:
         state.documents_processed_since.return_value = [{}]
 
         html = _queue_health_html(state)
-        assert "3 papers waiting" in html
-        assert "45 days" in html or "44 days" in html  # timezone edge
-        assert "+1 added" in html
-        assert "-1 read" in html
+        assert "3 waiting" in html
+        assert "oldest 45d" in html or "oldest 44d" in html  # timezone edge
+        assert "+1/-1 this week" in html

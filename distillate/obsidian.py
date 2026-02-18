@@ -197,7 +197,7 @@ def _needs_template_update(path: Path) -> bool:
     """Return True if the file is missing or has an outdated template version."""
     if not path.exists():
         return True
-    return f"distillate:template:{_TEMPLATE_VERSION}" not in path.read_text()
+    return f"distillate:template:{_TEMPLATE_VERSION}" not in path.read_text(encoding="utf-8")
 
 
 def ensure_stats_note() -> None:
@@ -220,7 +220,8 @@ def ensure_stats_note() -> None:
             _STATS_TEMPLATE.format(
                 folder=config.OBSIDIAN_PAPERS_FOLDER,
                 version=_TEMPLATE_VERSION,
-            )
+            ),
+            encoding="utf-8", newline="\n",
         )
         log.info("Created Distillate Stats: %s", stats_path)
 
@@ -271,7 +272,8 @@ def ensure_bases_note() -> None:
             _BASES_TEMPLATE.format(
                 folder=config.OBSIDIAN_PAPERS_FOLDER,
                 version=_TEMPLATE_VERSION,
-            )
+            ),
+            encoding="utf-8", newline="\n",
         )
         log.info("Created Bases file: %s", bases_path)
 
@@ -328,6 +330,8 @@ def create_paper_note(
     highlight_word_count: int = 0,
     page_count: int = 0,
     citekey: str = "",
+    typed_notes: Optional[Dict[int, str]] = None,
+    handwritten_notes: Optional[Dict[int, str]] = None,
 ) -> Optional[Path]:
     """Create a markdown note for a read paper in the Read subfolder.
 
@@ -381,10 +385,33 @@ def create_paper_note(
     else:
         pdf_embed = ""
 
+    # Typed notes from reMarkable (keyboard input on device)
+    typed_notes_md = ""
+    if typed_notes:
+        sections = []
+        for page_num in sorted(typed_notes.keys()):
+            text = typed_notes[page_num].strip()
+            if text:
+                sections.append(f"### Page {page_num + 1}\n\n{text}")
+        if sections:
+            typed_notes_md = "## Notes from reMarkable\n\n" + "\n\n".join(sections) + "\n\n"
+
+    # Handwritten notes (OCR'd via Apple Vision)
+    handwritten_md = ""
+    if handwritten_notes:
+        sections = []
+        for page_num in sorted(handwritten_notes.keys()):
+            text = handwritten_notes[page_num].strip()
+            if text:
+                sections.append(f"### Page {page_num + 1}\n\n{text}")
+        if sections:
+            handwritten_md = "## Handwritten Notes\n\n" + "\n\n".join(sections) + "\n\n"
+
     # Build the Distillate-specific content block (between markers)
     distillate_block = (
         f"{doi_link_md}{oneliner_md}{summary_md}{learnings_md}"
         f"{pdf_embed}{abstract_md}"
+        f"{typed_notes_md}{handwritten_md}"
         f"## Highlights\n\n{highlights_md}\n"
     )
 
@@ -393,7 +420,7 @@ def create_paper_note(
 
     # -- Scenario 2 or 3: existing note --
     if note_path.exists():
-        existing = note_path.read_text()
+        existing = note_path.read_text(encoding="utf-8")
 
         # Preserve user's "My Notes" section
         preserved_notes = ""
@@ -454,7 +481,7 @@ def create_paper_note(
                 except ValueError:
                     pass
 
-            note_path.write_text(content)
+            note_path.write_text(content, encoding="utf-8", newline="\n")
             log.info("Updated note: %s", note_path)
             return note_path
 
@@ -506,7 +533,7 @@ def create_paper_note(
                 content = content[:my_notes_idx]
 
             content = content.rstrip("\n") + marker_block
-            note_path.write_text(content)
+            note_path.write_text(content, encoding="utf-8", newline="\n")
             log.info("Merged note: %s", note_path)
             return note_path
 
@@ -570,7 +597,7 @@ tags:
 
 {_MARKER_END}
 """
-    note_path.write_text(content)
+    note_path.write_text(content, encoding="utf-8", newline="\n")
     log.info("Created note: %s", note_path)
     return note_path
 
@@ -709,7 +736,7 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any], citekey: str =
         else:
             return False
 
-    content = note_path.read_text()
+    content = note_path.read_text(encoding="utf-8")
     if not content.startswith("---\n"):
         return False
 
@@ -764,7 +791,7 @@ def update_note_frontmatter(title: str, metadata: Dict[str, Any], citekey: str =
 
     new_fm = _rebuild_frontmatter(blocks)
     new_content = f"---\n{new_fm}\n---\n{body}"
-    note_path.write_text(new_content)
+    note_path.write_text(new_content, encoding="utf-8", newline="\n")
     log.info("Updated frontmatter: %s", note_path.name)
     return True
 
@@ -817,14 +844,14 @@ def rename_paper(title: str, old_citekey: str, new_citekey: str) -> bool:
     if d is not None:
         log_path = d / "Distillate Log.md"
         if log_path.exists():
-            content = log_path.read_text()
+            content = log_path.read_text(encoding="utf-8")
             # Try all candidates for old wikilinks
             for candidate in ([actual_old_name] if actual_old_name else candidates):
                 old_link = f"[[{candidate}|"
                 new_link = f"[[{new_citekey}|"
                 if old_link in content:
                     content = content.replace(old_link, new_link)
-                    log_path.write_text(content)
+                    log_path.write_text(content, encoding="utf-8", newline="\n")
                     log.info("Updated reading log links: %s -> %s", candidate, new_citekey)
                     break
 
@@ -844,7 +871,7 @@ def update_reading_log_title(old_title: str, new_title: str, citekey: str = "") 
     if not log_path.exists():
         return False
 
-    content = log_path.read_text()
+    content = log_path.read_text(encoding="utf-8")
 
     if _is_obsidian() and citekey:
         old_link = f"[[{citekey}|{old_title}]]"
@@ -862,7 +889,7 @@ def update_reading_log_title(old_title: str, new_title: str, citekey: str = "") 
         return False
 
     content = content.replace(old_link, new_link)
-    log_path.write_text(content)
+    log_path.write_text(content, encoding="utf-8", newline="\n")
     log.info("Updated reading log title: %s -> %s", old_title[:40], new_title[:40])
     return True
 
@@ -892,10 +919,10 @@ def append_to_reading_log(
     log_path = d / "Distillate Log.md"
 
     if not log_path.exists():
-        log_path.write_text("# Distillate Log\n\n")
+        log_path.write_text("# Distillate Log\n\n", encoding="utf-8", newline="\n")
         log.info("Created Distillate Log: %s", log_path)
 
-    existing = log_path.read_text()
+    existing = log_path.read_text(encoding="utf-8")
     sanitized = _sanitize_note_name(title)
     note_name = citekey if citekey else sanitized
 
@@ -951,7 +978,7 @@ def append_to_reading_log(
 
     header = "\n".join(header_lines).rstrip("\n") + "\n\n"
     updated = header + "\n".join(entry_lines) + "\n"
-    log_path.write_text(updated)
+    log_path.write_text(updated, encoding="utf-8", newline="\n")
     log.info("Updated Distillate Log: %s", title)
 
 
