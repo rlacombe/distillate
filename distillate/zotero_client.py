@@ -216,6 +216,48 @@ def download_pdf(attachment_key: str) -> bytes:
     return resp.content
 
 
+def download_pdf_from_webdav(attachment_key: str) -> Optional[bytes]:
+    """Download a PDF from the user's WebDAV server.
+
+    Zotero WebDAV storage stores attachments as <KEY>.zip containing a
+    single PDF. Returns PDF bytes or None if WebDAV is not configured or
+    the download fails.
+    """
+    import io
+    import zipfile
+
+    if not config.ZOTERO_WEBDAV_URL:
+        return None
+
+    url = f"{config.ZOTERO_WEBDAV_URL}/zotero/{attachment_key}.zip"
+    log.debug("Trying WebDAV: %s", url)
+
+    try:
+        resp = requests.get(
+            url,
+            auth=(config.ZOTERO_WEBDAV_USERNAME, config.ZOTERO_WEBDAV_PASSWORD),
+            timeout=config.HTTP_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            log.debug("WebDAV 404 for %s", attachment_key)
+            return None
+        resp.raise_for_status()
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        log.warning("WebDAV download failed for '%s': %s", attachment_key, exc)
+        return None
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            pdf_names = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
+            if not pdf_names:
+                log.warning("WebDAV zip for '%s' contains no PDF", attachment_key)
+                return None
+            return zf.read(pdf_names[0])
+    except zipfile.BadZipFile:
+        log.warning("WebDAV download for '%s' is not a valid zip", attachment_key)
+        return None
+
+
 def download_pdf_from_url(url: str) -> Optional[bytes]:
     """Try to download a PDF directly from a paper URL (arxiv, biorxiv, etc.).
 

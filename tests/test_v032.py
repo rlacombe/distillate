@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from rmscene import scene_items as si
 from rmscene.tagged_block_common import CrdtId, LwwValue
 from rmscene.crdt_sequence import CrdtSequence, CrdtSequenceItem
@@ -781,3 +782,98 @@ class TestUploadPathLeak:
         # Only the put call, no list_folder or mv
         assert mock_run.call_count == 1
         mock_list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WebDAV PDF download fallback
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadPdfFromWebdav:
+    """download_pdf_from_webdav() should fetch PDFs from WebDAV storage."""
+
+    def test_no_webdav_url_returns_none(self, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        assert download_pdf_from_webdav("ABC123") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_downloads_pdf_from_zip(self, mock_get, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        # Build a zip containing a PDF
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("paper.pdf", b"%PDF-1.4 fake content")
+        zip_bytes = buf.getvalue()
+
+        mock_resp = MagicMock(status_code=200, content=zip_bytes)
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        result = download_pdf_from_webdav("XYZ789")
+        assert result == b"%PDF-1.4 fake content"
+
+        # Verify correct URL and auth
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args
+        assert "zotero/XYZ789.zip" in call_kwargs[0][0] or "zotero/XYZ789.zip" in str(call_kwargs)
+        assert call_kwargs[1]["auth"] == ("user", "pass")
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_404_returns_none(self, mock_get, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        mock_resp = MagicMock(status_code=404)
+        mock_get.return_value = mock_resp
+
+        assert download_pdf_from_webdav("MISSING") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_bad_zip_returns_none(self, mock_get, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        mock_resp = MagicMock(status_code=200, content=b"not a zip")
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        assert download_pdf_from_webdav("BADZIP") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_zip_without_pdf_returns_none(self, mock_get, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("notes.txt", b"just notes")
+        zip_bytes = buf.getvalue()
+
+        mock_resp = MagicMock(status_code=200, content=zip_bytes)
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        assert download_pdf_from_webdav("NOPDF") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_connection_error_returns_none(self, mock_get, monkeypatch):
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        mock_get.side_effect = requests.exceptions.ConnectionError("refused")
+
+        assert download_pdf_from_webdav("OFFLINE") is None

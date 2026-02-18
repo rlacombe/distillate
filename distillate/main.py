@@ -1438,6 +1438,12 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 else:
                     raise
 
+        # Fall back to WebDAV (for users who store attachments via WebDAV)
+        if pdf_bytes is None and att_key:
+            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+            if pdf_bytes:
+                log.info("Downloaded PDF from WebDAV for '%s'", title)
+
         # Fall back to direct URL download
         if pdf_bytes is None:
             paper_url = meta.get("url", "")
@@ -2401,6 +2407,12 @@ def main():
                                 log.info("PDF still not synced in Zotero for '%s'", title)
                             else:
                                 raise
+
+                    # Fall back to WebDAV
+                    if pdf_bytes is None and att_key:
+                        pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+                        if pdf_bytes:
+                            log.info("Downloaded PDF from WebDAV for '%s'", title)
 
                     # Fall back to direct URL download (arxiv, biorxiv, etc.)
                     if pdf_bytes is None:
