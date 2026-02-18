@@ -723,3 +723,61 @@ class TestEraserFiltering:
         from distillate.renderer import _ERASER_TOOLS
         assert si.Pen.ERASER in _ERASER_TOOLS
         assert si.Pen.ERASER_AREA in _ERASER_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Windows rmapi path leak fix
+# ---------------------------------------------------------------------------
+
+
+class TestUploadPathLeak:
+    """upload_pdf_bytes() should rename docs when rmapi uses temp path."""
+
+    @patch("distillate.remarkable_client._run")
+    @patch("distillate.remarkable_client.list_folder")
+    def test_no_rename_when_name_correct(self, mock_list, mock_run):
+        """Normal case: doc name is correct, no rename needed."""
+        from distillate.remarkable_client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_list.return_value = ["My Paper"]
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        # _run called once for put, never for mv
+        assert mock_run.call_count == 1
+        assert mock_run.call_args_list[0][0][0][0] == "put"
+
+    @patch("distillate.remarkable_client._run")
+    @patch("distillate.remarkable_client.list_folder")
+    def test_rename_when_temp_path_leaked(self, mock_list, mock_run):
+        r"""Windows path leak: doc named 'C:\Users\...\tmpXXXX\My Paper'."""
+        from distillate.remarkable_client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_list.return_value = [r"C:\Users\foo\Temp\tmp123\My Paper"]
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        # _run called twice: put + mv
+        assert mock_run.call_count == 2
+        mv_args = mock_run.call_args_list[1][0][0]
+        assert mv_args[0] == "mv"
+        assert mv_args[1] == r"/Distillate/Inbox/C:\Users\foo\Temp\tmp123\My Paper"
+        assert mv_args[2] == "/Distillate/Inbox/My Paper"
+
+    @patch("distillate.remarkable_client._run")
+    @patch("distillate.remarkable_client.list_folder")
+    def test_skip_when_already_exists(self, mock_list, mock_run):
+        """Already-existing doc should skip without rename."""
+        from distillate.remarkable_client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="entry already exists",
+        )
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        # Only the put call, no list_folder or mv
+        assert mock_run.call_count == 1
+        mock_list.assert_not_called()
