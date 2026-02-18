@@ -572,7 +572,7 @@ def create_paper_note(
 
     # Citekey and year frontmatter
     citekey_yaml = f'\ncitekey: "{citekey}"' if citekey else ""
-    year = publication_date[:4] if publication_date and len(publication_date) >= 4 else ""
+    year = _extract_year(publication_date)
     year_yaml = f"\nyear: {year}" if year else ""
     aliases_yaml = f'\naliases:\n  - "{_escape_yaml(title)}"' if citekey else ""
 
@@ -668,7 +668,7 @@ def _merge_distillate_frontmatter(
         blocks["date_added"] = f"date_added: {date_added[:10]}"
     blocks["date_read"] = f"date_read: {today}"
 
-    year = publication_date[:4] if publication_date and len(publication_date) >= 4 else ""
+    year = _extract_year(publication_date)
     if year and "year" not in blocks:
         blocks["year"] = f"year: {year}"
     blocks["zotero"] = f'zotero: "zotero://select/library/items/{zotero_item_key}"'
@@ -1020,6 +1020,15 @@ def _sanitize_note_name(name: str) -> str:
         result = result.replace(c, "")
     result = " ".join(result.split())
     return result[:200].strip()
+
+
+def _extract_year(date_str: str) -> str:
+    """Extract a 4-digit year from a date string in any format."""
+    import re
+    if not date_str:
+        return ""
+    m = re.search(r"\b(\d{4})\b", date_str)
+    return m.group(1) if m else ""
 
 
 def _escape_yaml(s: str) -> str:
