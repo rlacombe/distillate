@@ -38,7 +38,7 @@ def _require(var: str) -> str:
 def save_to_env(key: str, value: str) -> None:
     """Update a single key in the .env file, preserving all other content."""
     if ENV_PATH.exists():
-        text = ENV_PATH.read_text()
+        text = ENV_PATH.read_text(encoding="utf-8")
     else:
         text = ""
 
@@ -50,7 +50,7 @@ def save_to_env(key: str, value: str) -> None:
     else:
         text = text.rstrip("\n") + f"\n{replacement}\n"
 
-    ENV_PATH.write_text(text)
+    ENV_PATH.write_text(text, encoding="utf-8", newline="\n")
     os.chmod(ENV_PATH, 0o600)
     os.environ[key] = value
 
