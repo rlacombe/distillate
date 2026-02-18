@@ -1024,15 +1024,24 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
 
 
 def _auto_promote(state) -> None:
-    """Check Gist for pending picks from GH Actions and promote them.
+    """Promote pending picks on reMarkable.
 
-    Called during --sync. If GH Actions ran --suggest-email, the picks
-    are stored in pending.json on the Gist. This function reads them
-    and promotes the papers on reMarkable.
+    Called during sync. Checks two sources:
+    1. Local state.pending_promotions (from local --suggest-email)
+    2. Gist pending.json (from GH Actions --suggest-email)
     """
     from distillate import config
     from distillate.digest import fetch_pending_from_gist
 
+    # Source 1: local pending promotions
+    local_picks = state.pending_promotions
+    if local_picks:
+        log.info("Found %d local pending pick(s), promoting...", len(local_picks))
+        _demote_and_promote(state, local_picks)
+        state.save()
+        return  # Don't also process Gist picks in the same run
+
+    # Source 2: Gist (GH Actions)
     if not config.STATE_GIST_ID:
         return
 

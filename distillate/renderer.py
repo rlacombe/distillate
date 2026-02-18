@@ -30,16 +30,38 @@ _HIGHLIGHT_TRIM = 0.20  # shrink quads vertically by this fraction per side
 
 
 def extract_original_pdf(zip_path: Path) -> Optional[bytes]:
-    """Extract the original (un-annotated) PDF from a reMarkable bundle.
+    """Extract the original PDF from a reMarkable bundle with ink strokes.
 
-    Returns the raw PDF bytes, or None if no PDF is found.
+    Returns PDF bytes with handwritten ink rendered (but no highlight
+    annotations — those are added by Zotero's own annotation layer).
+    Falls back to the raw PDF if ink rendering fails.
     """
+    try:
+        import pymupdf
+    except ImportError:
+        pass  # fall through to raw extraction
+
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             pdf_names = [n for n in zf.namelist() if n.endswith(".pdf")]
             if not pdf_names:
                 return None
-            return zf.read(pdf_names[0])
+            pdf_data = zf.read(pdf_names[0])
+
+        # Render ink strokes onto the original PDF
+        try:
+            ink_by_page = extract_ink_strokes(zip_path)
+            if ink_by_page:
+                doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+                _render_ink_on_pdf(doc, ink_by_page)
+                buf = io.BytesIO()
+                doc.save(buf, garbage=3, deflate=True)
+                doc.close()
+                return buf.getvalue()
+        except Exception:
+            log.debug("Ink rendering on original PDF failed, using raw", exc_info=True)
+
+        return pdf_data
     except Exception:
         log.warning("Failed to extract original PDF from %s", zip_path.name, exc_info=True)
         return None
@@ -772,6 +794,8 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
     """Draw ink strokes onto PDF pages using PyMuPDF's drawing API.
 
     Scales from reMarkable device coordinates to PDF page coordinates.
+    Only renders strokes that are at least partially within the RM viewport
+    (strokes in margins or scrolled areas are captured by OCR instead).
     Returns the number of strokes rendered.
     """
     import pymupdf
@@ -785,9 +809,23 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
         sy = page.rect.height / _RM_HEIGHT
         shape = page.new_shape()
         for line in lines:
-            points = [pymupdf.Point(p.x * sx, p.y * sy) for p in line.points]
+            # Skip strokes entirely outside the RM viewport (margins, scrolled)
+            xs = [p.x for p in line.points]
+            ys = [p.y for p in line.points]
+            if max(xs) < 0 or min(xs) > _RM_WIDTH:
+                continue
+            if max(ys) < 0 or min(ys) > _RM_HEIGHT:
+                continue
+            # Clamp points to page bounds
+            points = [
+                pymupdf.Point(
+                    max(0, min(p.x, _RM_WIDTH)) * sx,
+                    max(0, min(p.y, _RM_HEIGHT)) * sy,
+                )
+                for p in line.points
+            ]
             color = _PEN_COLOR_MAP.get(line.color, (0, 0, 0))
-            width = max(0.5, line.thickness_scale * sx * 0.5)
+            width = max(0.8, line.thickness_scale * sx)
             shape.draw_polyline(points)
             shape.finish(color=color, width=width, closePath=False)
             total_rendered += 1
@@ -800,13 +838,11 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _render_strokes_to_image(
-    lines: List[si.Line],
-    width: int = 1404,
-    height: int = 1872,
-):
+def _render_strokes_to_image(lines: List[si.Line]):
     """Render ink strokes to a PIL Image for OCR.
 
+    Auto-sizes the canvas to fit all strokes (handles margin notes and
+    scrolled pages where coordinates extend beyond the default RM viewport).
     Returns a greyscale PIL Image with black strokes on white background,
     or None if Pillow is not installed.
     """
@@ -816,13 +852,35 @@ def _render_strokes_to_image(
         log.debug("Pillow not installed, cannot render strokes to image")
         return None
 
-    img = Image.new("L", (width, height), 255)
+    # Compute bounding box of all strokes
+    all_x: list[float] = []
+    all_y: list[float] = []
+    for line in lines:
+        for p in line.points:
+            all_x.append(p.x)
+            all_y.append(p.y)
+    if not all_x:
+        return None
+
+    x_min, x_max = min(all_x), max(all_x)
+    y_min, y_max = min(all_y), max(all_y)
+
+    # Add padding and compute canvas size
+    pad = 40
+    canvas_w = int(x_max - x_min) + 2 * pad
+    canvas_h = int(y_max - y_min) + 2 * pad
+    # Ensure minimum size for OCR quality
+    canvas_w = max(canvas_w, 400)
+    canvas_h = max(canvas_h, 200)
+
+    img = Image.new("L", (canvas_w, canvas_h), 255)
     draw = ImageDraw.Draw(img)
     for line in lines:
         if len(line.points) < 2:
             continue
-        coords = [(p.x, p.y) for p in line.points]
-        stroke_width = max(1, int(line.thickness_scale * 2))
+        # Shift coordinates so all strokes fit on canvas
+        coords = [(p.x - x_min + pad, p.y - y_min + pad) for p in line.points]
+        stroke_width = max(2, int(line.thickness_scale * 2))
         draw.line(coords, fill=0, width=stroke_width)
     return img
 
