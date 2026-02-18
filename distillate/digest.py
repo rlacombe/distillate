@@ -99,6 +99,16 @@ def _sync_tags(state: State) -> None:
             if not doc:
                 continue
 
+            # Check raw Zotero tags for "read" before extract_metadata strips them
+            raw_tags = {t["tag"] for t in item.get("data", {}).get("tags", [])}
+            if (config.ZOTERO_TAG_READ in raw_tags
+                    and doc.get("status") == "on_remarkable"):
+                doc["status"] = "processed"
+                if not doc.get("processed_at"):
+                    doc["processed_at"] = datetime.now(timezone.utc).isoformat()
+                log.info("Marked '%s' as processed (read tag in Zotero)",
+                         doc.get("title", key))
+
             new_meta = zotero_client.extract_metadata(item)
             old_meta = doc.get("metadata", {})
 
@@ -132,35 +142,183 @@ _PILL_COLORS = [
 ]
 
 
-def _tag_pills_html(tags: list) -> str:
-    """Render topic tags as colored HTML pill badges."""
+# ---------------------------------------------------------------------------
+# Tag abbreviation — human-readable short words, no dotted codes
+# ---------------------------------------------------------------------------
+
+# Unified lookup: arXiv categories, S2 fields, and common research tags → short labels
+_TAG_ABBREV: dict[str, str] = {
+    # -- arXiv: Computer Science --
+    "Computer Science - Artificial Intelligence": "AI",
+    "Computer Science - Hardware Architecture": "Hardware",
+    "Computer Science - Computational Complexity": "Complexity",
+    "Computer Science - Computational Engineering, Finance, and Science": "CompEng",
+    "Computer Science - Computational Geometry": "CompGeom",
+    "Computer Science - Computation and Language": "NLP",
+    "Computer Science - Cryptography and Security": "Security",
+    "Computer Science - Computer Vision and Pattern Recognition": "Vision",
+    "Computer Science - Computers and Society": "CS+Society",
+    "Computer Science - Databases": "Databases",
+    "Computer Science - Distributed, Parallel, and Cluster Computing": "Distributed",
+    "Computer Science - Digital Libraries": "DigLib",
+    "Computer Science - Discrete Mathematics": "DiscMath",
+    "Computer Science - Data Structures and Algorithms": "Algorithms",
+    "Computer Science - Emerging Technologies": "EmergTech",
+    "Computer Science - Formal Languages and Automata Theory": "Automata",
+    "Computer Science - General Literature": "CS General",
+    "Computer Science - Graphics": "Graphics",
+    "Computer Science - Computer Science and Game Theory": "GameTheory",
+    "Computer Science - Human-Computer Interaction": "HCI",
+    "Computer Science - Information Retrieval": "InfoRetrieval",
+    "Computer Science - Information Theory": "InfoTheory",
+    "Computer Science - Machine Learning": "ML",
+    "Computer Science - Logic in Computer Science": "Logic",
+    "Computer Science - Multiagent Systems": "Multiagent",
+    "Computer Science - Multimedia": "Multimedia",
+    "Computer Science - Mathematical Software": "MathSW",
+    "Computer Science - Numerical Analysis": "NumAnalysis",
+    "Computer Science - Neural and Evolutionary Computing": "NeuroEvo",
+    "Computer Science - Networking and Internet Architecture": "Networking",
+    "Computer Science - Other Computer Science": "CS Other",
+    "Computer Science - Operating Systems": "OS",
+    "Computer Science - Performance": "Perf",
+    "Computer Science - Programming Languages": "ProgLang",
+    "Computer Science - Robotics": "Robotics",
+    "Computer Science - Symbolic Computation": "Symbolic",
+    "Computer Science - Sound": "Audio",
+    "Computer Science - Software Engineering": "SWE",
+    "Computer Science - Social and Information Networks": "SocNetworks",
+    "Computer Science - Systems and Control": "Controls",
+    # -- arXiv: Quantitative Biology --
+    "Quantitative Biology - Biomolecules": "Biomolecules",
+    "Quantitative Biology - Cell Behavior": "CellBio",
+    "Quantitative Biology - Genomics": "Genomics",
+    "Quantitative Biology - Molecular Networks": "MolNetworks",
+    "Quantitative Biology - Neurons and Cognition": "Neuroscience",
+    "Quantitative Biology - Other Quantitative Biology": "QBio",
+    "Quantitative Biology - Populations and Evolution": "PopEvo",
+    "Quantitative Biology - Quantitative Methods": "QBioMethods",
+    "Quantitative Biology - Subcellular Processes": "Subcellular",
+    "Quantitative Biology - Tissues and Organs": "Tissues",
+    # -- arXiv: Quantitative Finance --
+    "Quantitative Finance - Computational Finance": "CompFinance",
+    "Quantitative Finance - General Finance": "Finance",
+    "Quantitative Finance - Portfolio Management": "Portfolio",
+    "Quantitative Finance - Risk Management": "RiskMgmt",
+    "Quantitative Finance - Statistical Finance": "StatFinance",
+    "Quantitative Finance - Trading and Market Microstructure": "Trading",
+    # -- arXiv: EESS --
+    "Electrical Engineering and Systems Science - Audio and Speech Processing": "Speech",
+    "Electrical Engineering and Systems Science - Image and Video Processing": "ImageProc",
+    "Electrical Engineering and Systems Science - Signal Processing": "Signals",
+    "Electrical Engineering and Systems Science - Systems and Control": "Controls",
+    # -- arXiv: Statistics --
+    "Statistics - Applications": "StatApps",
+    "Statistics - Computation": "StatComp",
+    "Statistics - Machine Learning": "StatML",
+    "Statistics - Methodology": "StatMethods",
+    "Statistics - Other Statistics": "Stats",
+    "Statistics - Statistics Theory": "StatTheory",
+    # -- arXiv: Physics --
+    "Physics - Biological Physics": "BioPhysics",
+    "Physics - Chemical Physics": "ChemPhysics",
+    "Physics - Classical Physics": "ClassPhysics",
+    "Physics - Optics": "Optics",
+    "Physics - Plasma Physics": "Plasma",
+    # -- S2 broad fields --
+    "Computer Science": "CS",
+    "Environmental Science": "EnvSci",
+    "Materials Science": "MatSci",
+    "Political Science": "PoliSci",
+    "Agricultural and Food Sciences": "AgriFood",
+    # -- Common research tags (Zotero / manual) --
+    "reinforcement learning": "RL",
+    "Machine learning": "ML",
+    "machine learning": "ML",
+    "Gene regulatory networks": "GRN",
+    "Gene expression": "GeneExpr",
+    "Protein structure": "ProtStruct",
+    "Protein structure prediction": "ProtPredict",
+    "Protein folding": "ProtFolding",
+    "Protein design": "ProtDesign",
+    "Macromolecular design": "MolDesign",
+    "Computational models": "CompModels",
+    "Computational biology and bioinformatics": "CompBio",
+    "Computational chemistry": "CompChem",
+    "Computational science": "CompSci",
+    "Genome informatics": "GenomeInfo",
+    "Molecular biophysics": "MolBioPhys",
+    "Molecular dynamics": "MolDyn",
+    "Molecular modelling": "MolModel",
+    "Scanning probe microscopy": "SPM",
+    "Cryoelectron microscopy": "CryoEM",
+    "Statistical physics": "StatPhysics",
+    "Predictive medicine": "PredMed",
+    "Synthetic biology": "SynBio",
+    "Quantum metrology": "QuantMetro",
+    "organic chemistry": "OrgChem",
+    "Image processing": "ImageProc",
+    "Spatial filtering": "SpatFilter",
+    "Fourier transforms": "Fourier",
+    "Ultraviolet lasers": "UV Lasers",
+    "Cylindrical lenses": "CylLenses",
+    "Latent profile analysis": "LPA",
+    "Recreational runners": "Runners",
+    "Sports injuries": "SportsInj",
+    "large-language-models": "LLM",
+    "World Models": "WorldModels",
+}
+
+# Tags ≤ this length pass through unchanged (covers "Biology", "Medicine", etc.)
+_SHORT_TAG_LEN = 14
+
+
+def _abbreviate_tag(tag: str) -> str:
+    """Abbreviate a tag to a short human-readable label.
+
+    Lookup order: static map → passthrough if short → smart truncation.
+    """
+    short = _TAG_ABBREV.get(tag)
+    if short:
+        return short
+    if len(tag) <= _SHORT_TAG_LEN:
+        return tag
+    # Smart truncation for unknown long tags: keep significant words
+    words = [w for w in tag.split() if len(w) > 3 or w[0].isupper()]
+    if words:
+        return "".join(w[:4].title() for w in words[:3])
+    return tag[:_SHORT_TAG_LEN]
+
+
+def _tag_pills_html(tags: list, max_tags: int = 3) -> str:
+    """Render topic tags as colored HTML pill badges (max_tags shown)."""
     if not tags:
         return ""
     pills = []
-    for tag in tags:
+    for tag in tags[:max_tags]:
+        label = _abbreviate_tag(tag)
         bg = _PILL_COLORS[hash(tag) % len(_PILL_COLORS)]
-        # Use a table cell to bypass email client minimum font-size enforcement
         pills.append(
             f'<span style="display:inline-block;background:{bg};'
-            f'color:#555;padding:0px 5px;border-radius:8px;'
-            f'font-size:11px;line-height:14px;margin:1px 1px;'
-            f'mso-line-height-rule:exactly;">{tag}</span>'
+            f'color:#555;padding:0 4px;border-radius:8px;'
+            f'font-size:10px;line-height:13px;margin:1px 1px;'
+            f'mso-line-height-rule:exactly;">{label}</span>'
         )
     return " ".join(pills)
 
 
 def _reading_stats_line(papers: list, label: str) -> str:
-    """Render a single stats line like 'This week: read 3 papers · 65 pages · 3,830 words highlighted'."""
+    """Render a compact stats line like 'Week: 3 papers · 65 pages · 3,830 h/l words'."""
     count = len(papers)
     total_pages = sum(d.get("page_count", 0) for d in papers)
     words = sum(d.get("highlight_word_count", 0) for d in papers)
 
-    parts = [f"{label}: read {count} paper{'s' if count != 1 else ''}"]
+    parts = [f"{label}: {count} paper{'s' if count != 1 else ''}"]
     if total_pages:
         parts.append(f"{total_pages:,} pages")
     if words:
-        parts.append(f"{words:,} words highlighted")
-    return " &middot; ".join(parts)
+        parts.append(f"{words:,} h/l words")
+    return " \u00b7 ".join(parts)
 
 
 def _reading_stats_html(state: State) -> str:
@@ -172,8 +330,8 @@ def _reading_stats_html(state: State) -> str:
     week_papers = state.documents_processed_since(week_ago.isoformat())
     month_papers = state.documents_processed_since(month_ago.isoformat())
 
-    week_line = _reading_stats_line(week_papers, "This week")
-    month_line = _reading_stats_line(month_papers, "This month")
+    week_line = _reading_stats_line(week_papers, "Week")
+    month_line = _reading_stats_line(month_papers, "Month")
 
     return (
         f'<p style="color:#999;font-size:13px;margin:24px 0 0 0;">{week_line}</p>'
@@ -224,14 +382,14 @@ def _queue_health_html(state: State) -> str:
         if awaiting else ""
     )
 
-    oldest_html = f" &middot; oldest: {oldest_days} days" if total else ""
+    oldest_html = f" &middot; oldest {oldest_days}d" if total else ""
 
     return (
         f'<p style="color:#999;font-size:13px;margin:0;">'
-        f'Queue: {total} papers waiting'
+        f'Queue: {total} waiting'
         f'{oldest_html}'
-        f' &middot; this week: +{added_this_week} added, '
-        f'-{processed_this_week} read{awaiting_html}</p>'
+        f' &middot; +{added_this_week}/-{processed_this_week} this week'
+        f'{awaiting_html}</p>'
     )
 
 
@@ -484,15 +642,25 @@ def send_suggestion() -> None:
     _send_email(subject, body)
 
 
+def _rank_tags(tags: list, user_top_tags: list) -> list:
+    """Sort tags by user reading frequency, putting most-read topics first."""
+    if not tags or not user_top_tags:
+        return tags
+    tag_rank = {t: i for i, t in enumerate(user_top_tags)}
+    return sorted(tags, key=lambda t: tag_rank.get(t, len(user_top_tags)))
+
+
 def _build_suggestion_body(suggestion_text, unread, state: State):
     """Build HTML body from Claude's suggestion text."""
     # Build title -> doc lookup from full unread list
     known_titles = [doc["title"] for doc in unread]
     url_lookup = {}
     tags_lookup = {}
+    user_top_tags = _recent_topic_tags(state, limit=20)
     for doc in unread:
         url_lookup[doc["title"].lower()] = _paper_url(doc)
-        tags_lookup[doc["title"].lower()] = doc.get("metadata", {}).get("tags", [])
+        raw_tags = doc.get("metadata", {}).get("tags", [])
+        tags_lookup[doc["title"].lower()] = _rank_tags(raw_tags, user_top_tags)
 
     lines = [
         "<html><body style='font-family: sans-serif; max-width: 600px; "

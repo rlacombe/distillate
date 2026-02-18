@@ -328,6 +328,8 @@ def create_paper_note(
     highlight_word_count: int = 0,
     page_count: int = 0,
     citekey: str = "",
+    typed_notes: Optional[Dict[int, str]] = None,
+    handwritten_notes: Optional[Dict[int, str]] = None,
 ) -> Optional[Path]:
     """Create a markdown note for a read paper in the Read subfolder.
 
@@ -381,10 +383,33 @@ def create_paper_note(
     else:
         pdf_embed = ""
 
+    # Typed notes from reMarkable (keyboard input on device)
+    typed_notes_md = ""
+    if typed_notes:
+        sections = []
+        for page_num in sorted(typed_notes.keys()):
+            text = typed_notes[page_num].strip()
+            if text:
+                sections.append(f"### Page {page_num + 1}\n\n{text}")
+        if sections:
+            typed_notes_md = "## Notes from reMarkable\n\n" + "\n\n".join(sections) + "\n\n"
+
+    # Handwritten notes (OCR'd via Apple Vision)
+    handwritten_md = ""
+    if handwritten_notes:
+        sections = []
+        for page_num in sorted(handwritten_notes.keys()):
+            text = handwritten_notes[page_num].strip()
+            if text:
+                sections.append(f"### Page {page_num + 1}\n\n{text}")
+        if sections:
+            handwritten_md = "## Handwritten Notes\n\n" + "\n\n".join(sections) + "\n\n"
+
     # Build the Distillate-specific content block (between markers)
     distillate_block = (
         f"{doi_link_md}{oneliner_md}{summary_md}{learnings_md}"
         f"{pdf_embed}{abstract_md}"
+        f"{typed_notes_md}{handwritten_md}"
         f"## Highlights\n\n{highlights_md}\n"
     )
 

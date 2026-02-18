@@ -16,7 +16,7 @@ from distillate import config
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.semanticscholar.org"
-_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year"
+_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year,fieldsOfStudy"
 
 # Delay between API calls to avoid rate limits (free tier: ~1 req/sec)
 _REQUEST_DELAY = 1.5
@@ -63,6 +63,7 @@ def lookup_paper(
         "publication_date": paper.get("publicationDate") or "",
         "venue": paper.get("venue") or "",
         "year": paper.get("year") or 0,
+        "fields_of_study": paper.get("fieldsOfStudy") or [],
     }
 
 
@@ -86,6 +87,15 @@ def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, 
     if not meta.get("journal") and s2_data.get("venue"):
         meta["journal"] = s2_data["venue"]
         log.info("S2 filled journal/venue: %s", s2_data["venue"])
+
+    # Merge S2 fieldsOfStudy into tags (add any not already present)
+    s2_fields = s2_data.get("fields_of_study") or []
+    if s2_fields:
+        existing = set(meta.get("tags") or [])
+        new_tags = [f for f in s2_fields if f not in existing]
+        if new_tags:
+            meta["tags"] = list(existing) + new_tags
+            log.info("S2 merged tags: %s", new_tags)
 
     return meta
 

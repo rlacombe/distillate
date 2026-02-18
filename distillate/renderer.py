@@ -1,8 +1,8 @@
-"""Extract highlights and render annotated PDFs from reMarkable document bundles.
+"""Extract highlights, typed notes, and ink strokes from reMarkable document bundles.
 
 Uses rmscene to parse v6 .rm files for highlighted text (GlyphRange items),
-and PyMuPDF to search for that text in the original PDF and add highlight
-annotations.
+typed text (Text items), and handwritten ink (Line items).
+Uses PyMuPDF to render annotations onto the original PDF.
 """
 
 import io
@@ -308,11 +308,20 @@ def render_annotated_pdf(zip_path: Path, output_path: Path) -> bool:
             annot.set_opacity(_HIGHLIGHT_OPACITY)
             annot.update()
 
+        # Render handwritten ink strokes
+        ink_count = 0
+        try:
+            ink_by_page = extract_ink_strokes(zip_path)
+            if ink_by_page:
+                ink_count = _render_ink_on_pdf(doc, ink_by_page)
+        except Exception:
+            log.debug("Ink stroke rendering failed, continuing", exc_info=True)
+
         doc.save(str(output_path), garbage=3, deflate=True)
         doc.close()
         log.info(
-            "Rendered annotated PDF with %d highlight(s): %s",
-            len(positions), output_path,
+            "Rendered annotated PDF with %d highlight(s) and %d ink stroke(s): %s",
+            len(positions), ink_count, output_path,
         )
         return True
 
@@ -596,3 +605,316 @@ def _merge_glyphs(
 
     passages.append(_clean_highlight_text(_join_dedup(current_parts)))
     return passages
+
+
+# ---------------------------------------------------------------------------
+# Page-ID helpers (shared by highlight, ink, and typed-note extraction)
+# ---------------------------------------------------------------------------
+
+
+def _load_rm_pages(zip_path: Path) -> List[Tuple[int, bytes]]:
+    """Load .rm page data from a reMarkable bundle.
+
+    Returns a list of (page_index, rm_bytes) tuples sorted by page order.
+    """
+    result: List[Tuple[int, bytes]] = []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            content_files = [n for n in zf.namelist() if n.endswith(".content")]
+            if not content_files:
+                return result
+
+            content_data = json.loads(zf.read(content_files[0]))
+            page_ids = content_data.get("cPages", {}).get("pages", [])
+            if not page_ids:
+                page_ids = content_data.get("pages", [])
+
+            ordered_ids = []
+            for page in page_ids:
+                if isinstance(page, dict):
+                    ordered_ids.append(page.get("id", ""))
+                else:
+                    ordered_ids.append(str(page))
+
+            rm_files = [n for n in zf.namelist() if n.endswith(".rm")]
+
+            indexed = []
+            for rm_file in rm_files:
+                stem = Path(rm_file).stem
+                try:
+                    idx = ordered_ids.index(stem)
+                except ValueError:
+                    continue
+                indexed.append((idx, rm_file))
+            indexed.sort()
+
+            for page_idx, rm_file in indexed:
+                try:
+                    result.append((page_idx, zf.read(rm_file)))
+                except Exception:
+                    log.warning("Failed to read %s in %s", rm_file, zip_path)
+    except Exception:
+        log.warning("Failed to read zip %s", zip_path, exc_info=True)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Typed notes extraction (keyboard-typed text on reMarkable)
+# ---------------------------------------------------------------------------
+
+
+def extract_typed_notes(zip_path: Path) -> Dict[int, str]:
+    """Extract keyboard-typed text notes per page from a reMarkable bundle.
+
+    Returns a dict mapping page index (0-based) to the typed text on that page.
+    Only pages with non-empty text are included.
+    """
+    from rmscene.text import TextDocument
+
+    result: Dict[int, str] = {}
+    for page_idx, rm_data in _load_rm_pages(zip_path):
+        try:
+            tree = read_tree(io.BytesIO(rm_data))
+            if tree.root_text is None:
+                continue
+            doc = TextDocument.from_scene_item(tree.root_text)
+            paragraphs = []
+            for para in doc.contents:
+                style = para.style.value if para.style else si.ParagraphStyle.PLAIN
+                text = str(para).strip()
+                if not text:
+                    continue
+                if style == si.ParagraphStyle.HEADING:
+                    paragraphs.append(f"### {text}")
+                elif style == si.ParagraphStyle.BOLD:
+                    paragraphs.append(f"**{text}**")
+                elif style in (si.ParagraphStyle.BULLET, si.ParagraphStyle.BULLET2):
+                    paragraphs.append(f"- {text}")
+                elif style == si.ParagraphStyle.CHECKBOX:
+                    paragraphs.append(f"- [ ] {text}")
+                elif style == si.ParagraphStyle.CHECKBOX_CHECKED:
+                    paragraphs.append(f"- [x] {text}")
+                else:
+                    paragraphs.append(text)
+            if paragraphs:
+                result[page_idx] = "\n".join(paragraphs)
+        except Exception:
+            log.debug("Could not parse typed notes from page %d of %s",
+                      page_idx, zip_path.name, exc_info=True)
+    if result:
+        log.info("Extracted typed notes from %d page(s) of %s",
+                 len(result), zip_path.name)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Ink stroke extraction and rendering
+# ---------------------------------------------------------------------------
+
+# Eraser tools to exclude from ink extraction
+_ERASER_TOOLS = {si.Pen.ERASER, si.Pen.ERASER_AREA}
+
+# reMarkable page dimensions in device units
+_RM_WIDTH = 1404.0
+_RM_HEIGHT = 1872.0
+
+# Map reMarkable pen colors to RGB tuples
+_PEN_COLOR_MAP = {
+    si.PenColor.BLACK: (0, 0, 0),
+    si.PenColor.GRAY: (0.5, 0.5, 0.5),
+    si.PenColor.WHITE: (1, 1, 1),
+    si.PenColor.YELLOW: (0.9, 0.8, 0),
+    si.PenColor.GREEN: (0, 0.6, 0),
+    si.PenColor.PINK: (0.9, 0.2, 0.5),
+    si.PenColor.BLUE: (0, 0.2, 0.8),
+    si.PenColor.RED: (0.8, 0, 0),
+    si.PenColor.GREEN_2: (0, 0.6, 0),
+    si.PenColor.CYAN: (0, 0.6, 0.7),
+    si.PenColor.MAGENTA: (0.7, 0, 0.7),
+    si.PenColor.YELLOW_2: (0.9, 0.8, 0),
+}
+
+
+def extract_ink_strokes(zip_path: Path) -> Dict[int, List[si.Line]]:
+    """Extract handwritten ink strokes (non-highlighter, non-eraser) per page.
+
+    Returns a dict mapping page index (0-based) to a list of Line items.
+    Only pages with ink strokes are included.
+    """
+    result: Dict[int, List[si.Line]] = {}
+    for page_idx, rm_data in _load_rm_pages(zip_path):
+        try:
+            tree = read_tree(io.BytesIO(rm_data))
+            strokes = []
+            for item in tree.walk():
+                if not isinstance(item, si.Line):
+                    continue
+                if si.Pen.is_highlighter(item.tool):
+                    continue
+                if item.tool in _ERASER_TOOLS:
+                    continue
+                if len(item.points) < 2:
+                    continue
+                strokes.append(item)
+            if strokes:
+                result[page_idx] = strokes
+        except Exception:
+            log.debug("Could not parse ink from page %d of %s",
+                      page_idx, zip_path.name, exc_info=True)
+    if result:
+        total = sum(len(v) for v in result.values())
+        log.info("Extracted %d ink stroke(s) from %d page(s) of %s",
+                 total, len(result), zip_path.name)
+    return result
+
+
+def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
+    """Draw ink strokes onto PDF pages using PyMuPDF's drawing API.
+
+    Scales from reMarkable device coordinates to PDF page coordinates.
+    Returns the number of strokes rendered.
+    """
+    import pymupdf
+
+    total_rendered = 0
+    for page_idx, lines in ink_by_page.items():
+        if page_idx >= len(doc):
+            continue
+        page = doc[page_idx]
+        sx = page.rect.width / _RM_WIDTH
+        sy = page.rect.height / _RM_HEIGHT
+        shape = page.new_shape()
+        for line in lines:
+            points = [pymupdf.Point(p.x * sx, p.y * sy) for p in line.points]
+            color = _PEN_COLOR_MAP.get(line.color, (0, 0, 0))
+            width = max(0.5, line.thickness_scale * sx * 0.5)
+            shape.draw_polyline(points)
+            shape.finish(color=color, width=width, closePath=False)
+            total_rendered += 1
+        shape.commit()
+    return total_rendered
+
+
+# ---------------------------------------------------------------------------
+# Handwritten OCR via Apple Vision (macOS only)
+# ---------------------------------------------------------------------------
+
+
+def _render_strokes_to_image(
+    lines: List[si.Line],
+    width: int = 1404,
+    height: int = 1872,
+):
+    """Render ink strokes to a PIL Image for OCR.
+
+    Returns a greyscale PIL Image with black strokes on white background,
+    or None if Pillow is not installed.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        log.debug("Pillow not installed, cannot render strokes to image")
+        return None
+
+    img = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(img)
+    for line in lines:
+        if len(line.points) < 2:
+            continue
+        coords = [(p.x, p.y) for p in line.points]
+        stroke_width = max(1, int(line.thickness_scale * 2))
+        draw.line(coords, fill=0, width=stroke_width)
+    return img
+
+
+def _ocr_image_vision(image) -> str:
+    """OCR a PIL Image using macOS Vision framework.
+
+    Returns recognized text, or empty string if Vision is unavailable.
+    """
+    try:
+        import Vision
+        from Quartz import (
+            CGImageCreate,
+            CGDataProviderCreateWithData,
+            CGColorSpaceCreateDeviceGray,
+        )
+    except ImportError:
+        log.debug("pyobjc Vision framework not available")
+        return ""
+
+    # Convert PIL greyscale image to CGImage
+    width, height = image.size
+    raw_data = image.tobytes()
+    provider = CGDataProviderCreateWithData(None, raw_data, len(raw_data), None)
+    cg_image = CGImageCreate(
+        width, height,
+        8, 8,  # bits per component, bits per pixel
+        width,  # bytes per row
+        CGColorSpaceCreateDeviceGray(),
+        0,  # bitmap info
+        provider, None, False, 0,
+    )
+    if cg_image is None:
+        log.debug("Failed to create CGImage for OCR")
+        return ""
+
+    # Create and run handwriting recognition request
+    request = Vision.VNRecognizeTextRequest.alloc().init()
+    request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+    # Enable handwriting recognition alongside printed text
+    request.setUsesLanguageCorrection_(True)
+
+    handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
+        cg_image, None,
+    )
+    success = handler.performRequests_error_([request], None)
+    if not success[0]:
+        log.debug("Vision OCR request failed")
+        return ""
+
+    results = request.results()
+    if not results:
+        return ""
+
+    # Collect recognized text lines sorted by vertical position (top to bottom)
+    text_lines = []
+    for observation in results:
+        candidate = observation.topCandidates_(1)
+        if candidate:
+            text = candidate[0].string()
+            # Vision y-coordinate is bottom-up, so 1-y for top-to-bottom sort
+            bbox = observation.boundingBox()
+            y_pos = 1 - bbox.origin.y - bbox.size.height
+            text_lines.append((y_pos, text))
+
+    text_lines.sort(key=lambda t: t[0])
+    return "\n".join(line for _, line in text_lines)
+
+
+def ocr_handwritten_notes(zip_path: Path) -> Dict[int, str]:
+    """Extract and OCR handwritten notes from a reMarkable bundle.
+
+    Renders ink strokes to images and uses Apple Vision for recognition.
+    Returns a dict mapping page index (0-based) to recognized text.
+    Falls back gracefully if Pillow or Vision are not available.
+    """
+    ink_by_page = extract_ink_strokes(zip_path)
+    if not ink_by_page:
+        return {}
+
+    results: Dict[int, str] = {}
+    for page_idx, lines in ink_by_page.items():
+        if not lines:
+            continue
+        img = _render_strokes_to_image(lines)
+        if img is None:
+            return {}  # Pillow not available, stop trying
+        text = _ocr_image_vision(img)
+        if text.strip():
+            results[page_idx] = text.strip()
+
+    if results:
+        log.info("OCR'd handwritten notes from %d page(s) of %s",
+                 len(results), zip_path.name)
+    return results
