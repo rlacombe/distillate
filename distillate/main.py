@@ -113,13 +113,10 @@ def _reprocess(args: list[str]) -> None:
             engagement = _compute_engagement(highlights, page_count)
             doc["engagement"] = engagement
 
-            # When syncing highlights to Zotero, replace with original PDF
-            # so Zotero annotations don't overlap baked-in highlights
-            if config.SYNC_HIGHLIGHTS and highlights and saved:
-                original_bytes = renderer.extract_original_pdf(zip_path)
-                if original_bytes:
-                    saved.write_bytes(original_bytes)
-                    log.info("Saved original PDF for Zotero annotations")
+            # Note: we keep the annotated PDF (with baked-in highlights
+            # and ink) for Obsidian viewing even when SYNC_HIGHLIGHTS is on.
+            # Zotero annotations overlay with slight visual doubling, which
+            # is preferable to having no highlights visible in Obsidian.
 
             # Update linked attachment
             linked = zotero_client.get_linked_attachment(item_key)
@@ -2719,13 +2716,9 @@ def main():
                     if config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
                         zotero_positions = renderer.extract_zotero_highlights(zip_path)
 
-                    # When syncing highlights to Zotero, save the original
-                    # (un-annotated) PDF so Zotero annotations don't overlap
-                    # with baked-in highlights.
-                    original_pdf_bytes = None
-                    if zotero_positions and bundle_ok:
-                        original_pdf_bytes = renderer.extract_original_pdf(zip_path)
-
+                    # Save annotated PDF (with highlights + ink) to vault.
+                    # We keep baked-in highlights even when SYNC_HIGHLIGHTS
+                    # is on so they're visible in Obsidian.
                     pdf_filename = None
                     saved = None
                     citekey = doc.get("metadata", {}).get("citekey", "")
@@ -2743,19 +2736,11 @@ def main():
                     # Clean up original from Inbox folder
                     obsidian.delete_inbox_pdf(doc["title"], citekey=citekey)
 
-                    # Update linked attachment — use original PDF when
-                    # highlights will be Zotero annotations, otherwise
-                    # use the annotated PDF.
+                    # Update linked attachment
                     linked = zotero_client.get_linked_attachment(item_key)
-                    link_pdf = saved
-                    if original_pdf_bytes and saved:
-                        # Overwrite the saved file with the original PDF
-                        # for Zotero; Obsidian note has text highlights
-                        saved.write_bytes(original_pdf_bytes)
-                        log.info("Saved original PDF for Zotero annotations")
-                    if link_pdf:
+                    if saved:
                         new_att = zotero_client.create_linked_attachment(
-                            item_key, link_pdf.name, str(link_pdf),
+                            item_key, saved.name, str(saved),
                         )
                         if new_att and linked:
                             zotero_client.delete_attachment(linked["key"])

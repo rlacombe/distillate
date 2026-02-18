@@ -790,12 +790,29 @@ def extract_ink_strokes(zip_path: Path) -> Dict[int, List[si.Line]]:
     return result
 
 
+def _rm_to_pdf_mapping(
+    pdf_w: float, pdf_h: float,
+) -> tuple[float, float, float]:
+    """Compute reMarkable → PDF coordinate mapping for bestFit mode.
+
+    The reMarkable renders PDFs centered in its 1404x1872 viewport,
+    scaling to fit the entire page.  Returns (rm_scale, x_offset, y_offset)
+    where rm_scale is RM pixels per PDF point and offsets are in RM coords.
+    """
+    rm_scale = min(_RM_WIDTH / pdf_w, _RM_HEIGHT / pdf_h)
+    rendered_w = pdf_w * rm_scale
+    rendered_h = pdf_h * rm_scale
+    x_off = (_RM_WIDTH - rendered_w) / 2
+    y_off = (_RM_HEIGHT - rendered_h) / 2
+    return rm_scale, x_off, y_off
+
+
 def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
     """Draw ink strokes onto PDF pages using PyMuPDF's drawing API.
 
-    Scales from reMarkable device coordinates to PDF page coordinates.
-    Only renders strokes that are at least partially within the RM viewport
-    (strokes in margins or scrolled areas are captured by OCR instead).
+    Scales from reMarkable device coordinates to PDF page coordinates,
+    accounting for the bestFit centering offset.  Only renders strokes
+    within the rendered PDF area (margin/scrolled strokes are OCR'd).
     Returns the number of strokes rendered.
     """
     import pymupdf
@@ -805,27 +822,31 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
         if page_idx >= len(doc):
             continue
         page = doc[page_idx]
-        sx = page.rect.width / _RM_WIDTH
-        sy = page.rect.height / _RM_HEIGHT
+        pdf_w = page.rect.width
+        pdf_h = page.rect.height
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(pdf_w, pdf_h)
+        rendered_w = pdf_w * rm_scale
+        rendered_h = pdf_h * rm_scale
+
         shape = page.new_shape()
         for line in lines:
-            # Skip strokes entirely outside the RM viewport (margins, scrolled)
+            # Skip strokes entirely outside the rendered PDF area
             xs = [p.x for p in line.points]
             ys = [p.y for p in line.points]
-            if max(xs) < 0 or min(xs) > _RM_WIDTH:
+            if max(xs) < x_off or min(xs) > x_off + rendered_w:
                 continue
-            if max(ys) < 0 or min(ys) > _RM_HEIGHT:
+            if max(ys) < y_off or min(ys) > y_off + rendered_h:
                 continue
-            # Clamp points to page bounds
+            # Map RM coordinates to PDF coordinates, clamping to page
             points = [
                 pymupdf.Point(
-                    max(0, min(p.x, _RM_WIDTH)) * sx,
-                    max(0, min(p.y, _RM_HEIGHT)) * sy,
+                    max(0, min((p.x - x_off) / rm_scale, pdf_w)),
+                    max(0, min((p.y - y_off) / rm_scale, pdf_h)),
                 )
                 for p in line.points
             ]
             color = _PEN_COLOR_MAP.get(line.color, (0, 0, 0))
-            width = max(0.8, line.thickness_scale * sx)
+            width = max(0.8, line.thickness_scale / rm_scale)
             shape.draw_polyline(points)
             shape.finish(color=color, width=width, closePath=False)
             total_rendered += 1

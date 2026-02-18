@@ -385,6 +385,49 @@ class TestExtractInkStrokes:
 
 
 # ---------------------------------------------------------------------------
+# RM → PDF coordinate mapping
+# ---------------------------------------------------------------------------
+
+
+class TestRmToPdfMapping:
+    """_rm_to_pdf_mapping() should compute correct bestFit offset."""
+
+    def test_letter_paper_y_offset(self):
+        """US Letter (612x792) fills width, has vertical centering offset."""
+        from distillate.renderer import _rm_to_pdf_mapping
+
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(612.0, 792.0)
+        # PDF fills width → x_off ≈ 0
+        assert abs(x_off) < 0.1
+        # Vertical offset ≈ 27.5 (1872 - 792*2.294)/2
+        assert 25 < y_off < 30
+        # Scale ≈ 2.294
+        assert abs(rm_scale - 1404.0 / 612.0) < 0.01
+
+    def test_a4_paper_x_offset(self):
+        """A4 (595x842) fills height, has horizontal centering offset."""
+        from distillate.renderer import _rm_to_pdf_mapping
+
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(595.0, 842.0)
+        # PDF fills height → y_off ≈ 0
+        assert abs(y_off) < 0.1
+        # Horizontal offset > 0 (page narrower than RM)
+        assert x_off > 30
+        # Scale = 1872/842 ≈ 2.223
+        assert abs(rm_scale - 1872.0 / 842.0) < 0.01
+
+    def test_square_page(self):
+        """Square page should center in both directions."""
+        from distillate.renderer import _rm_to_pdf_mapping
+
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(500.0, 500.0)
+        # Fills width (1404/500=2.808 < 1872/500=3.744)
+        assert abs(rm_scale - 1404.0 / 500.0) < 0.01
+        assert abs(x_off) < 0.1  # fills width
+        assert y_off > 0  # vertical padding
+
+
+# ---------------------------------------------------------------------------
 # OCR graceful fallback
 # ---------------------------------------------------------------------------
 
