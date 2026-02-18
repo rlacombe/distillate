@@ -531,7 +531,7 @@ def create_paper_note(
                 content = content[:my_notes_idx]
 
             content = content.rstrip("\n") + marker_block
-            note_path.write_text(content)
+            note_path.write_text(content, encoding="utf-8", newline="\n")
             log.info("Merged note: %s", note_path)
             return note_path
 
