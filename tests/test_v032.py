@@ -785,6 +785,43 @@ class TestUploadPathLeak:
 
 
 # ---------------------------------------------------------------------------
+# Year extraction from date strings
+# ---------------------------------------------------------------------------
+
+
+class TestExtractYear:
+    """_extract_year() should handle all Zotero date formats."""
+
+    def test_iso_date(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("2024-10-15") == "2024"
+
+    def test_day_month_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("8 September 2024") == "2024"
+
+    def test_month_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("10/2024") == "2024"
+
+    def test_year_only(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("2024") == "2024"
+
+    def test_empty(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("") == ""
+
+    def test_none(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year(None) == ""
+
+    def test_no_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("in press") == ""
+
+
+# ---------------------------------------------------------------------------
 # WebDAV PDF download fallback
 # ---------------------------------------------------------------------------
 

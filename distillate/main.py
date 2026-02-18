@@ -90,11 +90,6 @@ def _reprocess(args: list[str]) -> None:
 
             highlights = renderer.extract_highlights(zip_path)
             typed_notes = renderer.extract_typed_notes(zip_path)
-            try:
-                handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
-            except Exception:
-                handwritten_notes = {}
-                log.debug("Handwritten OCR skipped", exc_info=True)
             page_count = renderer.get_page_count(zip_path)
             render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
 
@@ -196,7 +191,6 @@ def _reprocess(args: list[str]) -> None:
                 page_count=page_count,
                 citekey=citekey,
                 typed_notes=typed_notes or None,
-                handwritten_notes=handwritten_notes or None,
             )
 
             # Add Obsidian deep link in Zotero
@@ -2668,7 +2662,6 @@ def main():
 
                 highlights = None
                 typed_notes = None
-                handwritten_notes = None
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = Path(tmpdir) / f"{rm_name}.zip"
@@ -2684,11 +2677,6 @@ def main():
                         print("    Extracting highlights...")
                         highlights = renderer.extract_highlights(zip_path)
                         typed_notes = renderer.extract_typed_notes(zip_path)
-                        try:
-                            handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
-                        except Exception:
-                            handwritten_notes = {}
-                            log.debug("Handwritten OCR skipped", exc_info=True)
                         if highlights:
                             hl_count = sum(len(v) for v in highlights.values())
                             print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
@@ -2815,7 +2803,6 @@ def main():
                     page_count=page_count,
                     citekey=citekey,
                     typed_notes=typed_notes or None,
-                    handwritten_notes=handwritten_notes or None,
                 )
 
                 # Add Obsidian deep link in Zotero
