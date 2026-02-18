@@ -106,6 +106,9 @@ def upload_pdf_bytes(pdf_bytes: bytes, folder: str, title: str) -> None:
     """Upload PDF bytes to a reMarkable folder with a given title.
 
     If a document with the same name already exists, skips the upload.
+
+    On Windows, rmapi may use the full local temp path as the document
+    name. We detect this and rename the document after upload.
     """
     sanitized = sanitize_filename(title)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,6 +123,25 @@ def upload_pdf_bytes(pdf_bytes: bytes, folder: str, title: str) -> None:
                 f"rmapi put failed (exit {result.returncode}): "
                 f"{result.stderr.strip()}"
             )
+
+    # On Windows, rmapi may name the doc after the full temp path.
+    # Check if the expected name exists; if not, find and rename it.
+    docs = list_folder(folder)
+    if sanitized not in docs:
+        # Look for a doc whose name contains the sanitized title
+        # (the temp path will end with e.g. "...\tmpXXXX\Title")
+        bad_name = None
+        for name in docs:
+            if name.endswith(sanitized) and len(name) > len(sanitized):
+                bad_name = name
+                break
+        if bad_name:
+            log.warning(
+                "rmapi used temp path as doc name: '%s' — renaming to '%s'",
+                bad_name, sanitized,
+            )
+            _run(["mv", f"/{folder}/{bad_name}", f"/{folder}/{sanitized}"])
+
     log.info("Uploaded '%s' to /%s/", title, folder)
 
 

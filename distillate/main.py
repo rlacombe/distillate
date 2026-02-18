@@ -89,6 +89,12 @@ def _reprocess(args: list[str]) -> None:
                 continue
 
             highlights = renderer.extract_highlights(zip_path)
+            typed_notes = renderer.extract_typed_notes(zip_path)
+            try:
+                handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+            except Exception:
+                handwritten_notes = {}
+                log.debug("Handwritten OCR skipped", exc_info=True)
             page_count = renderer.get_page_count(zip_path)
             render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
 
@@ -107,13 +113,10 @@ def _reprocess(args: list[str]) -> None:
             engagement = _compute_engagement(highlights, page_count)
             doc["engagement"] = engagement
 
-            # When syncing highlights to Zotero, replace with original PDF
-            # so Zotero annotations don't overlap baked-in highlights
-            if config.SYNC_HIGHLIGHTS and highlights and saved:
-                original_bytes = renderer.extract_original_pdf(zip_path)
-                if original_bytes:
-                    saved.write_bytes(original_bytes)
-                    log.info("Saved original PDF for Zotero annotations")
+            # Note: we keep the annotated PDF (with baked-in highlights
+            # and ink) for Obsidian viewing even when SYNC_HIGHLIGHTS is on.
+            # Zotero annotations overlay with slight visual doubling, which
+            # is preferable to having no highlights visible in Obsidian.
 
             # Update linked attachment
             linked = zotero_client.get_linked_attachment(item_key)
@@ -192,6 +195,8 @@ def _reprocess(args: list[str]) -> None:
                 highlight_word_count=hl_words,
                 page_count=page_count,
                 citekey=citekey,
+                typed_notes=typed_notes or None,
+                handwritten_notes=handwritten_notes or None,
             )
 
             # Add Obsidian deep link in Zotero
@@ -248,78 +253,6 @@ def _reprocess(args: list[str]) -> None:
         print(f"  Done: {title}")
 
 
-def _dry_run() -> None:
-    """Preview what the workflow would do without making any changes."""
-    from distillate import config
-    from distillate import zotero_client
-    from distillate import remarkable_client
-    from distillate.state import State
-
-    config.setup_logging()
-
-    print("=== DRY RUN — no changes will be made ===")
-    state = State()
-
-    # Retry queue
-    awaiting = state.documents_with_status("awaiting_pdf")
-    if awaiting:
-        print(f"[dry-run] {len(awaiting)} paper(s) awaiting PDF sync:")
-        for doc in awaiting:
-            print(f"  - {doc['title']}")
-
-    # Step 1: Check Zotero for new papers
-    current_version = zotero_client.get_library_version()
-    stored_version = state.zotero_library_version
-
-    if stored_version == 0:
-        print(f"[dry-run] First run — would set version watermark to {current_version}")
-    elif current_version == stored_version:
-        print(f"[dry-run] Zotero library unchanged (version {current_version})")
-    else:
-        print(f"[dry-run] Zotero library changed: {stored_version} → {current_version}")
-        changed_keys, _ = zotero_client.get_changed_item_keys(stored_version)
-        new_keys = [k for k in changed_keys if not state.has_document(k)]
-        if new_keys:
-            items = zotero_client.get_items_by_keys(new_keys)
-            new_papers = zotero_client.filter_new_papers(items)
-            if new_papers:
-                print(f"[dry-run] Would send {len(new_papers)} paper(s) to reMarkable:")
-                for p in new_papers:
-                    meta = zotero_client.extract_metadata(p)
-                    print(f"  - {meta['title']} ({', '.join(meta['authors'][:2])})")
-            else:
-                print("[dry-run] No new papers to send")
-        else:
-            print("[dry-run] All changed items already tracked")
-
-        # Check for metadata changes on tracked papers
-        existing_changed = [k for k in changed_keys if state.has_document(k)]
-        if existing_changed:
-            print(f"[dry-run] {len(existing_changed)} tracked paper(s) have Zotero changes (would check metadata)")
-
-    # Step 2: Check reMarkable for read papers
-    on_remarkable = state.documents_with_status("on_remarkable")
-    read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
-
-    read_matches = [d for d in on_remarkable if d["remarkable_doc_name"] in read_docs]
-    if read_matches:
-        print(f"[dry-run] Would process {len(read_matches)} read paper(s):")
-        for doc in read_matches:
-            print(f"  - {doc['title']}")
-    else:
-        print("[dry-run] No read papers to process")
-
-    # Summary
-    total = len(read_matches)
-    if awaiting:
-        total += len(awaiting)
-    if total:
-        print(f"[dry-run] Total actions: {total} paper(s) would be processed")
-    else:
-        print("[dry-run] Nothing to do")
-
-    print("=== DRY RUN complete ===")
-
 
 
 def _backfill_s2() -> None:
@@ -336,8 +269,10 @@ def _backfill_s2() -> None:
 
     for key, doc in state.documents.items():
         meta = doc.get("metadata", {})
-        # Skip papers already enriched (have s2_url = actually found on S2)
-        if meta.get("s2_url"):
+        # Skip papers already enriched with sufficient tags
+        has_s2 = bool(meta.get("s2_url"))
+        has_enough_tags = len(meta.get("tags") or []) >= 3
+        if has_s2 and has_enough_tags:
             continue
 
         # Fetch metadata from Zotero if missing DOI
@@ -1086,15 +1021,24 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
 
 
 def _auto_promote(state) -> None:
-    """Check Gist for pending picks from GH Actions and promote them.
+    """Promote pending picks on reMarkable.
 
-    Called during --sync. If GH Actions ran --suggest-email, the picks
-    are stored in pending.json on the Gist. This function reads them
-    and promotes the papers on reMarkable.
+    Called during sync. Checks two sources:
+    1. Local state.pending_promotions (from local --suggest-email)
+    2. Gist pending.json (from GH Actions --suggest-email)
     """
     from distillate import config
     from distillate.digest import fetch_pending_from_gist
 
+    # Source 1: local pending promotions
+    local_picks = state.pending_promotions
+    if local_picks:
+        log.info("Found %d local pending pick(s), promoting...", len(local_picks))
+        _demote_and_promote(state, local_picks)
+        state.save()
+        return  # Don't also process Gist picks in the same run
+
+    # Source 2: Gist (GH Actions)
     if not config.STATE_GIST_ID:
         return
 
@@ -1493,6 +1437,12 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                     log.info("PDF not synced to Zotero cloud for '%s'", title)
                 else:
                     raise
+
+        # Fall back to WebDAV (for users who store attachments via WebDAV)
+        if pdf_bytes is None and att_key:
+            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+            if pdf_bytes:
+                log.info("Downloaded PDF from WebDAV for '%s'", title)
 
         # Fall back to direct URL download
         if pdf_bytes is None:
@@ -2290,7 +2240,6 @@ Management:
   --reprocess "Title"     Re-extract highlights and regenerate note
 
 Advanced:
-  --dry-run               Preview sync without making changes
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --refresh-metadata      Re-fetch metadata from Zotero + Semantic Scholar
@@ -2304,7 +2253,7 @@ Options:
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--init", "--register",
     "--status", "--list", "--remove", "--import", "--reprocess",
-    "--digest", "--schedule", "--send-digest", "--dry-run",
+    "--digest", "--schedule", "--send-digest",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
 }
@@ -2366,10 +2315,6 @@ def main():
     if "--send-digest" in sys.argv:
         from distillate import digest
         digest.send_weekly_digest()
-        return
-
-    if "--dry-run" in sys.argv:
-        _dry_run()
         return
 
     if "--backfill-s2" in sys.argv:
@@ -2462,6 +2407,12 @@ def main():
                                 log.info("PDF still not synced in Zotero for '%s'", title)
                             else:
                                 raise
+
+                    # Fall back to WebDAV
+                    if pdf_bytes is None and att_key:
+                        pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+                        if pdf_bytes:
+                            log.info("Downloaded PDF from WebDAV for '%s'", title)
 
                     # Fall back to direct URL download (arxiv, biorxiv, etc.)
                     if pdf_bytes is None:
@@ -2716,6 +2667,8 @@ def main():
                     state.save()
 
                 highlights = None
+                typed_notes = None
+                handwritten_notes = None
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = Path(tmpdir) / f"{rm_name}.zip"
@@ -2730,6 +2683,12 @@ def main():
                         # Extract highlighted text
                         print("    Extracting highlights...")
                         highlights = renderer.extract_highlights(zip_path)
+                        typed_notes = renderer.extract_typed_notes(zip_path)
+                        try:
+                            handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+                        except Exception:
+                            handwritten_notes = {}
+                            log.debug("Handwritten OCR skipped", exc_info=True)
                         if highlights:
                             hl_count = sum(len(v) for v in highlights.values())
                             print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
@@ -2769,13 +2728,9 @@ def main():
                     if config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
                         zotero_positions = renderer.extract_zotero_highlights(zip_path)
 
-                    # When syncing highlights to Zotero, save the original
-                    # (un-annotated) PDF so Zotero annotations don't overlap
-                    # with baked-in highlights.
-                    original_pdf_bytes = None
-                    if zotero_positions and bundle_ok:
-                        original_pdf_bytes = renderer.extract_original_pdf(zip_path)
-
+                    # Save annotated PDF (with highlights + ink) to vault.
+                    # We keep baked-in highlights even when SYNC_HIGHLIGHTS
+                    # is on so they're visible in Obsidian.
                     pdf_filename = None
                     saved = None
                     citekey = doc.get("metadata", {}).get("citekey", "")
@@ -2793,19 +2748,11 @@ def main():
                     # Clean up original from Inbox folder
                     obsidian.delete_inbox_pdf(doc["title"], citekey=citekey)
 
-                    # Update linked attachment — use original PDF when
-                    # highlights will be Zotero annotations, otherwise
-                    # use the annotated PDF.
+                    # Update linked attachment
                     linked = zotero_client.get_linked_attachment(item_key)
-                    link_pdf = saved
-                    if original_pdf_bytes and saved:
-                        # Overwrite the saved file with the original PDF
-                        # for Zotero; Obsidian note has text highlights
-                        saved.write_bytes(original_pdf_bytes)
-                        log.info("Saved original PDF for Zotero annotations")
-                    if link_pdf:
+                    if saved:
                         new_att = zotero_client.create_linked_attachment(
-                            item_key, link_pdf.name, str(link_pdf),
+                            item_key, saved.name, str(saved),
                         )
                         if new_att and linked:
                             zotero_client.delete_attachment(linked["key"])
@@ -2867,6 +2814,8 @@ def main():
                     highlight_word_count=hl_words,
                     page_count=page_count,
                     citekey=citekey,
+                    typed_notes=typed_notes or None,
+                    handwritten_notes=handwritten_notes or None,
                 )
 
                 # Add Obsidian deep link in Zotero

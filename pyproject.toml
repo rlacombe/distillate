@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.3.1"
+version = "0.3.2"
 description = "Distill research papers from Zotero through reMarkable into structured notes"
 readme = "README.md"
 license = "MIT"
@@ -33,7 +33,16 @@ dependencies = [
 [project.optional-dependencies]
 ai = ["anthropic>=0.40.0"]
 email = ["resend>=2.0.0"]
-all = ["anthropic>=0.40.0", "resend>=2.0.0"]
+handwriting = [
+    "Pillow>=10.0",
+    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
+]
+all = [
+    "anthropic>=0.40.0",
+    "resend>=2.0.0",
+    "Pillow>=10.0",
+    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
+]
 
 [project.urls]
 Homepage = "https://distillate.dev"
