@@ -389,42 +389,93 @@ class TestExtractInkStrokes:
 # ---------------------------------------------------------------------------
 
 
-class TestRmToPdfMapping:
-    """_rm_to_pdf_mapping() should compute correct bestFit offset."""
+class TestIsPaperProCoords:
+    """_is_paper_pro_coords() should detect Paper Pro coordinate space."""
 
-    def test_letter_paper_y_offset(self):
-        """US Letter (612x792) fills width, has vertical centering offset."""
+    def test_classic_rm_coordinates(self):
+        from distillate.renderer import _is_paper_pro_coords
+
+        line = si.Line(
+            color=si.PenColor.BLACK, tool=si.Pen.BALLPOINT_1,
+            points=[
+                si.Point(x=100, y=200, speed=0, direction=0, width=2, pressure=50),
+                si.Point(x=500, y=800, speed=0, direction=0, width=2, pressure=50),
+            ],
+            thickness_scale=1.0, starting_length=0,
+        )
+        assert _is_paper_pro_coords({0: [line]}) is False
+
+    def test_paper_pro_negative_x(self):
+        from distillate.renderer import _is_paper_pro_coords
+
+        line = si.Line(
+            color=si.PenColor.BLACK, tool=si.Pen.BALLPOINT_1,
+            points=[
+                si.Point(x=-742, y=200, speed=0, direction=0, width=2, pressure=50),
+                si.Point(x=-500, y=800, speed=0, direction=0, width=2, pressure=50),
+            ],
+            thickness_scale=1.0, starting_length=0,
+        )
+        assert _is_paper_pro_coords({0: [line]}) is True
+
+    def test_paper_pro_high_y(self):
+        from distillate.renderer import _is_paper_pro_coords
+
+        line = si.Line(
+            color=si.PenColor.BLACK, tool=si.Pen.BALLPOINT_1,
+            points=[
+                si.Point(x=100, y=200, speed=0, direction=0, width=2, pressure=50),
+                si.Point(x=500, y=2400, speed=0, direction=0, width=2, pressure=50),
+            ],
+            thickness_scale=1.0, starting_length=0,
+        )
+        assert _is_paper_pro_coords({0: [line]}) is True
+
+
+class TestRmToPdfMapping:
+    """_rm_to_pdf_mapping() should compute correct coordinate mapping."""
+
+    def test_classic_letter_y_offset(self):
+        """Classic RM: US Letter fills width, has vertical centering offset."""
         from distillate.renderer import _rm_to_pdf_mapping
 
-        rm_scale, x_off, y_off = _rm_to_pdf_mapping(612.0, 792.0)
-        # PDF fills width → x_off ≈ 0
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(612.0, 792.0, paper_pro=False)
         assert abs(x_off) < 0.1
-        # Vertical offset ≈ 27.5 (1872 - 792*2.294)/2
         assert 25 < y_off < 30
-        # Scale ≈ 2.294
         assert abs(rm_scale - 1404.0 / 612.0) < 0.01
 
-    def test_a4_paper_x_offset(self):
-        """A4 (595x842) fills height, has horizontal centering offset."""
+    def test_classic_a4_x_offset(self):
+        """Classic RM: A4 fills height, has horizontal centering offset."""
         from distillate.renderer import _rm_to_pdf_mapping
 
-        rm_scale, x_off, y_off = _rm_to_pdf_mapping(595.0, 842.0)
-        # PDF fills height → y_off ≈ 0
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(595.0, 842.0, paper_pro=False)
         assert abs(y_off) < 0.1
-        # Horizontal offset > 0 (page narrower than RM)
         assert x_off > 30
-        # Scale = 1872/842 ≈ 2.223
         assert abs(rm_scale - 1872.0 / 842.0) < 0.01
 
-    def test_square_page(self):
-        """Square page should center in both directions."""
+    def test_paper_pro_scale(self):
+        """Paper Pro uses 227 DPI native coordinates."""
         from distillate.renderer import _rm_to_pdf_mapping
 
-        rm_scale, x_off, y_off = _rm_to_pdf_mapping(500.0, 500.0)
-        # Fills width (1404/500=2.808 < 1872/500=3.744)
-        assert abs(rm_scale - 1404.0 / 500.0) < 0.01
-        assert abs(x_off) < 0.1  # fills width
-        assert y_off > 0  # vertical padding
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(612.0, 792.0, paper_pro=True)
+        # Scale = 227/72
+        assert abs(rm_scale - 227.0 / 72.0) < 0.01
+        # PDF centered at x=0 → x_off = -pdf_w*scale/2
+        assert abs(x_off - (-612.0 * rm_scale / 2)) < 0.1
+        # No y offset
+        assert abs(y_off) < 0.1
+
+    def test_paper_pro_coordinate_accuracy(self):
+        """Paper Pro mapping should place ink within 2pt of correct position."""
+        from distillate.renderer import _rm_to_pdf_mapping
+
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(612.0, 792.0, paper_pro=True)
+        # Known calibration: rm_y=333 should map to pdf_y≈105.3
+        pdf_y = (333 - y_off) / rm_scale
+        assert abs(pdf_y - 105.6) < 2.0
+        # rm_y=1324 → pdf_y≈419.7
+        pdf_y = (1324 - y_off) / rm_scale
+        assert abs(pdf_y - 419.9) < 2.0
 
 
 # ---------------------------------------------------------------------------

@@ -736,9 +736,14 @@ def extract_typed_notes(zip_path: Path) -> Dict[int, str]:
 # Eraser tools to exclude from ink extraction
 _ERASER_TOOLS = {si.Pen.ERASER, si.Pen.ERASER_AREA}
 
-# reMarkable page dimensions in device units
+# reMarkable page dimensions in device units (classic RM1/RM2)
 _RM_WIDTH = 1404.0
 _RM_HEIGHT = 1872.0
+
+# reMarkable Paper Pro renders at 227 DPI; stroke coordinates are in
+# this native-DPI space (not the classic 1404×1872 viewport).
+_RM_PRO_DPI = 227.0
+_PDF_DPI = 72.0
 
 # Map reMarkable pen colors to RGB tuples
 _PEN_COLOR_MAP = {
@@ -790,32 +795,63 @@ def extract_ink_strokes(zip_path: Path) -> Dict[int, List[si.Line]]:
     return result
 
 
+def _is_paper_pro_coords(ink_by_page: Dict[int, List[si.Line]]) -> bool:
+    """Detect whether stroke coordinates use Paper Pro native-DPI space.
+
+    Paper Pro coordinates are centered at x=0 with the PDF scaled at
+    ~227 DPI, producing stroke x-values far below 0 and y-values well
+    above 1872.  Classic RM coordinates stay within 0..1404 / 0..1872
+    (with small margins for edge strokes).
+    """
+    for lines in ink_by_page.values():
+        for line in lines:
+            for p in line.points:
+                if p.x < -200 or p.y > 2100:
+                    return True
+    return False
+
+
 def _rm_to_pdf_mapping(
     pdf_w: float, pdf_h: float,
+    paper_pro: bool = False,
 ) -> tuple[float, float, float]:
-    """Compute reMarkable → PDF coordinate mapping for bestFit mode.
+    """Compute reMarkable → PDF coordinate mapping.
 
-    The reMarkable renders PDFs centered in its 1404x1872 viewport,
-    scaling to fit the entire page.  Returns (rm_scale, x_offset, y_offset)
-    where rm_scale is RM pixels per PDF point and offsets are in RM coords.
+    Returns (rm_scale, x_offset, y_offset) where rm_scale is RM units
+    per PDF point and offsets are the RM coordinates of the PDF origin.
+
+    Classic RM (1404×1872 viewport, bestFit):
+        pdf_coord = (rm_coord - offset) / rm_scale
+
+    Paper Pro (227 DPI native coordinates, PDF centered at x≈0):
+        Same formula with scale=227/72 and PDF horizontally centered.
     """
-    rm_scale = min(_RM_WIDTH / pdf_w, _RM_HEIGHT / pdf_h)
-    rendered_w = pdf_w * rm_scale
-    rendered_h = pdf_h * rm_scale
-    x_off = (_RM_WIDTH - rendered_w) / 2
-    y_off = (_RM_HEIGHT - rendered_h) / 2
+    if paper_pro:
+        rm_scale = _RM_PRO_DPI / _PDF_DPI
+        x_off = -(pdf_w * rm_scale) / 2
+        y_off = 0.0
+    else:
+        rm_scale = min(_RM_WIDTH / pdf_w, _RM_HEIGHT / pdf_h)
+        rendered_w = pdf_w * rm_scale
+        rendered_h = pdf_h * rm_scale
+        x_off = (_RM_WIDTH - rendered_w) / 2
+        y_off = (_RM_HEIGHT - rendered_h) / 2
     return rm_scale, x_off, y_off
 
 
 def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
     """Draw ink strokes onto PDF pages using PyMuPDF's drawing API.
 
-    Scales from reMarkable device coordinates to PDF page coordinates,
-    accounting for the bestFit centering offset.  Only renders strokes
-    within the rendered PDF area (margin/scrolled strokes are OCR'd).
+    Detects the coordinate system (classic RM vs Paper Pro) from the
+    stroke data, then maps RM coordinates to PDF page coordinates.
+    Only renders strokes within the rendered PDF area.
     Returns the number of strokes rendered.
     """
     import pymupdf
+
+    paper_pro = _is_paper_pro_coords(ink_by_page)
+    if paper_pro:
+        log.debug("Detected Paper Pro coordinate system")
 
     total_rendered = 0
     for page_idx, lines in ink_by_page.items():
@@ -824,7 +860,7 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
         page = doc[page_idx]
         pdf_w = page.rect.width
         pdf_h = page.rect.height
-        rm_scale, x_off, y_off = _rm_to_pdf_mapping(pdf_w, pdf_h)
+        rm_scale, x_off, y_off = _rm_to_pdf_mapping(pdf_w, pdf_h, paper_pro)
         rendered_w = pdf_w * rm_scale
         rendered_h = pdf_h * rm_scale
 
