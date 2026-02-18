@@ -595,8 +595,8 @@ class TestPaperNoteWithNotes:
     """create_paper_note() should include typed and handwritten note sections."""
 
     def test_typed_notes_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
@@ -617,8 +617,8 @@ class TestPaperNoteWithNotes:
         assert "Note on page 3" in content
 
     def test_handwritten_notes_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
@@ -637,8 +637,8 @@ class TestPaperNoteWithNotes:
         assert "OCR'd handwriting from page 2" in content
 
     def test_no_notes_no_section(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("OUTPUT_PATH", str(tmp_path))
-        monkeypatch.delenv("OBSIDIAN_VAULT_NAME", raising=False)
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
 
         from distillate import obsidian
 
@@ -782,6 +782,43 @@ class TestUploadPathLeak:
         # Only the put call, no list_folder or mv
         assert mock_run.call_count == 1
         mock_list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Year extraction from date strings
+# ---------------------------------------------------------------------------
+
+
+class TestExtractYear:
+    """_extract_year() should handle all Zotero date formats."""
+
+    def test_iso_date(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("2024-10-15") == "2024"
+
+    def test_day_month_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("8 September 2024") == "2024"
+
+    def test_month_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("10/2024") == "2024"
+
+    def test_year_only(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("2024") == "2024"
+
+    def test_empty(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("") == ""
+
+    def test_none(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year(None) == ""
+
+    def test_no_year(self):
+        from distillate.obsidian import _extract_year
+        assert _extract_year("in press") == ""
 
 
 # ---------------------------------------------------------------------------
