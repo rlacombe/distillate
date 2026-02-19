@@ -5,6 +5,7 @@ and maintains a simple reading log.
 """
 
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from collections import OrderedDict
@@ -109,6 +110,23 @@ def _read_dir() -> Optional[Path]:
     return rd
 
 
+def _pdf_dir() -> Optional[Path]:
+    """Return the directory for saved PDFs.
+
+    When ``PDF_SUBFOLDER`` is set (default ``"pdf"``), returns
+    ``Saved/<subfolder>/``.  When empty, PDFs live alongside notes in
+    ``Saved/``.
+    """
+    rd = _read_dir()
+    if rd is None:
+        return None
+    if config.PDF_SUBFOLDER:
+        pd = rd / config.PDF_SUBFOLDER
+        pd.mkdir(parents=True, exist_ok=True)
+        return pd
+    return rd
+
+
 def save_inbox_pdf(title: str, pdf_bytes: bytes, citekey: str = "") -> Optional[Path]:
     """Save an original PDF to the Inbox folder.
 
@@ -164,19 +182,49 @@ def delete_paper_note(title: str, citekey: str = "") -> None:
 
 
 def save_annotated_pdf(title: str, pdf_bytes: bytes, citekey: str = "") -> Optional[Path]:
-    """Save an annotated PDF to the Read folder.
+    """Save an annotated PDF to the PDF directory (``Saved/pdf/`` by default).
 
     Returns the path to the saved file, or None if output is unconfigured.
     """
-    rd = _read_dir()
-    if rd is None:
+    pd = _pdf_dir()
+    if pd is None:
         return None
 
     filename = citekey if citekey else _sanitize_note_name(title)
-    pdf_path = rd / f"{filename}.pdf"
+    pdf_path = pd / f"{filename}.pdf"
     pdf_path.write_bytes(pdf_bytes)
     log.info("Saved annotated PDF: %s", pdf_path)
     return pdf_path
+
+
+def migrate_pdfs_to_subdir() -> List[Path]:
+    """Move any PDFs from ``Saved/`` root into the PDF subdirectory.
+
+    Only runs when ``PDF_SUBFOLDER`` is non-empty (i.e. PDFs should live
+    in a subfolder).  Returns the list of destination paths for files
+    that were moved.
+    """
+    if not config.PDF_SUBFOLDER:
+        return []
+
+    rd = _read_dir()
+    if rd is None:
+        return []
+
+    pd = _pdf_dir()
+    if pd is None or pd == rd:
+        return []
+
+    moved: List[Path] = []
+    for pdf in sorted(rd.glob("*.pdf")):
+        dst = pd / pdf.name
+        if dst.exists():
+            log.warning("Migration skip (target exists): %s", dst.name)
+            continue
+        pdf.rename(dst)
+        log.info("Migrated PDF: %s -> %s/", pdf.name, config.PDF_SUBFOLDER)
+        moved.append(dst)
+    return moved
 
 
 def ensure_dataview_note() -> None:
@@ -361,12 +409,18 @@ def create_paper_note(
     # One-liner blockquote at top
     oneliner_md = f"> {one_liner}\n\n" if one_liner else ""
 
-    # Summary paragraph
-    summary_md = f"{summary}\n\n" if summary else ""
+    # Summary paragraph (skip if identical to one-liner)
+    if summary and summary.strip() != one_liner.strip():
+        summary_md = f"{summary}\n\n"
+    else:
+        summary_md = ""
 
-    # Key ideas as bare bullet list (no header)
+    # Key ideas as bare bullet list (no header); drop first if it repeats one-liner
     if key_learnings:
-        learnings_md = "\n".join(f"- {item}" for item in key_learnings) + "\n\n"
+        items = list(key_learnings)
+        if one_liner and items and items[0].strip() == one_liner.strip():
+            items = items[1:]
+        learnings_md = "\n".join(f"- {item}" for item in items) + "\n\n" if items else ""
     else:
         learnings_md = ""
 
@@ -396,12 +450,19 @@ def create_paper_note(
         if sections:
             typed_notes_md = "## Notes from reMarkable\n\n" + "\n\n".join(sections) + "\n\n"
 
-    # Handwritten notes (OCR'd via Apple Vision)
+    # Handwritten notes (OCR'd via Claude Vision)
     handwritten_md = ""
     if handwritten_notes:
         sections = []
         for page_num in sorted(handwritten_notes.keys()):
-            text = handwritten_notes[page_num].strip()
+            # Defensive: remove any [none] lines that survived OCR cleanup
+            lines = handwritten_notes[page_num].strip().split("\n")
+            lines = [
+                ln for ln in lines
+                if not re.match(r"^\[?none\]?[\s\-—.]", ln.strip(), re.IGNORECASE)
+                and ln.strip().lower() not in ("[none]", "none")
+            ]
+            text = "\n".join(lines).strip()
             if text:
                 sections.append(f"### Page {page_num + 1}\n\n{text}")
         if sections:
@@ -821,14 +882,21 @@ def rename_paper(title: str, old_citekey: str, new_citekey: str) -> bool:
     renamed = False
     actual_old_name = None
 
-    for ext in (".md", ".pdf"):
-        dst = rd / f"{new_citekey}{ext}"
+    # Notes live in Saved/, PDFs in _pdf_dir() (may be a subfolder)
+    pd = _pdf_dir()
+    dirs_by_ext = {".md": rd, ".pdf": pd or rd}
+
+    for ext, target_dir in dirs_by_ext.items():
+        dst = target_dir / f"{new_citekey}{ext}"
         if dst.exists():
             log.warning("Rename skip (target exists): %s", dst.name)
             continue
         # Try each candidate until we find a source file
         for candidate in candidates:
-            src = rd / f"{candidate}{ext}"
+            src = target_dir / f"{candidate}{ext}"
+            if not src.exists() and ext == ".pdf":
+                # Fall back to Saved/ root (pre-migration files)
+                src = rd / f"{candidate}{ext}"
             if src.exists():
                 src.rename(dst)
                 log.info("Renamed %s -> %s", src.name, dst.name)

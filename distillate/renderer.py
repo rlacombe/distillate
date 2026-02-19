@@ -139,10 +139,66 @@ def extract_highlights(zip_path: Path) -> Dict[int, List[str]]:
     except Exception:
         log.warning("Failed to read zip %s", zip_path, exc_info=True)
 
+    by_page = _recover_from_pdf(by_page, zip_path)
     by_page = _merge_cross_page(by_page)
 
     total = sum(len(v) for v in by_page.values())
     log.info("Extracted %d highlight(s) from %s", total, zip_path.name)
+    return by_page
+
+
+def _recover_from_pdf(
+    by_page: Dict[int, List[str]], zip_path: Path,
+) -> Dict[int, List[str]]:
+    """Replace highlight passages with properly-spaced text from the PDF.
+
+    The reMarkable OCR often strips spaces at line breaks, producing
+    concatenated words like ``howgenotypes``.  This function opens the
+    embedded PDF and uses :func:`_recover_pdf_text` to find the correct
+    text with proper spacing.
+    """
+    if not by_page:
+        return by_page
+
+    try:
+        import pymupdf  # noqa: F811 — may not be installed
+    except ImportError:
+        # No pymupdf — clean raw text only
+        for passages in by_page.values():
+            for i, passage in enumerate(passages):
+                passages[i] = _clean_highlight_text(passage)
+        return by_page
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            pdf_names = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
+            if not pdf_names:
+                return by_page
+            pdf_data = zf.read(pdf_names[0])
+
+        doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+
+        for page_num, passages in by_page.items():
+            page_idx = page_num - 1  # by_page is 1-based, pymupdf is 0-based
+            if page_idx < 0 or page_idx >= len(doc):
+                # No PDF page — clean raw text only
+                for i, passage in enumerate(passages):
+                    passages[i] = _clean_highlight_text(passage)
+                continue
+            page_text = doc[page_idx].get_text("text")
+
+            for i, passage in enumerate(passages):
+                recovered = _recover_pdf_text(page_text, passage)
+                passages[i] = _clean_highlight_text(recovered or passage)
+
+        doc.close()
+    except Exception:
+        log.debug("PDF text recovery failed, using raw glyphs", exc_info=True)
+        # Fallback: clean all passages without PDF recovery
+        for passages in by_page.values():
+            for i, passage in enumerate(passages):
+                passages[i] = _clean_highlight_text(passage)
+
     return by_page
 
 
@@ -550,13 +606,32 @@ def _clean_highlight_text(text: str) -> str:
     # Strip superscript citation markers: (p1), (p2), (1), (23), etc.
     text = re.sub(r'\(p?\d+\)', '', text)
 
+    # Strip bare citation digits after closing paren: (LDSC)48and → (LDSC) and
+    text = re.sub(r'\)\d{1,3}([a-zA-Z])', r') \1', text)
+
+    # Strip bare citation digit runs (with optional en-dash ranges) between
+    # a word and punctuation: efficiency28, → efficiency,  learning30–32, → learning,
+    text = re.sub(r'([a-z])\d{1,3}(?:[,–\-]\d{1,3})*([,;.])', r'\1\2', text)
+
+    # Strip bare citation digits before a word: estimation34to → estimation to
+    text = re.sub(r'([,.)a-z])\d{1,3}(?:[,–\-]\d{1,3})*([a-z])', r'\1 \2', text)
+
+    # Strip superscript digits glued to a word (from PDF text extraction):
+    # data12 and → data and,  implementations,27 is → implementations, is
+    text = re.sub(r'([a-z])\d{1,3}(\s)', r'\1\2', text)
+    text = re.sub(r'([,;])\d{1,3}(\s)', r'\1\2', text)
+
+    # Strip trailing citation digits: "data sets,47" → "data sets"
+    text = re.sub(r',\d{1,3}(?:[,–\-]\d{1,3})*$', '', text)
+
     # Clean punctuation artifacts from citation removal
     text = re.sub(r',\s*,', ',', text)       # ",," → ","
     text = re.sub(r';\s*;', ';', text)       # ";;" → ";"
+    text = re.sub(r',\s*;', ';', text)       # ",;" → ";"
     text = re.sub(r',(\s*and\b)', r'\1', text)  # ", and" after removed citation
 
     # Insert space after sentence-ending punctuation followed by a letter
-    text = re.sub(r'([.;!?])([A-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([.;!?:])([A-Za-z])', r'\1 \2', text)
 
     # Insert space after comma followed directly by a letter
     text = re.sub(r',([A-Za-z])', r', \1', text)
@@ -620,12 +695,12 @@ def _merge_glyphs(
         if same_passage:
             current_parts.append(text)
         else:
-            passages.append(_clean_highlight_text(_join_dedup(current_parts)))
+            passages.append(_join_dedup(current_parts))
             current_parts = [text]
         prev_y = y
         prev_color = color
 
-    passages.append(_clean_highlight_text(_join_dedup(current_parts)))
+    passages.append(_join_dedup(current_parts))
     return passages
 
 
@@ -925,7 +1000,7 @@ def _ocr_page_claude(img_bytes: bytes) -> str:
     try:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
         response = client.messages.create(
-            model=config.CLAUDE_FAST_MODEL,
+            model=config.CLAUDE_SMART_MODEL,
             max_tokens=500,
             messages=[{
                 "role": "user",
@@ -947,8 +1022,13 @@ def _ocr_page_claude(img_bytes: bytes) -> str:
                             "NOT the printed text underneath. These are a "
                             "reader's notes — expect questions, reactions, "
                             "abbreviations, arrows (→), and shorthand. "
-                            "Output one line per distinct note. Skip any "
-                            "handwriting you cannot read confidently. "
+                            "If adjacent words clearly form one thought, "
+                            "keep them on a single line. "
+                            "Use the printed text to resolve ambiguous "
+                            "handwriting — e.g., if the paper discusses "
+                            "'trust region optimization' and the note says "
+                            "'TRO', output 'TRO [Trust Region Optimization]'. "
+                            "Skip any handwriting you cannot read confidently. "
                             "No headers, labels, or commentary — just the "
                             "transcribed notes. "
                             "If there are no legible handwritten notes, "
@@ -960,13 +1040,15 @@ def _ocr_page_claude(img_bytes: bytes) -> str:
         )
         text = response.content[0].text.strip()
         # Strip any header/label lines Claude may prepend
-        import re
         lines = text.split("\n")
         cleaned = [
             ln for ln in lines
             if not re.match(
                 r"^(#{1,3}\s|handwritten|annotations?:?\s*$)",
                 ln.strip(), re.IGNORECASE,
+            )
+            and not re.match(
+                r"^\[?none\]?[\s\-—.]", ln.strip(), re.IGNORECASE,
             )
             and ln.strip().lower() not in ("[none]", "none")
         ]

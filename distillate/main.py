@@ -58,13 +58,19 @@ def _reprocess(args: list[str]) -> None:
         print("No processed papers to reprocess.")
         return
 
-    # Filter to specific title if provided
+    # Filter by citekey or title substring
     if args:
         query = " ".join(args).lower()
-        matches = [d for d in processed if query in d["title"].lower()]
+        matches = [
+            d for d in processed
+            if query in d["title"].lower()
+            or query in d.get("metadata", {}).get("citekey", "").lower()
+        ]
         if not matches:
             print(f"No processed paper matching '{' '.join(args)}'")
-            print("Processed papers: " + ", ".join(d["title"] for d in processed))
+            for d in processed:
+                ck = d.get("metadata", {}).get("citekey", "")
+                print(f"  {ck or '?'}: {d['title']}")
             return
         processed = matches
 
@@ -397,9 +403,9 @@ def _refresh_metadata() -> None:
                 print("    Updating Obsidian link in Zotero")
                 zotero_client.update_obsidian_link(key, new_uri)
 
-            rd = obsidian._read_dir()
-            if rd:
-                new_pdf = rd / f"{new_ck}.pdf"
+            pd = obsidian._pdf_dir()
+            if pd:
+                new_pdf = pd / f"{new_ck}.pdf"
                 if new_pdf.exists():
                     print("    Updating linked PDF in Zotero")
                     zotero_client.update_linked_attachment_path(
@@ -658,7 +664,15 @@ def _status() -> None:
                     age = f" ({days}d)"
                 except (ValueError, TypeError):
                     pass
-            print(f"    - {doc['title']}{age}")
+            ck = doc.get("metadata", {}).get("citekey", "")
+            days_str = age.strip(" ()")  # extract just "12d"
+            if ck and days_str:
+                suffix = f" ({ck}, {days_str})"
+            elif ck:
+                suffix = f" ({ck})"
+            else:
+                suffix = age
+            print(f"    - {doc['title']}{suffix}")
         if len(queue) > 10:
             print(f"    ... and {len(queue) - 10} more")
 
@@ -808,11 +822,13 @@ def _list() -> None:
         total += len(docs)
         print(f"  {label} ({len(docs)})")
         for doc in docs:
-            parts = [doc["title"]]
-            authors = doc.get("authors") or []
-            if authors and authors[0].strip():
-                first_author = authors[0].split(",")[0].split()[-1]
-                parts.append(first_author)
+            ck = doc.get("metadata", {}).get("citekey", "")
+            parts = [ck or doc["title"]]
+            if not ck:
+                authors = doc.get("authors") or []
+                if authors and authors[0].strip():
+                    first_author = authors[0].split(",")[0].split()[-1]
+                    parts.append(first_author)
             if status == "processed" and doc.get("processed_at"):
                 parts.append(doc["processed_at"][:10])
             elif doc.get("uploaded_at"):
@@ -845,7 +861,8 @@ def _remove(args: list[str]) -> None:
 
     matches = []
     for key, doc in state.documents.items():
-        if query_lower in doc.get("title", "").lower():
+        if (query_lower in doc.get("title", "").lower()
+                or query_lower in doc.get("metadata", {}).get("citekey", "").lower()):
             matches.append((key, doc))
 
     if not matches:
@@ -927,8 +944,11 @@ def _print_digest() -> None:
             stats.append(f"{citation_count:,} citations")
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
+        ck = p.get("metadata", {}).get("citekey", "")
         print()
-        print(f"  {title}")
+        print(f"  {ck or title}")
+        if ck:
+            print(f"    {title}")
         if date_str or stats_str:
             print(f"    {date_str}{stats_str}")
         if summary:
@@ -2252,6 +2272,24 @@ def _init_wizard() -> None:
             print("  Skipped. Notes will only be stored in Zotero.")
     print()
 
+    # PDF subfolder
+    print("  By default, annotated PDFs are stored in a 'pdf'")
+    print("  subfolder inside Saved/ so notes and PDFs stay")
+    print("  separate. Type 'none' to keep them together.")
+    print()
+    existing_sub = os.environ.get("PDF_SUBFOLDER", "pdf")
+    pdf_sub = input(f"  PDF subfolder name [{existing_sub}]: ").strip()
+    if not pdf_sub:
+        pdf_sub = existing_sub
+    if pdf_sub.lower() == "none":
+        pdf_sub = ""
+    save_to_env("PDF_SUBFOLDER", pdf_sub)
+    if pdf_sub:
+        print(f"  PDFs will go to: Saved/{pdf_sub}/")
+    else:
+        print("  PDFs will be alongside notes in Saved/")
+    print()
+
     # -- Step 4: PDF storage --
 
     print("  " + "-" * 48)
@@ -2451,6 +2489,21 @@ def main():
         obsidian.ensure_dataview_note()   # removes Papers List.md
         obsidian.ensure_stats_note()      # renames to Distillate Stats
         obsidian.ensure_bases_note()      # replaces Papers.base → Distillate Papers.base
+
+        # Move PDFs from Saved/ into Saved/<subfolder>/ (one-time migration)
+        moved_pdfs = obsidian.migrate_pdfs_to_subdir()
+        if moved_pdfs:
+            log.info("Migrated %d PDFs to %s/", len(moved_pdfs), config.PDF_SUBFOLDER)
+            # Update Zotero linked attachments to point to new paths
+            for new_path in moved_pdfs:
+                citekey = new_path.stem
+                doc = state.find_by_citekey(citekey)
+                if doc:
+                    item_key = doc.get("zotero_item_key", "")
+                    if item_key:
+                        zotero_client.update_linked_attachment_path(
+                            item_key, new_path.name, str(new_path),
+                        )
 
         # -- Retry papers awaiting PDF sync --
         awaiting = state.documents_with_status("awaiting_pdf")
@@ -2659,9 +2712,9 @@ def main():
                             if new_uri:
                                 zotero_client.update_obsidian_link(key, new_uri)
 
-                            rd = obsidian._read_dir()
-                            if rd:
-                                new_pdf = rd / f"{new_ck}.pdf"
+                            pd = obsidian._pdf_dir()
+                            if pd:
+                                new_pdf = pd / f"{new_ck}.pdf"
                                 if new_pdf.exists():
                                     zotero_client.update_linked_attachment_path(
                                         key, new_pdf.name, str(new_pdf),

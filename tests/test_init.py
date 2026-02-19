@@ -6,8 +6,8 @@ from unittest.mock import patch, MagicMock
 # Env vars that the wizard reads — must be cleared for clean tests
 _WIZARD_ENV_KEYS = [
     "ZOTERO_API_KEY", "ZOTERO_USER_ID", "REMARKABLE_DEVICE_TOKEN",
-    "OBSIDIAN_VAULT_PATH", "OUTPUT_PATH", "KEEP_ZOTERO_PDF",
-    "ANTHROPIC_API_KEY", "RESEND_API_KEY", "DIGEST_TO",
+    "OBSIDIAN_VAULT_PATH", "OUTPUT_PATH", "PDF_SUBFOLDER",
+    "KEEP_ZOTERO_PDF", "ANTHROPIC_API_KEY", "RESEND_API_KEY", "DIGEST_TO",
 ]
 
 
@@ -46,6 +46,7 @@ class TestInitWizard:
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -79,6 +80,7 @@ class TestInitWizard:
             "n",                # Skip reMarkable registration
             "",                 # Use Obsidian (default Y)
             vault_path,         # Vault path
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -95,6 +97,7 @@ class TestInitWizard:
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             output_path,        # Plain folder path
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -111,6 +114,7 @@ class TestInitWizard:
             "n",                    # Skip reMarkable registration
             "n",                    # Don't use Obsidian
             "",                     # Skip plain folder
+            "",                     # PDF subfolder (default pdf)
             "",                     # Keep PDFs (default 1)
             "sk-ant-test123",       # Anthropic key
             "re_test456",           # Resend key
@@ -129,6 +133,7 @@ class TestInitWizard:
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "2",                # Remove PDFs from Zotero after sync
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -194,6 +199,7 @@ class TestInitRerun:
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -231,6 +237,7 @@ class TestInitRerun:
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -264,6 +271,7 @@ class TestInitRerun:
             "",                 # Keep existing registration (default N)
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs
             "",                 # Skip Anthropic
             "",                 # Skip Resend
@@ -298,6 +306,7 @@ class TestInitRerun:
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
+            "",                 # PDF subfolder (default pdf)
             "",                 # Keep default (now 2 since existing is false)
             "",                 # Skip Anthropic
             "",                 # Skip Resend

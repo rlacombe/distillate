@@ -121,6 +121,15 @@ class State:
                 return doc
         return None
 
+    def find_by_citekey(self, citekey: str) -> Optional[Dict[str, Any]]:
+        """Find a tracked document by citekey. Returns None if not found."""
+        if not citekey:
+            return None
+        for doc in self._data["documents"].values():
+            if doc.get("metadata", {}).get("citekey", "") == citekey:
+                return doc
+        return None
+
     def add_document(
         self,
         zotero_item_key: str,
