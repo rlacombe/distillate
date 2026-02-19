@@ -1297,13 +1297,25 @@ def _import(args: list[str]) -> None:
         state = State()
 
         # Fetch recent papers
-        papers = zotero_client.get_recent_papers(limit=100)
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        papers = zotero_client.get_recent_papers(
+            limit=100, collection_key=_coll_key,
+        )
 
         # Exclude already-tracked keys
         papers = [p for p in papers if not state.has_document(p["key"])]
 
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+        else:
+            _coll_name = ""
+
         if not papers:
-            print("\n  No untracked papers found in your library.\n")
+            scope = f" in '{_coll_name}'" if _coll_name else " in your library"
+            print(f"\n  No untracked papers found{scope}.\n")
             return
 
         # Determine how many to import
@@ -1317,7 +1329,8 @@ def _import(args: list[str]) -> None:
             papers = papers[:count]
         else:
             # Interactive mode
-            print(f"\n  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''} in your library.")
+            scope = f" in '{_coll_name}'" if _coll_name else " in your library"
+            print(f"\n  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''}{scope}.")
             print()
             for p in papers[:5]:
                 meta = zotero_client.extract_metadata(p)
@@ -1836,18 +1849,30 @@ def _init_seed() -> None:
 
     try:
         state = State()
-        papers = zotero_client.get_recent_papers(limit=100)
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        papers = zotero_client.get_recent_papers(
+            limit=100, collection_key=_coll_key,
+        )
         papers = [p for p in papers if not state.has_document(p["key"])]
 
         if not papers:
             return
+
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+            scope = f" in '{_coll_name}'"
+        else:
+            scope = " in your library"
 
         print()
         print("  " + "-" * 48)
         print("  Import existing papers")
         print("  " + "-" * 48)
         print()
-        print(f"  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''} in your library.")
+        print(f"  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''}{scope}.")
         print()
         for p in papers[:5]:
             meta = zotero_client.extract_metadata(p)
@@ -2029,6 +2054,51 @@ def _init_wizard() -> None:
         print(f"  Warning: could not verify credentials ({e})")
         print("  Saved anyway — you can fix them later in .env")
     print()
+
+    # Collection scoping (optional)
+    try:
+        from distillate import zotero_client as _zc
+        collections = _zc.list_collections()
+        if collections:
+            colls = sorted(collections, key=lambda c: c["data"]["name"])
+            print("  You can scope Distillate to a specific collection.")
+            print("  Only papers you add to that collection will be synced.")
+            print()
+            for i, c in enumerate(colls, 1):
+                print(f"    {i}. {c['data']['name']}")
+            print()
+            existing_key = os.environ.get("ZOTERO_COLLECTION_KEY", "").strip()
+            if existing_key:
+                try:
+                    existing_name = _zc.get_collection_name(existing_key)
+                except Exception:
+                    existing_name = existing_key
+                hint = f" [current: {existing_name}]"
+            else:
+                hint = ""
+            choice = input(
+                f"  Collection number (Enter for whole library){hint}: "
+            ).strip()
+            if choice:
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(colls):
+                        coll_key = colls[idx]["key"]
+                        coll_name = colls[idx]["data"]["name"]
+                        save_to_env("ZOTERO_COLLECTION_KEY", coll_key)
+                        print(f"  Scoped to '{coll_name}'.")
+                    else:
+                        print("  Invalid number, using whole library.")
+                        save_to_env("ZOTERO_COLLECTION_KEY", "")
+                except ValueError:
+                    print("  Invalid input, using whole library.")
+                    save_to_env("ZOTERO_COLLECTION_KEY", "")
+            else:
+                save_to_env("ZOTERO_COLLECTION_KEY", "")
+                print("  Using whole library.")
+            print()
+    except Exception:
+        pass  # Skip collection picker if API fails
 
     # -- Step 2: reMarkable --
 
@@ -2456,8 +2526,17 @@ def main():
             state.save()
 
         # -- Step 1: Poll Zotero for new papers --
-        print("  Checking Zotero...")
-        log.info("Step 1: Checking Zotero for new papers...")
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+            print(f"  Checking Zotero (collection: {_coll_name})...")
+            log.info("Step 1: Checking Zotero collection '%s' for new papers...", _coll_name)
+        else:
+            print("  Checking Zotero...")
+            log.info("Step 1: Checking Zotero for new papers...")
 
         current_version = zotero_client.get_library_version()
         stored_version = state.zotero_library_version
@@ -2485,7 +2564,7 @@ def main():
                 stored_version, current_version,
             )
             changed_keys, new_version = zotero_client.get_changed_item_keys(
-                stored_version
+                stored_version, collection_key=_coll_key,
             )
 
             if changed_keys:

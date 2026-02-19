@@ -950,3 +950,78 @@ class TestDownloadPdfFromWebdav:
         mock_get.side_effect = requests.exceptions.ConnectionError("refused")
 
         assert download_pdf_from_webdav("OFFLINE") is None
+
+
+# ---------------------------------------------------------------------------
+# Zotero collection filtering
+# ---------------------------------------------------------------------------
+
+
+class TestCollectionFiltering:
+    """Collection-scoped paper discovery."""
+
+    @patch("distillate.zotero_client._get")
+    def test_get_changed_keys_with_collection(self, mock_get):
+        """When collection_key is set, should hit /collections/{key}/items/top."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"KEY1": 5}
+        mock_resp.headers = {"Last-Modified-Version": "10"}
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_changed_item_keys
+        keys, version = get_changed_item_keys(1, collection_key="ABCD1234")
+
+        assert keys == {"KEY1": 5}
+        assert version == 10
+        call_path = mock_get.call_args[0][0]
+        assert "/collections/ABCD1234/items/top" in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_get_changed_keys_without_collection(self, mock_get):
+        """Without collection_key, should hit /items/top (default)."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.headers = {"Last-Modified-Version": "5"}
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_changed_item_keys
+        get_changed_item_keys(1)
+
+        call_path = mock_get.call_args[0][0]
+        assert "/items/top" in call_path
+        assert "/collections/" not in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_get_recent_papers_with_collection(self, mock_get, monkeypatch):
+        """get_recent_papers with collection_key should scope the query."""
+        monkeypatch.setattr("distillate.config.ZOTERO_TAG_INBOX", "inbox")
+        monkeypatch.setattr("distillate.config.ZOTERO_TAG_READ", "read")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"key": "A", "data": {"itemType": "journalArticle", "title": "P1", "tags": []}},
+        ]
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_recent_papers
+        papers = get_recent_papers(limit=10, collection_key="COLL1234")
+
+        assert len(papers) == 1
+        call_path = mock_get.call_args[0][0]
+        assert "/collections/COLL1234/items/top" in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_list_collections(self, mock_get):
+        """list_collections should return collection data."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"key": "ABC", "data": {"name": "To Read"}},
+            {"key": "DEF", "data": {"name": "ML Papers"}},
+        ]
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import list_collections
+        colls = list_collections()
+
+        assert len(colls) == 2
+        assert colls[0]["data"]["name"] == "To Read"

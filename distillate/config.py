@@ -70,6 +70,7 @@ RM_FOLDER_SAVED: str = os.environ.get("RM_FOLDER_SAVED", "Distillate/Saved").str
 
 ZOTERO_TAG_INBOX: str = os.environ.get("ZOTERO_TAG_INBOX", "inbox").strip()
 ZOTERO_TAG_READ: str = os.environ.get("ZOTERO_TAG_READ", "read").strip()
+ZOTERO_COLLECTION_KEY: str = os.environ.get("ZOTERO_COLLECTION_KEY", "").strip()
 
 
 OBSIDIAN_VAULT_PATH: str = os.environ.get("OBSIDIAN_VAULT_PATH", "").strip()
