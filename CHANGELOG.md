@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2 — 2026-02-19
+
+### Improvements
+
+- **Suggestion compute-once**: `--suggest-email` now calls Claude at most once per day — subsequent runs reuse cached suggestions (from local state or Gist) and just re-send the email. Saves API cost on retries and manual re-runs
+
+### Bug Fixes
+
+- **Email stats missing pages/words**: the main sync loop now auto-pushes state to the Gist after processing papers, so GH Actions emails have fresh reading stats (page counts, highlight word counts)
+
 ## 0.4.1 — 2026-02-19
 
 ### Bug Fixes

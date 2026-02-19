@@ -575,20 +575,13 @@ def _build_body(papers, state: State):
     return "\n".join(lines)
 
 
-def send_suggestion() -> None:
-    """Send a daily email suggesting 3 papers and store picks for promotion."""
-    config.setup_logging()
-
-    state = State()
-    _sync_tags(state)
-
-    # Gather unread papers (on_remarkable)
+def _compute_suggestions(state: State) -> str | None:
+    """Call Claude to pick 3 papers. Returns suggestion text or None."""
     unread = state.documents_with_status("on_remarkable")
     if not unread:
         log.info("No papers in reading queue, skipping suggestion")
-        return
+        return None
 
-    # Enrich with metadata fields the suggestion engine needs
     unread_enriched = []
     for doc in unread:
         meta = doc.get("metadata", {})
@@ -600,7 +593,6 @@ def send_suggestion() -> None:
             "citation_count": meta.get("citation_count", 0),
         })
 
-    # Gather recent reads for context (last 30 days)
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     recent = state.documents_processed_since(since)
     recent_enriched = []
@@ -614,13 +606,12 @@ def send_suggestion() -> None:
             "citation_count": meta.get("citation_count", 0),
         })
 
-    # Ask Claude
     result = summarizer.suggest_papers(unread_enriched, recent_enriched)
     if not result:
         log.warning("Could not generate suggestions")
-        return
+        return None
 
-    # Store picks for auto-promote to execute during next sync
+    # Store picks for auto-promote
     title_to_key = {doc["title"].lower(): doc["zotero_item_key"] for doc in unread}
     known_titles = [doc["title"] for doc in unread]
     pending = []
@@ -632,9 +623,58 @@ def send_suggestion() -> None:
                 pending.append(key)
     if pending:
         state.pending_promotions = pending
-        state.save()
-        log.info("Stored %d pending promotion(s)", len(pending))
-        _push_pending_to_gist(pending, result)
+
+    # Persist suggestion text + timestamp locally and to Gist
+    today = datetime.now(timezone.utc).isoformat()
+    state._data["last_suggestion"] = {"text": result, "timestamp": today}
+    state.save()
+    log.info("Stored %d pending promotion(s)", len(pending))
+    _push_pending_to_gist(pending, result)
+
+    return result
+
+
+def _get_todays_suggestions(state: State) -> str | None:
+    """Return cached suggestion text if already computed today, else None."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Check local state first
+    local = state._data.get("last_suggestion", {})
+    if local.get("timestamp", "")[:10] == today:
+        log.info("Reusing today's suggestions (cached locally)")
+        return local["text"]
+
+    # Check Gist (for GH Actions runs that wrote to Gist but not local state)
+    gist = fetch_pending_from_gist()
+    if gist and gist.get("timestamp", "")[:10] == today:
+        text = gist.get("suggestion_text", "")
+        if text:
+            log.info("Reusing today's suggestions (cached in Gist)")
+            return text
+
+    return None
+
+
+def send_suggestion() -> None:
+    """Send a daily suggestion email. Computes suggestions at most once per day."""
+    config.setup_logging()
+
+    state = State()
+    _sync_tags(state)
+
+    unread = state.documents_with_status("on_remarkable")
+    if not unread:
+        log.info("No papers in reading queue, skipping suggestion")
+        return
+
+    # Reuse today's suggestions if already computed, otherwise call Claude
+    result = _get_todays_suggestions(state)
+    if result:
+        log.info("Suggestions already computed today, re-sending email")
+    else:
+        result = _compute_suggestions(state)
+        if not result:
+            return
 
     subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
     body = _build_suggestion_body(result, unread, state)
