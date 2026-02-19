@@ -2,9 +2,9 @@
 
 ## 0.4.2 — 2026-02-19
 
-### Bug Fixes
+### Improvements
 
-- **Suggestion email dedup**: `--suggest-email` now checks the Gist for today's timestamp and skips if suggestions were already sent — prevents duplicate emails on re-runs or retries
+- **Suggestion compute-once**: `--suggest-email` now calls Claude at most once per day — subsequent runs reuse cached suggestions (from local state or Gist) and just re-send the email. Saves API cost on retries and manual re-runs
 
 ## 0.4.1 — 2026-02-19
 
