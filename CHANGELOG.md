@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-02-19
+
+### Bug Fixes
+
+- **Traceback logging on crash**: unhandled exceptions now log the full traceback to the log file / CI output, instead of only showing the one-line message
+- **CI uv cache warning**: disabled uv cache in the email workflow to silence spurious "no lockfile" warnings
+
 ## 0.4.0 — 2026-02-18
 
 Handwriting OCR, personalized summaries, and Zotero collection filtering.
