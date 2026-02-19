@@ -3035,6 +3035,7 @@ def _main_wrapper():
     except KeyboardInterrupt:
         pass
     except Exception as _exc:
+        log.debug("Unhandled exception", exc_info=True)
         print(
             f"\n  Unexpected error: {_exc}"
             "\n  Please report at: https://github.com/rlacombe/distillate/issues\n"
