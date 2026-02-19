@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-02-18
+
+Handwriting OCR, personalized summaries, and Zotero collection filtering.
+
+### Features
+
+- **Handwriting OCR via Claude Vision**: handwritten margin notes are transcribed using Claude Haiku — renders ink onto the PDF page for context, then sends to the Vision API for accurate OCR
+- **Personalized AI summaries**: reader's handwritten margin notes are fed to the summarizer, so AI-generated insights prioritize what *you* found interesting (not just what the paper says)
+- **Zotero collection filtering**: scope Distillate to a specific Zotero collection (e.g. "To Read") via `ZOTERO_COLLECTION_KEY` — only papers in that collection get picked up
+- **Collection picker in init wizard**: `--init` now lists your Zotero collections and lets you pick one to scope to
+
+### Improvements
+
+- **Landing page restructure**: separated core features ("Built in") from optional extensions ("Plug in what you need")
+
+### Removals
+
+- **Apple Vision / Pillow dependencies**: handwriting OCR now uses Claude Vision instead — removed `pyobjc-framework-Vision` and `Pillow` optional dependency group
+
 ## 0.3.3 — 2026-02-18
 
 Handwritten notes on PDFs, Windows compatibility, and Zotero WebDAV support.

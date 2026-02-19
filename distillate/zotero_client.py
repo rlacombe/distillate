@@ -117,12 +117,20 @@ def get_library_version() -> int:
     return int(resp.headers["Last-Modified-Version"])
 
 
-def get_changed_item_keys(since_version: int) -> Tuple[Dict[str, int], int]:
+def get_changed_item_keys(
+    since_version: int, collection_key: str = "",
+) -> Tuple[Dict[str, int], int]:
     """Get item keys changed since a given library version.
 
+    If ``collection_key`` is set, only items in that collection are returned.
     Returns (dict of {item_key: version}, new_library_version).
     """
-    resp = _get("/items/top", params={
+    path = (
+        f"/collections/{collection_key}/items/top"
+        if collection_key
+        else "/items/top"
+    )
+    resp = _get(path, params={
         "format": "versions",
         "since": str(since_version),
     })
@@ -130,19 +138,39 @@ def get_changed_item_keys(since_version: int) -> Tuple[Dict[str, int], int]:
     return resp.json(), new_version
 
 
-def get_recent_papers(limit: int = 100) -> List[Dict[str, Any]]:
+def get_recent_papers(
+    limit: int = 100, collection_key: str = "",
+) -> List[Dict[str, Any]]:
     """Fetch recent top-level items sorted by dateAdded (newest first).
 
+    If ``collection_key`` is set, only items in that collection are returned.
     Returns items that pass filter_new_papers() — i.e. valid paper types
     without workflow tags already applied.
     """
-    resp = _get("/items/top", params={
+    path = (
+        f"/collections/{collection_key}/items/top"
+        if collection_key
+        else "/items/top"
+    )
+    resp = _get(path, params={
         "sort": "dateAdded",
         "direction": "desc",
         "limit": str(limit),
         "format": "json",
     })
     return filter_new_papers(resp.json())
+
+
+def list_collections() -> List[Dict[str, Any]]:
+    """List all collections in the library."""
+    resp = _get("/collections")
+    return resp.json()
+
+
+def get_collection_name(collection_key: str) -> str:
+    """Get the name of a collection by key."""
+    resp = _get(f"/collections/{collection_key}")
+    return resp.json()["data"]["name"]
 
 
 def get_items_by_keys(keys: List[str]) -> List[Dict[str, Any]]:

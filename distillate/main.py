@@ -90,6 +90,11 @@ def _reprocess(args: list[str]) -> None:
 
             highlights = renderer.extract_highlights(zip_path)
             typed_notes = renderer.extract_typed_notes(zip_path)
+            try:
+                handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+            except Exception:
+                handwritten_notes = {}
+                log.debug("Handwritten OCR skipped", exc_info=True)
             page_count = renderer.get_page_count(zip_path)
             render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
 
@@ -140,17 +145,24 @@ def _reprocess(args: list[str]) -> None:
                 h for page_hl in (highlights or {}).values() for h in page_hl
             ] or None
 
+            # Flatten handwritten notes for summarizer
+            flat_notes = [
+                text for _, text in sorted(handwritten_notes.items())
+            ] if handwritten_notes else None
+
             # Extract key learnings first (summary uses them)
             learnings = summarizer.extract_insights(
                 title,
                 highlights=flat_highlights,
                 abstract=meta.get("abstract", ""),
+                reader_notes=flat_notes,
             )
 
             # Always regenerate summary on reprocess
             summary, one_liner = summarizer.summarize_read_paper(
                 title, abstract=meta.get("abstract", ""),
                 key_learnings=learnings,
+                reader_notes=flat_notes,
             )
 
             # Use original processing date, not today
@@ -191,6 +203,7 @@ def _reprocess(args: list[str]) -> None:
                 page_count=page_count,
                 citekey=citekey,
                 typed_notes=typed_notes or None,
+                handwritten_notes=handwritten_notes or None,
             )
 
             # Add Obsidian deep link in Zotero
@@ -1284,13 +1297,25 @@ def _import(args: list[str]) -> None:
         state = State()
 
         # Fetch recent papers
-        papers = zotero_client.get_recent_papers(limit=100)
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        papers = zotero_client.get_recent_papers(
+            limit=100, collection_key=_coll_key,
+        )
 
         # Exclude already-tracked keys
         papers = [p for p in papers if not state.has_document(p["key"])]
 
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+        else:
+            _coll_name = ""
+
         if not papers:
-            print("\n  No untracked papers found in your library.\n")
+            scope = f" in '{_coll_name}'" if _coll_name else " in your library"
+            print(f"\n  No untracked papers found{scope}.\n")
             return
 
         # Determine how many to import
@@ -1304,7 +1329,8 @@ def _import(args: list[str]) -> None:
             papers = papers[:count]
         else:
             # Interactive mode
-            print(f"\n  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''} in your library.")
+            scope = f" in '{_coll_name}'" if _coll_name else " in your library"
+            print(f"\n  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''}{scope}.")
             print()
             for p in papers[:5]:
                 meta = zotero_client.extract_metadata(p)
@@ -1823,18 +1849,30 @@ def _init_seed() -> None:
 
     try:
         state = State()
-        papers = zotero_client.get_recent_papers(limit=100)
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        papers = zotero_client.get_recent_papers(
+            limit=100, collection_key=_coll_key,
+        )
         papers = [p for p in papers if not state.has_document(p["key"])]
 
         if not papers:
             return
+
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+            scope = f" in '{_coll_name}'"
+        else:
+            scope = " in your library"
 
         print()
         print("  " + "-" * 48)
         print("  Import existing papers")
         print("  " + "-" * 48)
         print()
-        print(f"  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''} in your library.")
+        print(f"  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''}{scope}.")
         print()
         for p in papers[:5]:
             meta = zotero_client.extract_metadata(p)
@@ -2016,6 +2054,51 @@ def _init_wizard() -> None:
         print(f"  Warning: could not verify credentials ({e})")
         print("  Saved anyway — you can fix them later in .env")
     print()
+
+    # Collection scoping (optional)
+    try:
+        from distillate import zotero_client as _zc
+        collections = _zc.list_collections()
+        if collections:
+            colls = sorted(collections, key=lambda c: c["data"]["name"])
+            print("  You can scope Distillate to a specific collection.")
+            print("  Only papers you add to that collection will be synced.")
+            print()
+            for i, c in enumerate(colls, 1):
+                print(f"    {i}. {c['data']['name']}")
+            print()
+            existing_key = os.environ.get("ZOTERO_COLLECTION_KEY", "").strip()
+            if existing_key:
+                try:
+                    existing_name = _zc.get_collection_name(existing_key)
+                except Exception:
+                    existing_name = existing_key
+                hint = f" [current: {existing_name}]"
+            else:
+                hint = ""
+            choice = input(
+                f"  Collection number (Enter for whole library){hint}: "
+            ).strip()
+            if choice:
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(colls):
+                        coll_key = colls[idx]["key"]
+                        coll_name = colls[idx]["data"]["name"]
+                        save_to_env("ZOTERO_COLLECTION_KEY", coll_key)
+                        print(f"  Scoped to '{coll_name}'.")
+                    else:
+                        print("  Invalid number, using whole library.")
+                        save_to_env("ZOTERO_COLLECTION_KEY", "")
+                except ValueError:
+                    print("  Invalid input, using whole library.")
+                    save_to_env("ZOTERO_COLLECTION_KEY", "")
+            else:
+                save_to_env("ZOTERO_COLLECTION_KEY", "")
+                print("  Using whole library.")
+            print()
+    except Exception:
+        pass  # Skip collection picker if API fails
 
     # -- Step 2: reMarkable --
 
@@ -2443,8 +2526,17 @@ def main():
             state.save()
 
         # -- Step 1: Poll Zotero for new papers --
-        print("  Checking Zotero...")
-        log.info("Step 1: Checking Zotero for new papers...")
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+            print(f"  Checking Zotero (collection: {_coll_name})...")
+            log.info("Step 1: Checking Zotero collection '%s' for new papers...", _coll_name)
+        else:
+            print("  Checking Zotero...")
+            log.info("Step 1: Checking Zotero for new papers...")
 
         current_version = zotero_client.get_library_version()
         stored_version = state.zotero_library_version
@@ -2472,7 +2564,7 @@ def main():
                 stored_version, current_version,
             )
             changed_keys, new_version = zotero_client.get_changed_item_keys(
-                stored_version
+                stored_version, collection_key=_coll_key,
             )
 
             if changed_keys:
@@ -2662,6 +2754,7 @@ def main():
 
                 highlights = None
                 typed_notes = None
+                handwritten_notes = None
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = Path(tmpdir) / f"{rm_name}.zip"
@@ -2677,6 +2770,11 @@ def main():
                         print("    Extracting highlights...")
                         highlights = renderer.extract_highlights(zip_path)
                         typed_notes = renderer.extract_typed_notes(zip_path)
+                        try:
+                            handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+                        except Exception:
+                            handwritten_notes = {}
+                            log.debug("Handwritten OCR skipped", exc_info=True)
                         if highlights:
                             hl_count = sum(len(v) for v in highlights.values())
                             print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
@@ -2753,12 +2851,18 @@ def main():
                     h for page_hl in (highlights or {}).values() for h in page_hl
                 ] or None
 
+                # Flatten handwritten notes for summarizer
+                flat_notes = [
+                    text for _, text in sorted(handwritten_notes.items())
+                ] if handwritten_notes else None
+
                 # Extract key learnings first (summary uses them)
                 print("    Generating summary...")
                 learnings = summarizer.extract_insights(
                     doc["title"],
                     highlights=flat_highlights,
                     abstract=meta.get("abstract", ""),
+                    reader_notes=flat_notes,
                 )
 
                 # Generate AI summaries
@@ -2766,6 +2870,7 @@ def main():
                     doc["title"],
                     abstract=meta.get("abstract", ""),
                     key_learnings=learnings,
+                    reader_notes=flat_notes,
                 )
 
                 # Compute engagement score and highlight stats
@@ -2803,6 +2908,7 @@ def main():
                     page_count=page_count,
                     citekey=citekey,
                     typed_notes=typed_notes or None,
+                    handwritten_notes=handwritten_notes or None,
                 )
 
                 # Add Obsidian deep link in Zotero

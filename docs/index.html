@@ -393,14 +393,14 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.3.3 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.4.0 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
   <div class="container">
     <h1>Distillate</h1>
     <p class="tagline">The essence of every paper you read.</p>
     <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.3.3</span>
+      <span class="badge badge-purple">PyPI v0.4.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
@@ -456,7 +456,7 @@ $ distillate --init</code>
     </div>
 
     <div class="extras">
-      <h2>Plug in what you need</h2>
+      <h2>Built in</h2>
       <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
       <div class="extras-grid">
         <div class="extra">
@@ -465,34 +465,14 @@ $ distillate --init</code>
           <span>Markdown notes and PDFs on your machine. No accounts, no subscriptions, no lock-in. Works with Obsidian or any folder.</span>
         </div>
         <div class="extra">
-          <strong>Scheduling</strong>
-          <em class="extra-subtitle">launchd &amp; cron</em>
-          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
-        </div>
-        <div class="extra">
           <strong>Zotero Round-Trip</strong>
           <em class="extra-subtitle">Highlights sync back</em>
           <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps</span>
         </div>
         <div class="extra">
-          <strong>AI summaries</strong>
-          <em class="extra-subtitle">Anthropic API</em>
-          <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
-        </div>
-        <div class="extra">
-          <strong>Paper suggestions</strong>
-          <em class="extra-subtitle">Anthropic API</em>
-          <span>Pick what to read next from your queue. Suggestions are promoted to your reMarkable home screen.</span>
-        </div>
-        <div class="extra">
-          <strong>Email digest</strong>
-          <em class="extra-subtitle">Free Resend account</em>
-          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
-        </div>
-        <div class="extra">
-          <strong>Smart metadata</strong>
-          <em class="extra-subtitle">Semantic Scholar</em>
-          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
+          <strong>Handwritten notes</strong>
+          <em class="extra-subtitle">Ink on PDF</em>
+          <span>Ink strokes rendered on PDFs and typed text extracted. Works on RM1, RM2, and Paper Pro.</span>
         </div>
         <div class="extra">
           <strong>Citekey rename</strong>
@@ -500,9 +480,46 @@ $ distillate --init</code>
           <span>When metadata changes in Zotero, notes and PDFs are renamed to match. No orphaned files or broken links.</span>
         </div>
         <div class="extra">
-          <strong>Handwritten notes</strong>
-          <em class="extra-subtitle">RM1, RM2 &amp; Paper Pro</em>
-          <span>Ink strokes rendered on PDFs, typed text extracted, and handwriting OCR'd via Apple Vision on macOS</span>
+          <strong>Scheduling</strong>
+          <em class="extra-subtitle">launchd &amp; cron</em>
+          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="extras">
+      <h2>Plug in what you need</h2>
+      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Optional features you can enable with an API key or a config flag.</p>
+      <div class="extras-grid">
+        <div class="extra">
+          <strong>AI summaries</strong>
+          <em class="extra-subtitle">Anthropic API</em>
+          <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
+        </div>
+        <div class="extra">
+          <strong>Handwriting extraction</strong>
+          <em class="extra-subtitle">Claude Vision</em>
+          <span>Margin notes transcribed via Claude and woven into your AI summary. Your thinking becomes part of your notes.</span>
+        </div>
+        <div class="extra">
+          <strong>Paper suggestions</strong>
+          <em class="extra-subtitle">Anthropic API</em>
+          <span>Pick what to read next from your queue. Suggestions are promoted to your reMarkable home screen.</span>
+        </div>
+        <div class="extra">
+          <strong>Smart metadata</strong>
+          <em class="extra-subtitle">Semantic Scholar</em>
+          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
+        </div>
+        <div class="extra">
+          <strong>Collection filtering</strong>
+          <em class="extra-subtitle">Zotero collections</em>
+          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library</span>
+        </div>
+        <div class="extra">
+          <strong>Email digest</strong>
+          <em class="extra-subtitle">Free Resend account</em>
+          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
         </div>
       </div>
     </div>
@@ -534,7 +551,7 @@ $ distillate --init</code>
         <tr><td>Zotero account</td><td><span class="badge badge-green">Free</span></td><td>Manages your paper library</td></tr>
         <tr><td>reMarkable tablet</td><td><span class="badge badge-purple">Required</span></td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td></tr>
         <tr><td>Obsidian or output folder</td><td><span class="badge badge-blue">Optional</span></td><td>Where notes are saved locally</td></tr>
-        <tr><td>Anthropic API key</td><td><span class="badge badge-blue">Optional</span></td><td>For AI summaries and suggestions</td></tr>
+        <tr><td>Anthropic API key</td><td><span class="badge badge-blue">Optional</span></td><td>For AI summaries, handwriting OCR, and suggestions</td></tr>
         <tr><td>Resend account</td><td><span class="badge badge-blue">Optional</span></td><td>For weekly digest emails</td></tr>
       </table>
 

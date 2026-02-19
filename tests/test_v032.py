@@ -564,26 +564,62 @@ class TestRmToPdfMapping:
 
 
 class TestOcrFallback:
-    """ocr_handwritten_notes() should fail gracefully without Pillow/Vision."""
+    """ocr_handwritten_notes() should fail gracefully."""
+
+    def test_no_api_key_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+        from distillate.renderer import ocr_handwritten_notes
+
+        result = ocr_handwritten_notes(Path("fake.zip"))
+        assert result == {}
 
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_no_ink_returns_empty(self, mock_extract):
+    def test_no_ink_returns_empty(self, mock_extract, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
 
         mock_extract.return_value = {}
         result = ocr_handwritten_notes(Path("fake.zip"))
         assert result == {}
 
-    @patch("distillate.renderer._render_strokes_to_image")
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_no_pillow_returns_empty(self, mock_extract, mock_render):
+    def test_no_pdf_in_zip_returns_empty(self, mock_extract, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
 
         mock_extract.return_value = {0: [MagicMock()]}
-        mock_render.return_value = None  # Pillow not available
+        # Create a zip with no PDF inside
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("content.rm", b"fake")
 
-        result = ocr_handwritten_notes(Path("fake.zip"))
+        result = ocr_handwritten_notes(zip_path)
         assert result == {}
+
+    @patch("distillate.renderer._ocr_page_claude")
+    @patch("distillate.renderer._render_ink_on_pdf")
+    @patch("distillate.renderer.extract_ink_strokes")
+    def test_claude_ocr_result_included(self, mock_extract, mock_render, mock_ocr, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
+        from distillate.renderer import ocr_handwritten_notes
+        import pymupdf
+
+        # Create a minimal PDF inside a zip
+        pdf_doc = pymupdf.open()
+        for _ in range(3):
+            pdf_doc.new_page()
+        pdf_bytes = pdf_doc.tobytes()
+        pdf_doc.close()
+
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("paper.pdf", pdf_bytes)
+
+        mock_extract.return_value = {0: [MagicMock()], 2: [MagicMock()]}
+        mock_ocr.side_effect = ["use REML!", ""]  # page 0 has text, page 2 empty
+
+        result = ocr_handwritten_notes(zip_path)
+        assert result == {0: "use REML!"}
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +950,78 @@ class TestDownloadPdfFromWebdav:
         mock_get.side_effect = requests.exceptions.ConnectionError("refused")
 
         assert download_pdf_from_webdav("OFFLINE") is None
+
+
+# ---------------------------------------------------------------------------
+# Zotero collection filtering
+# ---------------------------------------------------------------------------
+
+
+class TestCollectionFiltering:
+    """Collection-scoped paper discovery."""
+
+    @patch("distillate.zotero_client._get")
+    def test_get_changed_keys_with_collection(self, mock_get):
+        """When collection_key is set, should hit /collections/{key}/items/top."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"KEY1": 5}
+        mock_resp.headers = {"Last-Modified-Version": "10"}
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_changed_item_keys
+        keys, version = get_changed_item_keys(1, collection_key="ABCD1234")
+
+        assert keys == {"KEY1": 5}
+        assert version == 10
+        call_path = mock_get.call_args[0][0]
+        assert "/collections/ABCD1234/items/top" in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_get_changed_keys_without_collection(self, mock_get):
+        """Without collection_key, should hit /items/top (default)."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.headers = {"Last-Modified-Version": "5"}
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_changed_item_keys
+        get_changed_item_keys(1)
+
+        call_path = mock_get.call_args[0][0]
+        assert "/items/top" in call_path
+        assert "/collections/" not in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_get_recent_papers_with_collection(self, mock_get, monkeypatch):
+        """get_recent_papers with collection_key should scope the query."""
+        monkeypatch.setattr("distillate.config.ZOTERO_TAG_INBOX", "inbox")
+        monkeypatch.setattr("distillate.config.ZOTERO_TAG_READ", "read")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"key": "A", "data": {"itemType": "journalArticle", "title": "P1", "tags": []}},
+        ]
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import get_recent_papers
+        papers = get_recent_papers(limit=10, collection_key="COLL1234")
+
+        assert len(papers) == 1
+        call_path = mock_get.call_args[0][0]
+        assert "/collections/COLL1234/items/top" in call_path
+
+    @patch("distillate.zotero_client._get")
+    def test_list_collections(self, mock_get):
+        """list_collections should return collection data."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"key": "ABC", "data": {"name": "To Read"}},
+            {"key": "DEF", "data": {"name": "ML Papers"}},
+        ]
+        mock_get.return_value = mock_resp
+
+        from distillate.zotero_client import list_collections
+        colls = list_collections()
+
+        assert len(colls) == 2
+        assert colls[0]["data"]["name"] == "To Read"
