@@ -2991,6 +2991,9 @@ def main():
             print(f"  Done: {', '.join(parts)}")
             log.info("Done: %d sent, %d synced", sent_count, synced_count)
             notify.notify_summary(sent_count, synced_count)
+            # Push updated state to Gist so GH Actions emails have fresh data
+            if config.STATE_GIST_ID:
+                _sync_state()
         else:
             print("  Nothing to do.")
             log.info("Nothing to do.")
