@@ -87,25 +87,17 @@
       overflow-x: auto;
     }
 
-    .integrations {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px 18px;
-      margin-top: 24px;
-      padding: 0;
-      justify-content: center;
-    }
-
-    .integrations a {
-      font-size: 0.8rem;
+    .integration {
+      font-size: 0.85rem;
       text-decoration: none;
       font-weight: 600;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      padding: 2px 8px;
+      border-radius: 4px;
       transition: opacity 0.15s;
     }
 
-    .integrations a:hover {
+    .integration:hover {
       opacity: 0.7;
     }
 
@@ -202,11 +194,28 @@
     }
 
     .extra .extra-subtitle {
-      display: block;
+      display: inline-block;
       font-size: 0.75rem;
-      color: #7c3aed;
+      color: #6d28d9;
+      background: #ede9fe;
       font-weight: 500;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .extra span {
+      display: block;
+    }
+
+    .extras-optional .extra .extra-subtitle {
+      color: #1d4ed8;
+      background: #dbeafe;
+    }
+
+    .extra .extra-subtitle.extra-free {
+      color: #15803d;
+      background: #dcfce7;
     }
 
     .extra span {
@@ -275,7 +284,7 @@
       border-bottom: 1px solid var(--border);
     }
 
-    .requires td:last-child {
+    .requires td:nth-child(2) {
       color: var(--muted);
     }
 
@@ -487,7 +496,7 @@ $ distillate --init</code>
       </div>
     </div>
 
-    <div class="extras">
+    <div class="extras extras-optional">
       <h2>Plug in what you need</h2>
       <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Optional features you can enable with an API key or a config flag.</p>
       <div class="extras-grid">
@@ -508,17 +517,17 @@ $ distillate --init</code>
         </div>
         <div class="extra">
           <strong>Smart metadata</strong>
-          <em class="extra-subtitle">Semantic Scholar</em>
+          <em class="extra-subtitle extra-free">Semantic Scholar</em>
           <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
         </div>
         <div class="extra">
           <strong>Collection filtering</strong>
-          <em class="extra-subtitle">Zotero collections</em>
+          <em class="extra-subtitle extra-free">Zotero collections</em>
           <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library</span>
         </div>
         <div class="extra">
           <strong>Email digest</strong>
-          <em class="extra-subtitle">Free Resend account</em>
+          <em class="extra-subtitle extra-free">Free Resend account</em>
           <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
         </div>
       </div>
@@ -547,22 +556,14 @@ $ distillate --init</code>
     <div class="requires">
       <h2>What you need</h2>
       <table>
-        <tr><th>Component</th><th></th><th>Notes</th></tr>
-        <tr><td>Zotero account</td><td><span class="badge badge-green">Free</span></td><td>Manages your paper library</td></tr>
-        <tr><td>reMarkable tablet</td><td><span class="badge badge-purple">Required</span></td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td></tr>
-        <tr><td>Obsidian or output folder</td><td><span class="badge badge-blue">Optional</span></td><td>Where notes are saved locally</td></tr>
-        <tr><td>Anthropic API key</td><td><span class="badge badge-blue">Optional</span></td><td>For AI summaries, handwriting OCR, and suggestions</td></tr>
-        <tr><td>Resend account</td><td><span class="badge badge-blue">Optional</span></td><td>For weekly digest emails</td></tr>
+        <tr><th>Component</th><th>Notes</th><th></th></tr>
+        <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a> account</td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
+        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a> tablet</td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-purple">Required</span></td></tr>
+        <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a> vault</td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
+        <tr><td><a href="https://www.semanticscholar.org/" class="integration" style="color:#1857b6;background:#dbeafe;">Semantic Scholar</a></td><td>Auto-completes dates, venues, and citation counts</td><td><span class="badge badge-green">Free</span></td></tr>
+        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a> API key</td><td>For AI summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
+        <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a> account</td><td>For weekly digest emails</td><td><span class="badge badge-green">Free</span></td></tr>
       </table>
-
-      <div class="integrations">
-        <a href="https://www.zotero.org/" style="color:#cc2936;">Zotero</a>
-        <a href="https://remarkable.com/" style="color:#1a1a1a;">reMarkable</a>
-        <a href="https://obsidian.md/" style="color:#7c3aed;">Obsidian</a>
-        <a href="https://www.semanticscholar.org/" style="color:#1857b6;">Semantic Scholar</a>
-        <a href="https://www.anthropic.com/" style="color:#c96442;">Anthropic</a>
-        <a href="https://resend.com/" style="color:#1a1a1a;">Resend</a>
-      </div>
     </div>
 
     <div class="links">
