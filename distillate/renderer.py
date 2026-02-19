@@ -895,11 +895,13 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _render_strokes_to_image(lines: List[si.Line]):
+def _render_strokes_to_image(lines: List[si.Line], scale: float = 5.0):
     """Render ink strokes to a PIL Image for OCR.
 
     Auto-sizes the canvas to fit all strokes (handles margin notes and
     scrolled pages where coordinates extend beyond the default RM viewport).
+    Upscales by ``scale`` (default 5x) to reach ~350 DPI effective resolution
+    for Apple Vision OCR quality.
     Returns a greyscale PIL Image with black strokes on white background,
     or None if Pillow is not installed.
     """
@@ -922,98 +924,112 @@ def _render_strokes_to_image(lines: List[si.Line]):
     x_min, x_max = min(all_x), max(all_x)
     y_min, y_max = min(all_y), max(all_y)
 
-    # Add padding and compute canvas size
-    pad = 40
-    canvas_w = int(x_max - x_min) + 2 * pad
-    canvas_h = int(y_max - y_min) + 2 * pad
+    # Upscale for OCR quality: RM units → pixels at scale factor
+    # Cap at 7500px per dimension (Claude API limit is 8000)
+    raw_w = (x_max - x_min) * scale
+    raw_h = (y_max - y_min) * scale
+    max_dim = 7500
+    if raw_w > max_dim or raw_h > max_dim:
+        downscale = max_dim / max(raw_w, raw_h)
+        scale = scale * downscale
+
+    pad = int(40 * scale)
+    canvas_w = int((x_max - x_min) * scale) + 2 * pad
+    canvas_h = int((y_max - y_min) * scale) + 2 * pad
     # Ensure minimum size for OCR quality
-    canvas_w = max(canvas_w, 400)
-    canvas_h = max(canvas_h, 200)
+    canvas_w = max(canvas_w, int(400 * scale))
+    canvas_h = max(canvas_h, int(200 * scale))
 
     img = Image.new("L", (canvas_w, canvas_h), 255)
     draw = ImageDraw.Draw(img)
     for line in lines:
         if len(line.points) < 2:
             continue
-        # Shift coordinates so all strokes fit on canvas
-        coords = [(p.x - x_min + pad, p.y - y_min + pad) for p in line.points]
-        stroke_width = max(2, int(line.thickness_scale * 2))
+        # Shift and scale coordinates so all strokes fit on canvas
+        coords = [
+            ((p.x - x_min) * scale + pad, (p.y - y_min) * scale + pad)
+            for p in line.points
+        ]
+        stroke_width = max(4, int(line.thickness_scale * scale * 1.5))
         draw.line(coords, fill=0, width=stroke_width)
     return img
 
 
-def _ocr_image_vision(image) -> str:
-    """OCR a PIL Image using macOS Vision framework.
+def _ocr_image_claude(image) -> str:
+    """OCR a PIL Image using Claude Vision (Haiku).
 
-    Returns recognized text, or empty string if Vision is unavailable.
+    Returns recognized text, or empty string if the API is unavailable.
     """
+    from distillate import config
+
+    if not config.ANTHROPIC_API_KEY:
+        return ""
+
     try:
-        import Vision
-        from Quartz import (
-            CGImageCreate,
-            CGDataProviderCreateWithData,
-            CGColorSpaceCreateDeviceGray,
-        )
+        import anthropic
     except ImportError:
-        log.debug("pyobjc Vision framework not available")
+        log.debug("anthropic package not installed, cannot OCR")
         return ""
 
-    # Convert PIL greyscale image to CGImage
-    width, height = image.size
-    raw_data = image.tobytes()
-    provider = CGDataProviderCreateWithData(None, raw_data, len(raw_data), None)
-    cg_image = CGImageCreate(
-        width, height,
-        8, 8,  # bits per component, bits per pixel
-        width,  # bytes per row
-        CGColorSpaceCreateDeviceGray(),
-        0,  # bitmap info
-        provider, None, False, 0,
-    )
-    if cg_image is None:
-        log.debug("Failed to create CGImage for OCR")
+    # Convert PIL image to PNG bytes for the API
+    import io
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    import base64
+    image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+    try:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=config.CLAUDE_FAST_MODEL,
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Transcribe the handwritten text in this image "
+                            "exactly as written. Preserve abbreviations, "
+                            "shorthand, arrows, and symbols. Output ONLY "
+                            "the transcribed text, one line per line of "
+                            "writing. If there is no legible handwritten "
+                            "text, output exactly: [none]"
+                        ),
+                    },
+                ],
+            }],
+        )
+        text = response.content[0].text.strip()
+        log.debug("Claude OCR: %d chars", len(text))
+        return text
+    except Exception:
+        log.exception("Claude OCR failed")
         return ""
-
-    # Create and run handwriting recognition request
-    request = Vision.VNRecognizeTextRequest.alloc().init()
-    request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-    # Enable handwriting recognition alongside printed text
-    request.setUsesLanguageCorrection_(True)
-
-    handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
-        cg_image, None,
-    )
-    success = handler.performRequests_error_([request], None)
-    if not success[0]:
-        log.debug("Vision OCR request failed")
-        return ""
-
-    results = request.results()
-    if not results:
-        return ""
-
-    # Collect recognized text lines sorted by vertical position (top to bottom)
-    text_lines = []
-    for observation in results:
-        candidate = observation.topCandidates_(1)
-        if candidate:
-            text = candidate[0].string()
-            # Vision y-coordinate is bottom-up, so 1-y for top-to-bottom sort
-            bbox = observation.boundingBox()
-            y_pos = 1 - bbox.origin.y - bbox.size.height
-            text_lines.append((y_pos, text))
-
-    text_lines.sort(key=lambda t: t[0])
-    return "\n".join(line for _, line in text_lines)
 
 
 def ocr_handwritten_notes(zip_path: Path) -> Dict[int, str]:
     """Extract and OCR handwritten notes from a reMarkable bundle.
 
-    Renders ink strokes to images and uses Apple Vision for recognition.
-    Returns a dict mapping page index (0-based) to recognized text.
-    Falls back gracefully if Pillow or Vision are not available.
+    Renders ink strokes to images and uses Claude Vision (Haiku) for
+    recognition. Returns a dict mapping page index (0-based) to
+    recognized text. Requires ANTHROPIC_API_KEY and Pillow.
     """
+    from distillate import config
+
+    if not config.ANTHROPIC_API_KEY:
+        return {}
+
     ink_by_page = extract_ink_strokes(zip_path)
     if not ink_by_page:
         return {}
@@ -1025,8 +1041,8 @@ def ocr_handwritten_notes(zip_path: Path) -> Dict[int, str]:
         img = _render_strokes_to_image(lines)
         if img is None:
             return {}  # Pillow not available, stop trying
-        text = _ocr_image_vision(img)
-        if text.strip():
+        text = _ocr_image_claude(img)
+        if text.strip() and text.strip().lower() != "[none]":
             results[page_idx] = text.strip()
 
     if results:

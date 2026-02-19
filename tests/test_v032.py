@@ -564,10 +564,18 @@ class TestRmToPdfMapping:
 
 
 class TestOcrFallback:
-    """ocr_handwritten_notes() should fail gracefully without Pillow/Vision."""
+    """ocr_handwritten_notes() should fail gracefully."""
+
+    def test_no_api_key_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+        from distillate.renderer import ocr_handwritten_notes
+
+        result = ocr_handwritten_notes(Path("fake.zip"))
+        assert result == {}
 
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_no_ink_returns_empty(self, mock_extract):
+    def test_no_ink_returns_empty(self, mock_extract, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
 
         mock_extract.return_value = {}
@@ -576,7 +584,8 @@ class TestOcrFallback:
 
     @patch("distillate.renderer._render_strokes_to_image")
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_no_pillow_returns_empty(self, mock_extract, mock_render):
+    def test_no_pillow_returns_empty(self, mock_extract, mock_render, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
 
         mock_extract.return_value = {0: [MagicMock()]}
@@ -584,6 +593,20 @@ class TestOcrFallback:
 
         result = ocr_handwritten_notes(Path("fake.zip"))
         assert result == {}
+
+    @patch("distillate.renderer._ocr_image_claude")
+    @patch("distillate.renderer._render_strokes_to_image")
+    @patch("distillate.renderer.extract_ink_strokes")
+    def test_claude_ocr_result_included(self, mock_extract, mock_render, mock_ocr, monkeypatch):
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
+        from distillate.renderer import ocr_handwritten_notes
+
+        mock_extract.return_value = {0: [MagicMock()], 2: [MagicMock()]}
+        mock_render.return_value = MagicMock()  # fake PIL image
+        mock_ocr.side_effect = ["use REML!", ""]  # page 0 has text, page 2 empty
+
+        result = ocr_handwritten_notes(Path("fake.zip"))
+        assert result == {0: "use REML!"}
 
 
 # ---------------------------------------------------------------------------
