@@ -4,15 +4,12 @@ typed notes, ink extraction, and OCR fallback."""
 import io
 import json
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import requests
 from rmscene import scene_items as si
 from rmscene.tagged_block_common import CrdtId, LwwValue
-from rmscene.crdt_sequence import CrdtSequence, CrdtSequenceItem
 
 
 # ---------------------------------------------------------------------------
