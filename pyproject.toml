@@ -33,15 +33,9 @@ dependencies = [
 [project.optional-dependencies]
 ai = ["anthropic>=0.40.0"]
 email = ["resend>=2.0.0"]
-handwriting = [
-    "Pillow>=10.0",
-    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
-]
 all = [
     "anthropic>=0.40.0",
     "resend>=2.0.0",
-    "Pillow>=10.0",
-    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.urls]

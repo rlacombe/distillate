@@ -891,74 +891,22 @@ def _render_ink_on_pdf(doc, ink_by_page: Dict[int, List[si.Line]]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Handwritten OCR via Apple Vision (macOS only)
+# Handwritten OCR via Claude Vision
 # ---------------------------------------------------------------------------
 
 
-def _render_strokes_to_image(lines: List[si.Line], scale: float = 5.0):
-    """Render ink strokes to a PIL Image for OCR.
+def _ocr_page_claude(img_bytes: bytes) -> str:
+    """OCR handwritten notes from a PDF page image using Claude Vision.
 
-    Auto-sizes the canvas to fit all strokes (handles margin notes and
-    scrolled pages where coordinates extend beyond the default RM viewport).
-    Upscales by ``scale`` (default 5x) to reach ~350 DPI effective resolution
-    for Apple Vision OCR quality.
-    Returns a greyscale PIL Image with black strokes on white background,
-    or None if Pillow is not installed.
-    """
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        log.debug("Pillow not installed, cannot render strokes to image")
-        return None
+    The image shows a full PDF page with both printed and handwritten text.
+    Claude is asked to transcribe ONLY the handwritten annotations,
+    ignoring the printed content.
 
-    # Compute bounding box of all strokes
-    all_x: list[float] = []
-    all_y: list[float] = []
-    for line in lines:
-        for p in line.points:
-            all_x.append(p.x)
-            all_y.append(p.y)
-    if not all_x:
-        return None
+    Args:
+        img_bytes: PNG image bytes of the annotated PDF page.
 
-    x_min, x_max = min(all_x), max(all_x)
-    y_min, y_max = min(all_y), max(all_y)
-
-    # Upscale for OCR quality: RM units → pixels at scale factor
-    # Cap at 7500px per dimension (Claude API limit is 8000)
-    raw_w = (x_max - x_min) * scale
-    raw_h = (y_max - y_min) * scale
-    max_dim = 7500
-    if raw_w > max_dim or raw_h > max_dim:
-        downscale = max_dim / max(raw_w, raw_h)
-        scale = scale * downscale
-
-    pad = int(40 * scale)
-    canvas_w = int((x_max - x_min) * scale) + 2 * pad
-    canvas_h = int((y_max - y_min) * scale) + 2 * pad
-    # Ensure minimum size for OCR quality
-    canvas_w = max(canvas_w, int(400 * scale))
-    canvas_h = max(canvas_h, int(200 * scale))
-
-    img = Image.new("L", (canvas_w, canvas_h), 255)
-    draw = ImageDraw.Draw(img)
-    for line in lines:
-        if len(line.points) < 2:
-            continue
-        # Shift and scale coordinates so all strokes fit on canvas
-        coords = [
-            ((p.x - x_min) * scale + pad, (p.y - y_min) * scale + pad)
-            for p in line.points
-        ]
-        stroke_width = max(4, int(line.thickness_scale * scale * 1.5))
-        draw.line(coords, fill=0, width=stroke_width)
-    return img
-
-
-def _ocr_image_claude(image) -> str:
-    """OCR a PIL Image using Claude Vision (Haiku).
-
-    Returns recognized text, or empty string if the API is unavailable.
+    Returns:
+        Recognized handwritten text, or empty string on failure.
     """
     from distillate import config
 
@@ -971,14 +919,8 @@ def _ocr_image_claude(image) -> str:
         log.debug("anthropic package not installed, cannot OCR")
         return ""
 
-    # Convert PIL image to PNG bytes for the API
-    import io
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    png_bytes = buf.getvalue()
-
     import base64
-    image_b64 = base64.b64encode(png_bytes).decode("ascii")
+    image_b64 = base64.b64encode(img_bytes).decode("ascii")
 
     try:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -999,31 +941,48 @@ def _ocr_image_claude(image) -> str:
                     {
                         "type": "text",
                         "text": (
-                            "Transcribe the handwritten text in this image "
-                            "exactly as written. Preserve abbreviations, "
-                            "shorthand, arrows, and symbols. Output ONLY "
-                            "the transcribed text, one line per line of "
-                            "writing. If there is no legible handwritten "
-                            "text, output exactly: [none]"
+                            "This is a scanned PDF page with printed text and "
+                            "handwritten annotations overlaid in ink. "
+                            "Transcribe ONLY the handwritten notes, "
+                            "NOT the printed text. Preserve abbreviations, "
+                            "shorthand, arrows (→), and symbols exactly. "
+                            "Output ONLY the raw transcribed text — no "
+                            "headers, labels, or formatting. One line per "
+                            "distinct handwritten note. "
+                            "If there are no legible handwritten notes, "
+                            "output exactly: [none]"
                         ),
                     },
                 ],
             }],
         )
         text = response.content[0].text.strip()
-        log.debug("Claude OCR: %d chars", len(text))
+        # Strip any header/label lines Claude may prepend
+        import re
+        lines = text.split("\n")
+        cleaned = [
+            ln for ln in lines
+            if not re.match(
+                r"^(#{1,3}\s|handwritten|annotations?:?\s*$)",
+                ln.strip(), re.IGNORECASE,
+            )
+        ]
+        text = "\n".join(cleaned).strip()
+        log.debug("Claude page OCR: %d chars", len(text))
         return text
     except Exception:
-        log.exception("Claude OCR failed")
+        log.exception("Claude page OCR failed")
         return ""
 
 
 def ocr_handwritten_notes(zip_path: Path) -> Dict[int, str]:
     """Extract and OCR handwritten notes from a reMarkable bundle.
 
-    Renders ink strokes to images and uses Claude Vision (Haiku) for
-    recognition. Returns a dict mapping page index (0-based) to
-    recognized text. Requires ANTHROPIC_API_KEY and Pillow.
+    Renders the annotated PDF page (with ink) and sends it to Claude
+    Vision (Haiku) for recognition. Claude sees the handwriting in
+    context with the printed text, producing much better results.
+    Returns a dict mapping page index (0-based) to recognized text.
+    Requires ANTHROPIC_API_KEY and pymupdf.
     """
     from distillate import config
 
@@ -1034,16 +993,37 @@ def ocr_handwritten_notes(zip_path: Path) -> Dict[int, str]:
     if not ink_by_page:
         return {}
 
+    # Render ink onto the PDF so we can grab annotated page images
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        pdf_names = [n for n in zf.namelist() if n.endswith(".pdf")]
+        if not pdf_names:
+            return {}
+        pdf_data = zf.read(pdf_names[0])
+
+    doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+    _render_ink_on_pdf(doc, ink_by_page)
+
     results: Dict[int, str] = {}
-    for page_idx, lines in ink_by_page.items():
-        if not lines:
+    for page_idx in ink_by_page:
+        if page_idx >= len(doc):
             continue
-        img = _render_strokes_to_image(lines)
-        if img is None:
-            return {}  # Pillow not available, stop trying
-        text = _ocr_image_claude(img)
+        if not ink_by_page[page_idx]:
+            continue
+        # Render page at 2x (144 DPI) — good quality, within 8000px limit
+        page = doc[page_idx]
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(2, 2))
+        img_bytes = pix.tobytes("png")
+
+        text = _ocr_page_claude(img_bytes)
         if text.strip() and text.strip().lower() != "[none]":
             results[page_idx] = text.strip()
+
+    doc.close()
 
     if results:
         log.info("OCR'd handwritten notes from %d page(s) of %s",

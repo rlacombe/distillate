@@ -582,30 +582,43 @@ class TestOcrFallback:
         result = ocr_handwritten_notes(Path("fake.zip"))
         assert result == {}
 
-    @patch("distillate.renderer._render_strokes_to_image")
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_no_pillow_returns_empty(self, mock_extract, mock_render, monkeypatch):
+    def test_no_pdf_in_zip_returns_empty(self, mock_extract, tmp_path, monkeypatch):
         monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
 
         mock_extract.return_value = {0: [MagicMock()]}
-        mock_render.return_value = None  # Pillow not available
+        # Create a zip with no PDF inside
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("content.rm", b"fake")
 
-        result = ocr_handwritten_notes(Path("fake.zip"))
+        result = ocr_handwritten_notes(zip_path)
         assert result == {}
 
-    @patch("distillate.renderer._ocr_image_claude")
-    @patch("distillate.renderer._render_strokes_to_image")
+    @patch("distillate.renderer._ocr_page_claude")
+    @patch("distillate.renderer._render_ink_on_pdf")
     @patch("distillate.renderer.extract_ink_strokes")
-    def test_claude_ocr_result_included(self, mock_extract, mock_render, mock_ocr, monkeypatch):
+    def test_claude_ocr_result_included(self, mock_extract, mock_render, mock_ocr, tmp_path, monkeypatch):
         monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test")
         from distillate.renderer import ocr_handwritten_notes
+        import pymupdf
+
+        # Create a minimal PDF inside a zip
+        pdf_doc = pymupdf.open()
+        for _ in range(3):
+            pdf_doc.new_page()
+        pdf_bytes = pdf_doc.tobytes()
+        pdf_doc.close()
+
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("paper.pdf", pdf_bytes)
 
         mock_extract.return_value = {0: [MagicMock()], 2: [MagicMock()]}
-        mock_render.return_value = MagicMock()  # fake PIL image
         mock_ocr.side_effect = ["use REML!", ""]  # page 0 has text, page 2 empty
 
-        result = ocr_handwritten_notes(Path("fake.zip"))
+        result = ocr_handwritten_notes(zip_path)
         assert result == {0: "use REML!"}
 
 
