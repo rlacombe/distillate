@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 — 2026-02-19
+
+### Bug Fixes
+
+- **Suggestion email dedup**: `--suggest-email` now checks the Gist for today's timestamp and skips if suggestions were already sent — prevents duplicate emails on re-runs or retries
+
 ## 0.4.1 — 2026-02-19
 
 ### Bug Fixes

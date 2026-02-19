@@ -954,6 +954,65 @@ class TestDownloadPdfFromWebdav:
 # ---------------------------------------------------------------------------
 
 
+class TestSuggestionDedup:
+    """Suggestion email dedup — skip if already sent today."""
+
+    @patch("distillate.digest.fetch_pending_from_gist")
+    def test_skips_if_already_sent_today(self, mock_fetch):
+        """send_suggestion should exit early if Gist has today's timestamp."""
+        from datetime import datetime, timezone
+        from distillate.digest import send_suggestion
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        mock_fetch.return_value = {
+            "timestamp": f"{today}T08:00:00+00:00",
+            "picks": ["KEY1"],
+            "suggestion_text": "1. Some paper",
+        }
+
+        # Should return without calling Claude or sending email
+        send_suggestion()
+
+        # fetch_pending_from_gist was called once for the dedup check
+        mock_fetch.assert_called_once()
+
+    @patch("distillate.digest.fetch_pending_from_gist")
+    @patch("distillate.digest._sync_tags")
+    @patch("distillate.digest.State")
+    @patch("distillate.digest.summarizer")
+    @patch("distillate.digest._send_email")
+    @patch("distillate.digest._push_pending_to_gist")
+    def test_proceeds_if_gist_has_yesterday(self, mock_push, mock_email,
+                                             mock_summarizer, mock_state_cls,
+                                             mock_sync, mock_fetch):
+        """send_suggestion should proceed if Gist timestamp is from yesterday."""
+        from datetime import datetime, timedelta, timezone
+        from distillate.digest import send_suggestion
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        mock_fetch.return_value = {
+            "timestamp": f"{yesterday}T08:00:00+00:00",
+            "picks": ["KEY1"],
+        }
+
+        # Mock state with one unread paper
+        mock_state = MagicMock()
+        mock_state.documents_with_status.return_value = [
+            {"zotero_item_key": "K1", "title": "Test Paper",
+             "status": "on_remarkable", "metadata": {"tags": []}},
+        ]
+        mock_state.documents_processed_since.return_value = []
+        mock_state_cls.return_value = mock_state
+
+        mock_summarizer.suggest_papers.return_value = "1. Test Paper — reason"
+
+        send_suggestion()
+
+        # Should have called Claude and sent email
+        mock_summarizer.suggest_papers.assert_called_once()
+        mock_email.assert_called_once()
+
+
 class TestCollectionFiltering:
     """Collection-scoped paper discovery."""
 

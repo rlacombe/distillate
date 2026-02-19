@@ -579,6 +579,15 @@ def send_suggestion() -> None:
     """Send a daily email suggesting 3 papers and store picks for promotion."""
     config.setup_logging()
 
+    # Skip if suggestions were already sent today (dedup against re-runs)
+    pending = fetch_pending_from_gist()
+    if pending:
+        ts = pending.get("timestamp", "")
+        if ts and ts[:10] == datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+            log.info("Suggestions already sent today, skipping")
+            print("  Suggestions already sent today.")
+            return
+
     state = State()
     _sync_tags(state)
 
