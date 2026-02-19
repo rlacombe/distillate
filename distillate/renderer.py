@@ -941,14 +941,16 @@ def _ocr_page_claude(img_bytes: bytes) -> str:
                     {
                         "type": "text",
                         "text": (
-                            "This is a scanned PDF page with printed text and "
-                            "handwritten annotations overlaid in ink. "
-                            "Transcribe ONLY the handwritten notes, "
-                            "NOT the printed text. Preserve abbreviations, "
-                            "shorthand, arrows (→), and symbols exactly. "
-                            "Output ONLY the raw transcribed text — no "
-                            "headers, labels, or formatting. One line per "
-                            "distinct handwritten note. "
+                            "This is a research paper page with handwritten "
+                            "margin notes overlaid in ink on the printed text. "
+                            "Transcribe ONLY the handwritten annotations, "
+                            "NOT the printed text underneath. These are a "
+                            "reader's notes — expect questions, reactions, "
+                            "abbreviations, arrows (→), and shorthand. "
+                            "Output one line per distinct note. Skip any "
+                            "handwriting you cannot read confidently. "
+                            "No headers, labels, or commentary — just the "
+                            "transcribed notes. "
                             "If there are no legible handwritten notes, "
                             "output exactly: [none]"
                         ),
@@ -966,6 +968,7 @@ def _ocr_page_claude(img_bytes: bytes) -> str:
                 r"^(#{1,3}\s|handwritten|annotations?:?\s*$)",
                 ln.strip(), re.IGNORECASE,
             )
+            and ln.strip().lower() not in ("[none]", "none")
         ]
         text = "\n".join(cleaned).strip()
         log.debug("Claude page OCR: %d chars", len(text))

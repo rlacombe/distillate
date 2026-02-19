@@ -145,17 +145,24 @@ def _reprocess(args: list[str]) -> None:
                 h for page_hl in (highlights or {}).values() for h in page_hl
             ] or None
 
+            # Flatten handwritten notes for summarizer
+            flat_notes = [
+                text for _, text in sorted(handwritten_notes.items())
+            ] if handwritten_notes else None
+
             # Extract key learnings first (summary uses them)
             learnings = summarizer.extract_insights(
                 title,
                 highlights=flat_highlights,
                 abstract=meta.get("abstract", ""),
+                reader_notes=flat_notes,
             )
 
             # Always regenerate summary on reprocess
             summary, one_liner = summarizer.summarize_read_paper(
                 title, abstract=meta.get("abstract", ""),
                 key_learnings=learnings,
+                reader_notes=flat_notes,
             )
 
             # Use original processing date, not today
@@ -2765,12 +2772,18 @@ def main():
                     h for page_hl in (highlights or {}).values() for h in page_hl
                 ] or None
 
+                # Flatten handwritten notes for summarizer
+                flat_notes = [
+                    text for _, text in sorted(handwritten_notes.items())
+                ] if handwritten_notes else None
+
                 # Extract key learnings first (summary uses them)
                 print("    Generating summary...")
                 learnings = summarizer.extract_insights(
                     doc["title"],
                     highlights=flat_highlights,
                     abstract=meta.get("abstract", ""),
+                    reader_notes=flat_notes,
                 )
 
                 # Generate AI summaries
@@ -2778,6 +2791,7 @@ def main():
                     doc["title"],
                     abstract=meta.get("abstract", ""),
                     key_learnings=learnings,
+                    reader_notes=flat_notes,
                 )
 
                 # Compute engagement score and highlight stats

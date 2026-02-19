@@ -13,6 +13,7 @@ def summarize_read_paper(
     title: str,
     abstract: str = "",
     key_learnings: Optional[List[str]] = None,
+    reader_notes: Optional[List[str]] = None,
 ) -> Tuple[str, str]:
     """Generate summaries for a read paper.
 
@@ -20,6 +21,9 @@ def summarize_read_paper(
       - summary: paragraph summarizing the paper's content and key ideas
       - one_liner: one tight sentence explaining why this paper matters,
         understandable by a non-specialist. Used as blockquote and in reading log.
+
+    If ``reader_notes`` are provided (OCR'd handwritten margin notes),
+    the summary is personalized to reflect what the reader found notable.
     """
     if not config.ANTHROPIC_API_KEY:
         return _fallback_read(title, abstract, key_learnings)
@@ -30,6 +34,18 @@ def summarize_read_paper(
     context = f"Abstract: {abstract}"
     if key_learnings:
         context += "\n\nKey takeaways:\n" + "\n".join(f"- {item}" for item in key_learnings)
+    if reader_notes:
+        context += (
+            "\n\nReader's handwritten margin notes:\n"
+            + "\n".join(f"- {n}" for n in reader_notes)
+        )
+
+    notes_instruction = ""
+    if reader_notes:
+        notes_instruction = (
+            " The reader left margin notes while reading — let those "
+            "guide which aspects you emphasize in the summary."
+        )
 
     prompt = (
         f"You are summarizing a research paper for a personal reading log.\n\n"
@@ -38,7 +54,7 @@ def summarize_read_paper(
         f"1. A paragraph (3-4 sentences) summarizing the paper. Describe what it "
         f"does, its methods, and findings. State ideas directly as fact — never "
         f"start with 'this paper' or 'the authors'. Include specific methods, "
-        f"results, or numbers where possible.\n"
+        f"results, or numbers where possible.{notes_instruction}\n"
         f"2. ONE sentence (max 20 words) explaining why this work matters — "
         f"what it enables, changes, or makes possible. Focus on the real-world "
         f"impact or implication, not what the paper 'does' or 'claims'. "
@@ -65,11 +81,16 @@ def extract_insights(
     title: str,
     highlights: Optional[List[str]] = None,
     abstract: str = "",
+    reader_notes: Optional[List[str]] = None,
 ) -> List[str]:
     """Extract key learnings from a paper's highlights.
 
     Returns a list of short bullet-point strings, ending with a
     'so what' bullet explaining why this work matters.
+
+    If ``reader_notes`` are provided (OCR'd handwritten margin notes),
+    they are included as context so the insights reflect what the reader
+    found most interesting.
     """
     if not config.ANTHROPIC_API_KEY:
         return []
@@ -79,15 +100,29 @@ def extract_insights(
         context_parts.append("Highlights:\n" + "\n".join(f"- {h}" for h in highlights))
     if abstract:
         context_parts.append(f"Abstract: {abstract}")
+    if reader_notes:
+        context_parts.append(
+            "Reader's handwritten margin notes:\n"
+            + "\n".join(f"- {n}" for n in reader_notes)
+        )
 
     if not context_parts:
         return []
 
     context = "\n\n".join(context_parts)
 
+    notes_instruction = ""
+    if reader_notes:
+        notes_instruction = (
+            "The reader also wrote margin notes while reading. "
+            "Prioritize insights that connect to what the reader "
+            "found interesting or questioned.\n\n"
+        )
+
     prompt = (
         f"From these highlights of \"{title}\":\n\n"
         f"{context}\n\n"
+        f"{notes_instruction}"
         f"Return 4-6 bullet points:\n"
         f"- First 3-5: key facts or insights. Each one short sentence "
         f"(max 15 words). State facts directly, no filler.\n"
