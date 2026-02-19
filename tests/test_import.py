@@ -28,6 +28,7 @@ def isolate_config(monkeypatch):
     monkeypatch.setattr("distillate.config.ZOTERO_USER_ID", "12345")
     monkeypatch.setattr("distillate.config.ZOTERO_TAG_INBOX", "inbox")
     monkeypatch.setattr("distillate.config.ZOTERO_TAG_READ", "read")
+    monkeypatch.setattr("distillate.config.ZOTERO_COLLECTION_KEY", "")
     monkeypatch.setattr("distillate.config.RM_FOLDER_INBOX", "Distillate/Inbox")
     monkeypatch.setattr("distillate.config.RM_FOLDER_PAPERS", "Distillate")
     monkeypatch.setattr("distillate.config.KEEP_ZOTERO_PDF", True)
@@ -276,7 +277,7 @@ class TestImport:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_library_version",
@@ -324,7 +325,7 @@ class TestImport:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: [],
+            lambda limit=100, collection_key="": [],
         )
 
         _import([])
@@ -348,7 +349,7 @@ class TestImport:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_library_version",
@@ -391,7 +392,7 @@ class TestImport:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
 
         monkeypatch.setattr("builtins.input", lambda _: "none")
@@ -430,7 +431,7 @@ class TestImport:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_library_version",
@@ -475,7 +476,7 @@ class TestInitSeed:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_library_version",
@@ -513,7 +514,7 @@ class TestInitSeed:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: [],
+            lambda limit=100, collection_key="": [],
         )
 
         _init_seed()
@@ -533,7 +534,7 @@ class TestInitSeed:
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_recent_papers",
-            lambda limit=100: papers,
+            lambda limit=100, collection_key="": papers,
         )
         monkeypatch.setattr(
             "distillate.zotero_client.get_library_version",
