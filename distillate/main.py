@@ -16,6 +16,7 @@ import requests
 log = logging.getLogger("distillate")
 
 _BOLD = "\033[1m"
+_DIM = "\033[2m"
 _RESET = "\033[0m"
 
 
@@ -23,6 +24,13 @@ def _bold(text: str) -> str:
     """Wrap text in ANSI bold, only when stdout is a TTY."""
     if sys.stdout.isatty():
         return f"{_BOLD}{text}{_RESET}"
+    return text
+
+
+def _dim(text: str) -> str:
+    """Wrap text in ANSI dim, only when stdout is a TTY."""
+    if sys.stdout.isatty():
+        return f"{_DIM}{text}{_RESET}"
     return text
 
 
@@ -760,11 +768,11 @@ def _status() -> None:
             detail = f"{date_str}{stats_str}"
             if ck:
                 detail = f"{detail} - {ck}" if detail else ck
-            print(f"    [{idx}] {_bold(doc['title'])}")
+            print(f"    {_dim(f'[{idx}]')} {_bold(doc['title'])}")
             if detail:
-                print(f"        {detail}")
+                print(f"        {_dim(detail)}")
         if len(queue) > 10:
-            print(f"    ... and {len(queue) - 10} more")
+            print(f"    {_dim(f'... and {len(queue) - 10} more')}")
 
     # Ready to process (in Read/ on reMarkable)
     try:
@@ -787,7 +795,7 @@ def _status() -> None:
             doc = state.get_document(key)
             if doc:
                 idx = state.index_of(key)
-                entries.append(f"[{idx}] {_bold(doc['title'])}")
+                entries.append(f"{_dim(f'[{idx}]')} {_bold(doc['title'])}")
         if entries:
             print(f"  Promoted:  {entries[0]}")
             for e in entries[1:]:
@@ -810,11 +818,11 @@ def _status() -> None:
             else:
                 days = delta.days
                 ago = f"{days} day{'s' if days != 1 else ''} ago"
-            print(f"  Last sync: {ago}")
+            print(f"  {_dim(f'Last sync: {ago}')}")
         except (ValueError, TypeError):
             pass
     else:
-        print("  Last sync: never")
+        print(f"  {_dim('Last sync: never')}")
 
     # Reading stats
     week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
@@ -835,8 +843,8 @@ def _status() -> None:
         return f"{label}: {sep.join(parts)}"
 
     print()
-    print(f"  {_stats_line(week_papers, 'This week')}")
-    print(f"  {_stats_line(month_papers, 'This month')}")
+    print(f"  {_dim(_stats_line(week_papers, 'This week'))}")
+    print(f"  {_dim(_stats_line(month_papers, 'This month'))}")
 
     # Awaiting PDF (show titles with guidance)
     awaiting = state.documents_with_status("awaiting_pdf")
@@ -921,10 +929,10 @@ def _list() -> None:
             elif doc.get("uploaded_at"):
                 date_str = doc["uploaded_at"][:10]
             detail = " \u00b7 ".join(p for p in [date_str, ck] if p)
-            idx_str = f"[{idx}] " if idx else ""
+            idx_str = f"{_dim(f'[{idx}]')} " if idx else ""
             print(f"    {idx_str}{doc['title']}")
             if detail:
-                print(f"      {detail}")
+                print(f"      {_dim(detail)}")
         if status == "awaiting_pdf":
             print("    Sync the PDF in Zotero, then re-run distillate.")
         print()
@@ -1031,7 +1039,7 @@ def _print_digest() -> None:
 
         ck = p.get("metadata", {}).get("citekey", "")
         idx = state.index_of(p["zotero_item_key"])
-        idx_str = f"[{idx}] " if idx else ""
+        idx_str = f"{_dim(f'[{idx}]')} " if idx else ""
 
         print()
         print(f"  {idx_str}{_bold(title)}")
@@ -1039,7 +1047,7 @@ def _print_digest() -> None:
         if ck:
             detail = f"{detail} \u00b7 {ck}" if detail else ck
         if detail:
-            print(f"    {detail}")
+            print(f"    {_dim(detail)}")
         if summary:
             print(f"    {summary}")
 
@@ -1061,9 +1069,10 @@ def _print_digest() -> None:
         return f"{label}: {sep.join(parts)}"
 
     print()
-    print(f"  {_stats_line(papers, 'This week')}")
-    print(f"  {_stats_line(month_papers, 'This month')}")
-    print(f"  Queue: {len(unread)} paper{'s' if len(unread) != 1 else ''} waiting")
+    queue_s = "s" if len(unread) != 1 else ""
+    print(f"  {_dim(_stats_line(papers, 'This week'))}")
+    print(f"  {_dim(_stats_line(month_papers, 'This month'))}")
+    print(f"  {_dim(f'Queue: {len(unread)} paper{queue_s} waiting')}")
     print()
 
 
@@ -1244,9 +1253,10 @@ def _print_suggestions(entries: list[dict], unread: list[dict], now, state=None)
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
         print()
-        print(f"  {idx_str}{_bold(title)}")
+        idx_dim = _dim(idx_str) if idx_str else ""
+        print(f"  {idx_dim}{_bold(title)}")
         if stats_str:
-            print(f"    {stats_str}")
+            print(f"    {_dim(stats_str)}")
         print(f"    {reason}")
 
     print()
