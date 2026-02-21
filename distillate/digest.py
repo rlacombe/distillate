@@ -487,7 +487,7 @@ def _paper_url(p):
     return ""
 
 
-def _paper_html(p):
+def _paper_html(p, index: int = 0):
     title = p.get("title", "Untitled")
     summary = p.get("summary", "")
     url = _paper_url(p)
@@ -548,9 +548,14 @@ def _paper_html(p):
 
     summary_html = f" &mdash; {summary}" if summary else ""
 
+    index_html = (
+        f'<span style="color:#999;">[{index}]</span> '
+        if index else ""
+    )
+
     return (
         f"<li style='margin-bottom: 14px;'>"
-        f"{title_html}{date_html}{obsidian_html}{stats_html}{summary_html}"
+        f"{index_html}{title_html}{date_html}{obsidian_html}{stats_html}{summary_html}"
         f"</li>"
     )
 
@@ -565,7 +570,8 @@ def _build_body(papers, state: State):
     ]
 
     for p in sorted(papers, key=lambda d: d.get("processed_at", ""), reverse=True):
-        lines.append(_paper_html(p))
+        idx = state.index_of(p.get("zotero_item_key", ""))
+        lines.append(_paper_html(p, index=idx))
 
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
@@ -696,11 +702,14 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     known_titles = [doc["title"] for doc in unread]
     url_lookup = {}
     tags_lookup = {}
+    index_lookup = {}
     user_top_tags = _recent_topic_tags(state, limit=20)
     for doc in unread:
-        url_lookup[doc["title"].lower()] = _paper_url(doc)
+        t_lower = doc["title"].lower()
+        url_lookup[t_lower] = _paper_url(doc)
         raw_tags = doc.get("metadata", {}).get("tags", [])
-        tags_lookup[doc["title"].lower()] = _rank_tags(raw_tags, user_top_tags)
+        tags_lookup[t_lower] = _rank_tags(raw_tags, user_top_tags)
+        index_lookup[t_lower] = state.index_of(doc.get("zotero_item_key", ""))
 
     lines = [
         "<html><body style='font-family: sans-serif; max-width: 600px; "
@@ -729,12 +738,14 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
         # Match title to a known paper (bidirectional: handles journal suffixes)
         url = ""
         tags = []
+        paper_idx = 0
         matched_title = ""
         matched = match_suggestion_to_title(line, known_titles)
         if matched:
             matched_lower = matched.lower()
             url = url_lookup.get(matched_lower, "")
             tags = tags_lookup.get(matched_lower, [])
+            paper_idx = index_lookup.get(matched_lower, 0)
             rest_lower = rest.lower()
             idx = rest_lower.find(matched_lower)
             if idx >= 0:
@@ -762,9 +773,10 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
             if url else ""
         )
 
+        idx_label = paper_idx if paper_idx else queue_num
         lines.append(
             f"<li style='margin-bottom: 14px;'>"
-            f'<span style="color:#999;">[{queue_num}]</span> '
+            f'<span style="color:#999;">[{idx_label}]</span> '
             f"{title_html}{reason_html}{pills_html}{url_html}"
             f"</li>"
         )

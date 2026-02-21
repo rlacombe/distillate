@@ -102,6 +102,20 @@ class State:
     def has_document(self, zotero_item_key: str) -> bool:
         return zotero_item_key in self._data["documents"]
 
+    def index_of(self, zotero_item_key: str) -> int:
+        """Return the 1-based index of a document (insertion order)."""
+        for i, key in enumerate(self._data["documents"], 1):
+            if key == zotero_item_key:
+                return i
+        return 0
+
+    def key_for_index(self, index: int) -> Optional[str]:
+        """Return the zotero_item_key for a 1-based index, or None."""
+        keys = list(self._data["documents"].keys())
+        if 1 <= index <= len(keys):
+            return keys[index - 1]
+        return None
+
     def find_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
         """Find a tracked document by DOI. Returns None if not found."""
         if not doi:

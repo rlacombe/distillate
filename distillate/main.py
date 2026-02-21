@@ -15,6 +15,45 @@ import requests
 
 log = logging.getLogger("distillate")
 
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
+
+def _bold(text: str) -> str:
+    """Wrap text in ANSI bold, only when stdout is a TTY."""
+    if sys.stdout.isatty():
+        return f"{_BOLD}{text}{_RESET}"
+    return text
+
+
+def _find_papers(query: str, state) -> list[tuple[str, dict]]:
+    """Resolve a query to a list of (item_key, doc) matches.
+
+    Tries (in order): index number, exact citekey, citekey substring,
+    then title substring.
+    """
+    query = query.strip().strip('"').strip("'")
+
+    # Try index number
+    if query.isdigit():
+        idx = int(query)
+        key = state.key_for_index(idx)
+        if key:
+            doc = state.get_document(key)
+            if doc:
+                return [(key, doc)]
+
+    query_lower = query.lower()
+    matches = []
+    for key, doc in state.documents.items():
+        ck = doc.get("metadata", {}).get("citekey", "")
+        if ck and ck.lower() == query_lower:
+            return [(key, doc)]  # exact citekey match
+        if (query_lower in ck.lower()
+                or query_lower in doc.get("title", "").lower()):
+            matches.append((key, doc))
+    return matches
+
 
 def _compute_engagement(
     highlights: dict | None, page_count: int,
@@ -58,21 +97,19 @@ def _reprocess(args: list[str]) -> None:
         print("No processed papers to reprocess.")
         return
 
-    # Filter by citekey or title substring
+    # Filter by index, citekey, or title substring
     if args:
-        query = " ".join(args).lower()
-        matches = [
-            d for d in processed
-            if query in d["title"].lower()
-            or query in d.get("metadata", {}).get("citekey", "").lower()
-        ]
+        query = " ".join(args)
+        matches = _find_papers(query, state)
         if not matches:
-            print(f"No processed paper matching '{' '.join(args)}'")
-            for d in processed:
-                ck = d.get("metadata", {}).get("citekey", "")
-                print(f"  {ck or '?'}: {d['title']}")
+            print(f"No paper matching '{query}'")
             return
-        processed = matches
+        # Only keep processed papers from matches
+        match_keys = {k for k, _ in matches}
+        processed = [d for d in processed if d["zotero_item_key"] in match_keys]
+        if not processed:
+            print(f"No processed paper matching '{query}'")
+            return
 
     print(f"Reprocessing {len(processed)} paper(s)...")
 
@@ -323,11 +360,11 @@ def _backfill_s2() -> None:
     print(f"Backfilled S2 data for {count} paper(s).")
 
 
-def _refresh_metadata() -> None:
-    """Re-extract metadata from Zotero for all tracked papers.
+def _refresh_metadata(args: list[str] | None = None) -> None:
+    """Re-extract metadata from Zotero for tracked papers.
 
-    Detects citekey changes (e.g. from date format fixes) and renames
-    note/PDF files accordingly.
+    With no arguments, refreshes all papers. Pass a citekey, index number,
+    or title substring to refresh a single paper.
     """
     from distillate import config, zotero_client, obsidian, semantic_scholar
     from distillate.state import State
@@ -335,7 +372,25 @@ def _refresh_metadata() -> None:
     config.setup_logging()
 
     state = State()
-    keys = list(state.documents.keys())
+
+    if args:
+        query = " ".join(args)
+        matches = _find_papers(query, state)
+        if not matches:
+            print(f"\n  No paper matching '{query}'.\n")
+            return
+        if len(matches) > 1:
+            print(f"\n  Multiple papers match '{query}':")
+            for key, doc in matches:
+                idx = state.index_of(key)
+                ck = doc.get("metadata", {}).get("citekey", "")
+                print(f"    [{idx}] {doc['title']} ({ck})")
+            print("  Be more specific.\n")
+            return
+        keys = [matches[0][0]]
+    else:
+        keys = list(state.documents.keys())
+
     if not keys:
         print("No tracked papers.")
         return
@@ -682,27 +737,32 @@ def _status() -> None:
     if queue:
         sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)
         for doc in sorted_queue[:10]:
-            age = ""
+            idx = state.index_of(doc["zotero_item_key"])
+            ck = doc.get("metadata", {}).get("citekey", "")
+            # Date
+            date_str = ""
             uploaded = doc.get("uploaded_at", "")
             if uploaded:
                 try:
-                    delta = now - datetime.fromisoformat(uploaded)
-                    if delta.days < 1:
-                        hours = int(delta.total_seconds() // 3600)
-                        age = f" ({hours}h)"
-                    else:
-                        age = f" ({delta.days}d)"
+                    dt = datetime.fromisoformat(uploaded)
+                    date_str = dt.strftime("%b %-d")
                 except (ValueError, TypeError):
                     pass
-            ck = doc.get("metadata", {}).get("citekey", "")
-            days_str = age.strip(" ()")  # extract just "12d"
-            if ck and days_str:
-                suffix = f" ({ck}, {days_str})"
-            elif ck:
-                suffix = f" ({ck})"
-            else:
-                suffix = age
-            print(f"    - {doc['title']}{suffix}")
+            # Stats
+            stats = []
+            engagement = doc.get("engagement", 0)
+            highlight_count = doc.get("highlight_count", 0)
+            if engagement:
+                stats.append(f"{engagement}% engaged")
+            if highlight_count:
+                stats.append(f"{highlight_count} highlights")
+            stats_str = f" ({', '.join(stats)})" if stats else ""
+            detail = f"{date_str}{stats_str}"
+            if ck:
+                detail = f"{detail} - {ck}" if detail else ck
+            print(f"    [{idx}] {_bold(doc['title'])}")
+            if detail:
+                print(f"        {detail}")
         if len(queue) > 10:
             print(f"    ... and {len(queue) - 10} more")
 
@@ -722,15 +782,16 @@ def _status() -> None:
     # Promoted (show last 3)
     promoted = state.promoted_papers
     if promoted:
-        titles = []
+        entries = []
         for key in promoted[-3:]:
             doc = state.get_document(key)
             if doc:
-                titles.append(doc["title"])
-        if titles:
-            print(f"  Promoted:  {titles[0]}")
-            for t in titles[1:]:
-                print(f"             {t}")
+                idx = state.index_of(key)
+                entries.append(f"[{idx}] {_bold(doc['title'])}")
+        if entries:
+            print(f"  Promoted:  {entries[0]}")
+            for e in entries[1:]:
+                print(f"             {e}")
 
     # Last sync
     last_poll = state.last_poll_timestamp
@@ -852,18 +913,18 @@ def _list() -> None:
         total += len(docs)
         print(f"  {label} ({len(docs)})")
         for doc in docs:
+            idx = state.index_of(doc["zotero_item_key"])
             ck = doc.get("metadata", {}).get("citekey", "")
-            parts = [ck or doc["title"]]
-            if not ck:
-                authors = doc.get("authors") or []
-                if authors and authors[0].strip():
-                    first_author = authors[0].split(",")[0].split()[-1]
-                    parts.append(first_author)
+            date_str = ""
             if status == "processed" and doc.get("processed_at"):
-                parts.append(doc["processed_at"][:10])
+                date_str = doc["processed_at"][:10]
             elif doc.get("uploaded_at"):
-                parts.append(doc["uploaded_at"][:10])
-            print(f"    - {' · '.join(parts)}")
+                date_str = doc["uploaded_at"][:10]
+            detail = " \u00b7 ".join(p for p in [date_str, ck] if p)
+            idx_str = f"[{idx}] " if idx else ""
+            print(f"    {idx_str}{doc['title']}")
+            if detail:
+                print(f"      {detail}")
         if status == "awaiting_pdf":
             print("    Sync the PDF in Zotero, then re-run distillate.")
         print()
@@ -882,18 +943,12 @@ def _remove(args: list[str]) -> None:
     config.setup_logging()
 
     if not args:
-        print("Usage: distillate --remove \"Paper Title\"")
+        print("Usage: distillate --remove <title|citekey|index>")
         return
 
-    query = " ".join(args).strip().strip('"').strip("'")
+    query = " ".join(args)
     state = State()
-    query_lower = query.lower()
-
-    matches = []
-    for key, doc in state.documents.items():
-        if (query_lower in doc.get("title", "").lower()
-                or query_lower in doc.get("metadata", {}).get("citekey", "").lower()):
-            matches.append((key, doc))
+    matches = _find_papers(query, state)
 
     if not matches:
         print(f"\n  No papers matching '{query}'.\n")
@@ -975,12 +1030,16 @@ def _print_digest() -> None:
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
         ck = p.get("metadata", {}).get("citekey", "")
+        idx = state.index_of(p["zotero_item_key"])
+        idx_str = f"[{idx}] " if idx else ""
+
         print()
-        print(f"  {ck or title}")
+        print(f"  {idx_str}{_bold(title)}")
+        detail = f"{date_str}{stats_str}"
         if ck:
-            print(f"    {title}")
-        if date_str or stats_str:
-            print(f"    {date_str}{stats_str}")
+            detail = f"{detail} \u00b7 {ck}" if detail else ck
+        if detail:
+            print(f"    {detail}")
         if summary:
             print(f"    {summary}")
 
@@ -1136,7 +1195,7 @@ def _parse_suggestions(text: str) -> list[dict]:
     return entries
 
 
-def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
+def _print_suggestions(entries: list[dict], unread: list[dict], now, state=None) -> None:
     """Print formatted suggestion output matching --digest style."""
     from datetime import datetime
 
@@ -1160,6 +1219,13 @@ def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
                     doc = d
                     break
 
+        # Build index prefix
+        idx_str = ""
+        if doc and state:
+            idx = state.index_of(doc["zotero_item_key"])
+            if idx:
+                idx_str = f"[{idx}] "
+
         # Build stats line
         stats = []
         if doc:
@@ -1178,7 +1244,7 @@ def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
         print()
-        print(f"  {title}")
+        print(f"  {idx_str}{_bold(title)}")
         if stats_str:
             print(f"    {stats_str}")
         print(f"    {reason}")
@@ -1226,7 +1292,7 @@ def _suggest() -> None:
                         unread = state.documents_with_status("on_remarkable")
                         entries = _parse_suggestions(suggestion_text)
                         if entries:
-                            _print_suggestions(entries, unread, now)
+                            _print_suggestions(entries, unread, now, state=state)
                         else:
                             # Fall back to raw output if parsing fails
                             print()
@@ -1285,7 +1351,7 @@ def _suggest() -> None:
                 # Parse and print structured suggestions
                 entries = _parse_suggestions(result)
                 if entries:
-                    _print_suggestions(entries, unread, now)
+                    _print_suggestions(entries, unread, now, state=state)
                 else:
                     # Fall back to raw output if parsing fails
                     print()
@@ -2393,7 +2459,7 @@ Management:
 Advanced:
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
-  --refresh-metadata      Re-fetch metadata from Zotero + Semantic Scholar
+  --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
 
 Options:
@@ -2478,7 +2544,8 @@ def main():
         return
 
     if "--refresh-metadata" in sys.argv:
-        _refresh_metadata()
+        idx = sys.argv.index("--refresh-metadata")
+        _refresh_metadata(sys.argv[idx + 1:] or None)
         return
 
     if "--suggest" in sys.argv:
