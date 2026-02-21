@@ -300,7 +300,18 @@ def _backfill_s2() -> None:
             url=meta.get("url", ""),
         )
         if s2_data:
+            had_unknown = "unknown" in meta.get("citekey", "")
+            had_date = bool(meta.get("publication_date"))
             semantic_scholar.enrich_metadata(meta, s2_data)
+            # Regenerate citekey if S2 filled missing author or date
+            needs_regen = not had_date and meta.get("publication_date")
+            if had_unknown and s2_data.get("authors"):
+                needs_regen = True
+                doc["authors"] = meta["authors"]
+            if needs_regen:
+                meta["citekey"] = zotero_client._generate_citekey(
+                    meta["authors"], meta["title"], meta["publication_date"],
+                )
             print(f"  S2 enriched '{doc['title']}': {s2_data['citation_count']} citations")
         else:
             print(f"  S2: no data found for '{doc['title']}'")
@@ -348,8 +359,19 @@ def _refresh_metadata() -> None:
         new_meta = zotero_client.extract_metadata(item)
         any_change = False
 
-        # Re-query S2 for papers missing date or citation data
-        if not new_meta.get("publication_date") or not old_meta.get("s2_url"):
+        # Preserve S2-filled authors when Zotero has none
+        new_authors = new_meta.get("authors") or []
+        old_authors = old_meta.get("authors") or []
+        zotero_has_no_authors = not new_authors or new_authors == ["Unknown"]
+        if zotero_has_no_authors and old_authors and old_authors != ["Unknown"]:
+            new_meta["authors"] = old_authors
+            new_meta["citekey"] = zotero_client._generate_citekey(
+                old_authors, new_meta["title"], new_meta.get("publication_date", ""),
+            )
+
+        # Re-query S2 for papers missing date, citation data, or authors
+        had_unknown_author = "unknown" in new_meta.get("citekey", "")
+        if not new_meta.get("publication_date") or not old_meta.get("s2_url") or had_unknown_author:
             try:
                 s2_data = semantic_scholar.lookup_paper(
                     doi=new_meta.get("doi", ""), title=doc["title"],
@@ -358,14 +380,18 @@ def _refresh_metadata() -> None:
                 if s2_data:
                     had_date = bool(new_meta.get("publication_date"))
                     semantic_scholar.enrich_metadata(new_meta, s2_data)
-                    if not had_date and new_meta.get("publication_date"):
+                    needs_regen = not had_date and new_meta.get("publication_date")
+                    if had_unknown_author and s2_data.get("authors"):
+                        needs_regen = True
+                        doc["authors"] = new_meta["authors"]
+                    if needs_regen:
                         new_meta["citekey"] = zotero_client._generate_citekey(
                             new_meta["authors"], new_meta["title"],
                             new_meta["publication_date"],
                         )
                         if not any_change:
                             print(f"  [{i}/{total}] \"{title[:50]}\"")
-                        print(f"    S2 filled date: {new_meta['publication_date']} -> citekey: {new_meta['citekey']}")
+                        print(f"    S2 enrichment -> citekey: {new_meta['citekey']}")
                         any_change = True
             except Exception:
                 log.debug("S2 lookup failed for '%s'", doc["title"], exc_info=True)
@@ -654,14 +680,18 @@ def _status() -> None:
 
     # List queue papers (up to 10)
     if queue:
-        sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""))
+        sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)
         for doc in sorted_queue[:10]:
             age = ""
             uploaded = doc.get("uploaded_at", "")
             if uploaded:
                 try:
-                    days = (now - datetime.fromisoformat(uploaded)).days
-                    age = f" ({days}d)"
+                    delta = now - datetime.fromisoformat(uploaded)
+                    if delta.days < 1:
+                        hours = int(delta.total_seconds() // 3600)
+                        age = f" ({hours}h)"
+                    else:
+                        age = f" ({delta.days}d)"
                 except (ValueError, TypeError):
                     pass
             ck = doc.get("metadata", {}).get("citekey", "")
@@ -1529,6 +1559,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     # Semantic Scholar enrichment
     try:
         had_date = bool(meta.get("publication_date"))
+        had_unknown_author = "unknown" in meta.get("citekey", "")
         s2_data = semantic_scholar.lookup_paper(
             doi=meta.get("doi", ""), title=title,
             url=meta.get("url", ""),
@@ -1539,12 +1570,17 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 "S2: %d citations",
                 s2_data["citation_count"],
             )
-            # Regenerate citekey if S2 filled a missing date
-            if not had_date and meta.get("publication_date"):
+            # Regenerate citekey if S2 filled a missing date or unknown author
+            needs_regen = (not had_date and meta.get("publication_date"))
+            if had_unknown_author and s2_data.get("authors"):
+                needs_regen = True
+                # Also update top-level authors list
+                authors = meta["authors"]
+            if needs_regen:
                 meta["citekey"] = zotero_client._generate_citekey(
                     meta["authors"], meta["title"], meta["publication_date"],
                 )
-                log.info("Regenerated citekey with S2 date: %s", meta["citekey"])
+                log.info("Regenerated citekey after S2 enrichment: %s", meta["citekey"])
     except Exception:
         log.debug("S2 lookup failed for '%s'", title, exc_info=True)
 
