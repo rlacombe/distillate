@@ -426,6 +426,14 @@ def _handle_turn(
         if not tool_uses:
             break  # Pure text response, done
 
+        # If text was streamed before tool use, add a blank line so the
+        # tool spinner doesn't sit right against the previous text.
+        has_text = any(
+            hasattr(b, "text") for b in response.content if b.type == "text"
+        )
+        if stream and has_text:
+            print()
+
         # Execute tools with spinner (reuses the same line)
         tool_results = []
         for tool_use in tool_uses:
