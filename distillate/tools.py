@@ -244,6 +244,24 @@ TOOL_SCHEMAS = [
             "required": ["identifiers"],
         },
     },
+    {
+        "name": "get_trending_papers",
+        "description": (
+            "Fetch today's trending AI/ML papers from HuggingFace Daily Papers. "
+            "Returns titles, authors, upvotes, AI-generated summaries, and keywords. "
+            "Use when the user asks about trending research or wants paper recommendations "
+            "beyond their own library."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max papers to return (default 10)",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -622,3 +640,25 @@ def promote_papers(*, state, identifiers: List[str]) -> dict:
         return {"success": False, "error": str(e)}
     finally:
         release_lock()
+
+
+def get_trending_papers(*, state, limit: int = 10) -> dict:
+    """Fetch today's trending AI/ML papers from HuggingFace."""
+    from distillate import huggingface
+
+    papers = huggingface.trending_papers(limit=limit)
+    results = []
+    for p in papers:
+        entry = {
+            "title": p["title"],
+            "authors": p["authors"][:3],
+            "upvotes": p["upvotes"],
+            "ai_summary": p["ai_summary"],
+            "ai_keywords": p["ai_keywords"],
+            "hf_url": p["hf_url"],
+        }
+        if p.get("github_repo"):
+            entry["github_repo"] = p["github_repo"]
+            entry["github_stars"] = p.get("github_stars")
+        results.append(entry)
+    return {"papers": results, "total": len(results)}

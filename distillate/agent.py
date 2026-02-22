@@ -138,6 +138,7 @@ _TOOL_LABELS = {
     "run_sync": "Firing up the furnace",
     "reprocess_paper": "Re-extracting the essence",
     "promote_papers": "Promoting to the shelf",
+    "get_trending_papers": "Scanning the latest papers",
 }
 
 
@@ -501,6 +502,7 @@ def _execute_tool(name: str, input_data: dict, state: State) -> dict:
         "run_sync": tools.run_sync,
         "reprocess_paper": tools.reprocess_paper,
         "promote_papers": tools.promote_papers,
+        "get_trending_papers": tools.get_trending_papers,
     }
 
     fn = dispatch.get(name)
