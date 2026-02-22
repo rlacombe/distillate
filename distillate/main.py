@@ -2658,15 +2658,6 @@ def main():
                 try:
                     pdf_bytes = None
 
-                    # Re-check Zotero for a PDF attachment (user may have
-                    # added one since the paper was first imported)
-                    if not att_key:
-                        fresh_att = zotero_client.get_pdf_attachment(item_key)
-                        if fresh_att:
-                            att_key = fresh_att["key"]
-                            doc["zotero_attachment_key"] = att_key
-                            log.info("Found new PDF attachment for '%s'", title)
-
                     # Try Zotero cloud first (if we have an attachment key)
                     if att_key:
                         try:
@@ -2677,6 +2668,23 @@ def main():
                                 log.info("PDF still not synced in Zotero for '%s'", title)
                             else:
                                 raise
+
+                    # Re-check Zotero children for a newer PDF attachment
+                    # (user may have added one, or original was a linked URL)
+                    if pdf_bytes is None:
+                        fresh_att = zotero_client.get_pdf_attachment(item_key)
+                        if fresh_att and fresh_att["key"] != att_key:
+                            att_key = fresh_att["key"]
+                            doc["zotero_attachment_key"] = att_key
+                            log.info("Found new PDF attachment for '%s'", title)
+                            try:
+                                pdf_bytes = zotero_client.download_pdf(att_key)
+                                log.info("PDF now available for '%s' (%d bytes)", title, len(pdf_bytes))
+                            except requests.exceptions.HTTPError as e:
+                                if e.response is not None and e.response.status_code == 404:
+                                    log.info("New attachment also has no file for '%s'", title)
+                                else:
+                                    raise
 
                     # Fall back to WebDAV
                     if pdf_bytes is None and att_key:
