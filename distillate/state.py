@@ -66,6 +66,10 @@ class State:
     def __init__(self) -> None:
         self._data = _load_raw()
 
+    def reload(self) -> None:
+        """Re-read state from disk (picks up changes from concurrent sync)."""
+        self._data = _load_raw()
+
     def save(self) -> None:
         _save_raw(self._data)
 

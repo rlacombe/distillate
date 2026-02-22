@@ -2476,11 +2476,13 @@ except Exception:
     _VERSION = "0.0.0"
 
 _HELP = """\
-Usage: distillate [command]
+Usage: distillate [question]
 
-  distillate              Sync papers: Zotero -> reMarkable -> notes
+  distillate              Open the interactive agent (requires API key)
+  distillate "question"   Ask a single question, then exit
 
 Commands:
+  --sync                  Sync papers: Zotero -> reMarkable -> notes
   --import                Import existing papers from Zotero
   --status                Show queue health and reading stats
   --list                  List all tracked papers
@@ -2507,7 +2509,7 @@ Options:
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--init", "--register",
     "--status", "--list", "--remove", "--import", "--reprocess",
-    "--digest", "--schedule", "--send-digest",
+    "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
 }
@@ -2598,12 +2600,25 @@ def main():
         _sync_state()
         return
 
-    # Catch unknown flags before falling through to the sync loop
+    # Catch unknown flags before falling through
     unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in _KNOWN_FLAGS]
     if unknown:
         print(f"Unknown option: {unknown[0]}")
         print("Run 'distillate --help' for available commands.")
         sys.exit(1)
+
+    # Positional args (not flags) → single-turn agent query
+    positional = [a for a in sys.argv[1:] if not a.startswith("-")]
+    if positional:
+        from distillate.agent import run_chat
+        run_chat(positional)
+        return
+
+    # No flags, no positional args → agent (TTY) or sync (non-TTY / --sync)
+    if "--sync" not in sys.argv and sys.stdin.isatty() and sys.stdout.isatty():
+        from distillate.agent import run_chat
+        run_chat()
+        return
 
     from distillate import zotero_client
     from distillate import remarkable_client
