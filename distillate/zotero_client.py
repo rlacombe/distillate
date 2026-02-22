@@ -301,6 +301,13 @@ def download_pdf_from_url(url: str) -> Optional[bytes]:
     if m:
         pdf_url = f"https://arxiv.org/pdf/{m.group(1)}.pdf"
 
+    # arxiv direct PDF link: https://arxiv.org/pdf/XXXX or .pdf
+    if not pdf_url:
+        m = _re.search(r"arxiv\.org/pdf/([\d.]+)", url)
+        if m:
+            arxiv_id = m.group(1)
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
     # biorxiv/medrxiv: .../content/ID -> .../content/ID.full.pdf
     if not pdf_url:
         m = _re.search(r"(bio|med)rxiv\.org/content/([\d./v]+)", url)
@@ -308,6 +315,10 @@ def download_pdf_from_url(url: str) -> Optional[bytes]:
             base = url.rstrip("/")
             if not base.endswith(".pdf"):
                 pdf_url = f"{base}.full.pdf"
+
+    # Direct PDF link (any URL ending in .pdf)
+    if not pdf_url and url.rstrip("/").lower().endswith(".pdf"):
+        pdf_url = url
 
     if not pdf_url:
         return None
@@ -438,8 +449,9 @@ def create_paper(
     if publication_date:
         item["date"] = publication_date
 
-    # Add inbox tag so the sync loop picks it up
-    item["tags"].append({"tag": config.ZOTERO_TAG_INBOX})
+    # Do NOT add the inbox tag here — filter_new_papers() skips items
+    # that already have workflow tags.  The sync loop adds the inbox tag
+    # in _upload_paper() after processing.
 
     resp = _post("/items", json=[item])
     result = resp.json()
