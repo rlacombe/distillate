@@ -128,7 +128,7 @@ def _build_system_prompt(state: State) -> str:
         "- Show paper [index] numbers for easy reference.\n"
         "- **Bold paper titles** with markdown **title** for readability.\n"
         "- Use one or two subtle chemistry/alchemy emojis per response "
-        "(\u2697\ufe0f \ud83e\uddea \ud83d\udd2c \u2728 \ud83d\udcdc) \u2014 never more. "
+        "(\u2697\ufe0f \U0001F9EA \U0001F52C \u2728 \U0001F4DC) \u2014 never more. "
         "Don't force them.\n"
         "- Confirm with the user before write operations (sync, reprocess, "
         "promote).\n"
