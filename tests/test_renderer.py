@@ -193,8 +193,6 @@ class TestRecoverFromPdf:
 
     def test_recovers_missing_spaces(self, tmp_path):
         """When PDF text has proper spacing, it replaces the concatenated OCR text."""
-        import io
-        import json
         import zipfile
         import pymupdf
         from distillate.renderer import _recover_from_pdf
