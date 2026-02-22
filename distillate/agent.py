@@ -54,6 +54,57 @@ def _dim(text: str) -> str:
         return f"{_DIM}{text}{_RESET}"
     return text
 
+
+def _bold_ansi() -> str:
+    """Return the ANSI escape for bold (background-aware)."""
+    if _is_dark_background():
+        return "\033[1;97m"
+    return "\033[1m"
+
+
+class _StreamFormatter:
+    """Convert **bold** markdown markers to ANSI bold in streamed text.
+
+    Handles ** split across chunk boundaries with a one-char buffer.
+    """
+
+    def __init__(self) -> None:
+        self._in_bold = False
+        self._pending_star = False
+
+    def feed(self, text: str) -> str:
+        """Process a chunk, return ANSI-formatted output."""
+        if not _is_tty():
+            return text
+        out: list[str] = []
+        for ch in text:
+            if self._pending_star:
+                self._pending_star = False
+                if ch == "*":
+                    # Got ** → toggle bold
+                    self._in_bold = not self._in_bold
+                    out.append(_bold_ansi() if self._in_bold else _RESET)
+                    continue
+                # Single * → emit the buffered star, then this char
+                out.append("*")
+                out.append(ch)
+                continue
+            if ch == "*":
+                self._pending_star = True
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Flush any buffered character at end of stream."""
+        if self._pending_star:
+            self._pending_star = False
+            return "*"
+        if self._in_bold:
+            self._in_bold = False
+            return _RESET
+        return ""
+
 # Use the configured smart model (Sonnet by default)
 _AGENT_MODEL = None  # resolved lazily after config is loaded
 
@@ -278,9 +329,11 @@ def _handle_turn(
                     tools=tools,
                 )
                 # Print text blocks for single-turn mode
+                fmt = _StreamFormatter()
                 for block in response.content:
                     if hasattr(block, "text"):
-                        print(block.text)
+                        print(fmt.feed(block.text), end="")
+                print(fmt.flush())
         except KeyboardInterrupt:
             print("\n  (interrupted)")
             return
@@ -316,6 +369,7 @@ def _handle_turn(
 def _stream_response(client, system_prompt, conversation, tools):
     """Stream response text to terminal, return complete response."""
     print()  # blank line before response
+    fmt = _StreamFormatter()
 
     with client.messages.stream(
         model=_get_model(),
@@ -327,7 +381,8 @@ def _stream_response(client, system_prompt, conversation, tools):
         for event in stream:
             if hasattr(event, "type") and event.type == "content_block_delta":
                 if hasattr(event.delta, "text"):
-                    print(event.delta.text, end="", flush=True)
+                    print(fmt.feed(event.delta.text), end="", flush=True)
+        print(fmt.flush(), end="")
         print()  # newline after streamed text
         return stream.get_final_message()
 
