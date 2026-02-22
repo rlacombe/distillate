@@ -221,6 +221,29 @@ TOOL_SCHEMAS = [
             "required": ["identifier"],
         },
     },
+    {
+        "name": "promote_papers",
+        "description": (
+            "Promote papers to the reMarkable tablet home screen so they're "
+            "easy to find and read next. Demotes previously promoted papers "
+            "back to Inbox (unless the user started reading them). "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of paper identifiers (index numbers, citekeys, "
+                        "or titles) to promote"
+                    ),
+                },
+            },
+            "required": ["identifiers"],
+        },
+    },
 ]
 
 
@@ -556,3 +579,46 @@ def reprocess_paper(*, state, identifier: str) -> dict:
     except Exception as e:
         log.exception("Reprocess failed for '%s'", title)
         return {"success": False, "error": str(e), "title": title}
+
+
+def promote_papers(*, state, identifiers: List[str]) -> dict:
+    """Promote papers to the reMarkable tablet home screen."""
+    from distillate.state import acquire_lock, release_lock
+
+    # Resolve identifiers to item keys
+    pick_keys = []
+    resolved_titles = []
+    errors = []
+
+    for ident in identifiers:
+        matches = _find_papers_from_state(ident, state)
+        if not matches:
+            errors.append(f"No paper found matching '{ident}'")
+            continue
+        key, doc = matches[0]
+        if doc.get("status") != "on_remarkable":
+            errors.append(f"'{doc.get('title', ident)}' is not on reMarkable (status: {doc.get('status')})")
+            continue
+        pick_keys.append(key)
+        resolved_titles.append(doc.get("title", ""))
+
+    if not pick_keys:
+        return {"success": False, "promoted": [], "errors": errors}
+
+    if not acquire_lock():
+        return {"success": False, "error": "Another distillate instance is running."}
+
+    try:
+        from distillate.main import _demote_and_promote
+        _demote_and_promote(state, pick_keys, verbose=False)
+        state.reload()
+        return {
+            "success": True,
+            "promoted": resolved_titles,
+            "errors": errors if errors else [],
+        }
+    except Exception as e:
+        log.exception("Promote failed")
+        return {"success": False, "error": str(e)}
+    finally:
+        release_lock()

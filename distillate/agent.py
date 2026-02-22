@@ -284,6 +284,7 @@ def _execute_tool(name: str, input_data: dict, state: State) -> dict:
         "synthesize_across_papers": tools.synthesize_across_papers,
         "run_sync": tools.run_sync,
         "reprocess_paper": tools.reprocess_paper,
+        "promote_papers": tools.promote_papers,
     }
 
     fn = dispatch.get(name)

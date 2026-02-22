@@ -308,7 +308,7 @@ class TestSynthesizeAcrossPapers:
 class TestToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.tools import TOOL_SCHEMAS
-        assert len(TOOL_SCHEMAS) == 9
+        assert len(TOOL_SCHEMAS) == 10
         for schema in TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
