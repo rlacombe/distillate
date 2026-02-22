@@ -29,6 +29,7 @@ def obs_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OBSIDIAN_VAULT_NAME", "Notes")
     monkeypatch.setattr(config, "OBSIDIAN_PAPERS_FOLDER", "Distillate")
     monkeypatch.setattr(config, "OUTPUT_PATH", "")
+    monkeypatch.setattr(config, "PDF_SUBFOLDER", "pdf")
     return tmp_path / "vault" / "Distillate"
 
 
@@ -42,17 +43,19 @@ class TestRenamePaperFiles:
         from distillate import obsidian
 
         saved = obs_env / "Saved"
+        pdf_dir = saved / "pdf"
         saved.mkdir(parents=True)
+        pdf_dir.mkdir(parents=True)
         (saved / "amodei_machines.md").write_text("# Note")
-        (saved / "amodei_machines.pdf").write_bytes(b"PDF")
+        (pdf_dir / "amodei_machines.pdf").write_bytes(b"PDF")
 
         result = obsidian.rename_paper("Machines", "amodei_machines", "amodei_machines_2025")
 
         assert result is True
         assert (saved / "amodei_machines_2025.md").exists()
-        assert (saved / "amodei_machines_2025.pdf").exists()
+        assert (pdf_dir / "amodei_machines_2025.pdf").exists()
         assert not (saved / "amodei_machines.md").exists()
-        assert not (saved / "amodei_machines.pdf").exists()
+        assert not (pdf_dir / "amodei_machines.pdf").exists()
 
     def test_skip_when_target_exists(self, obs_env):
         """Don't overwrite if target file already exists."""

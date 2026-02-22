@@ -28,6 +28,7 @@ def obs_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
     monkeypatch.setattr(config, "OUTPUT_PATH", str(tmp_path))
+    monkeypatch.setattr(config, "PDF_SUBFOLDER", "pdf")
     return tmp_path
 
 

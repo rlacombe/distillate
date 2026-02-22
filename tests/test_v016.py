@@ -234,12 +234,12 @@ class TestListCommand:
         assert "Attention Is All You Need" in output
         assert "Scaling Laws" in output
 
-    def test_list_shows_first_author(self, capsys, populated_state):
+    def test_list_shows_title_and_index(self, capsys, populated_state):
         from distillate.main import _list
         _list()
         output = capsys.readouterr().out
-        # "Vaswani, A." -> split(",")[0] = "Vaswani" -> split()[-1] = "Vaswani"
-        assert "Vaswani" in output
+        assert "Attention Is All You Need" in output
+        assert "[1]" in output
 
     def test_list_handles_empty_author(self, capsys):
         """Edge case: author is empty string."""

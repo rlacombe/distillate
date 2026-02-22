@@ -28,17 +28,21 @@ def summarize_read_paper(
     if not config.ANTHROPIC_API_KEY:
         return _fallback_read(title, abstract, key_learnings)
 
-    if not abstract:
+    # Need at least an abstract or key learnings to generate a summary
+    if not abstract and not key_learnings:
         return _fallback_read(title, abstract, key_learnings)
 
-    context = f"Abstract: {abstract}"
+    context_parts = []
+    if abstract:
+        context_parts.append(f"Abstract: {abstract}")
     if key_learnings:
-        context += "\n\nKey takeaways:\n" + "\n".join(f"- {item}" for item in key_learnings)
+        context_parts.append("Key takeaways:\n" + "\n".join(f"- {item}" for item in key_learnings))
     if reader_notes:
-        context += (
-            "\n\nReader's handwritten margin notes:\n"
+        context_parts.append(
+            "Reader's handwritten margin notes:\n"
             + "\n".join(f"- {n}" for n in reader_notes)
         )
+    context = "\n\n".join(context_parts)
 
     notes_instruction = ""
     if reader_notes:
@@ -50,16 +54,24 @@ def summarize_read_paper(
     prompt = (
         f"You are summarizing a research paper for a personal reading log.\n\n"
         f"Paper: {title}\n\n{context}\n\n"
-        f"Provide two things, separated by the exact line '---':\n"
-        f"1. A paragraph (3-4 sentences) summarizing the paper. Describe what it "
-        f"does, its methods, and findings. State ideas directly as fact — never "
-        f"start with 'this paper' or 'the authors'. Include specific methods, "
-        f"results, or numbers where possible.{notes_instruction}\n"
-        f"2. ONE sentence (max 20 words) explaining why this work matters — "
-        f"what it enables, changes, or makes possible. Focus on the real-world "
-        f"impact or implication, not what the paper 'does' or 'claims'. "
-        f"Written so a well-educated non-specialist can understand it.\n\n"
-        f"Format:\n[paragraph]\n---\n[one sentence]"
+        f"Provide two things, separated by the exact line '---':\n\n"
+        f"1. A paragraph (3-5 sentences) that a well-educated non-specialist "
+        f"can understand without having read the paper. Structure it as: "
+        f"(a) the problem or gap being addressed, (b) the approach or key idea, "
+        f"(c) the main result or finding. Expand every acronym and technical "
+        f"term on first use (e.g. 'linear mixed models (LMMs)'). Include "
+        f"specific numbers, comparisons, or benchmarks when available. State "
+        f"ideas directly as fact — never start with 'this paper' or 'the "
+        f"authors'.{notes_instruction}\n\n"
+        f"2. ONE or TWO sentences (max 280 characters) that answer: why does "
+        f"this work matter? What changes because of it? What's the key "
+        f"argument or insight? Stay at the level of the big idea — do NOT "
+        f"drop into specific technical details or examples. The sentence "
+        f"must be fully self-contained: no pronouns or demonstratives that "
+        f"refer back to the paragraph (no 'this', 'these', 'such', 'it'). "
+        f"No acronyms. A reader seeing ONLY this sentence must understand "
+        f"it.\n\n"
+        f"Format:\n[paragraph]\n---\n[one or two sentences]"
     )
 
     result = _call_claude(prompt, model=config.CLAUDE_SMART_MODEL)
@@ -124,8 +136,10 @@ def extract_insights(
         f"{context}\n\n"
         f"{notes_instruction}"
         f"Return 4-6 bullet points:\n"
-        f"- First 3-5: key facts or insights. Each one short sentence "
-        f"(max 15 words). State facts directly, no filler.\n"
+        f"- First 3-5: key facts, methods, or findings. Each one short "
+        f"sentence (max 15 words). State facts directly, no filler. "
+        f"Expand important acronyms on first use. Each bullet must add "
+        f"distinct information — no two bullets should say the same thing.\n"
         f"- Last bullet: a 'So what?' — why this work matters, what it "
         f"enables, or what changes because of it. One sentence, max 20 words. "
         f"Be concrete and specific, not generic.\n\n"
@@ -144,11 +158,13 @@ def extract_insights(
         line = line.strip()
         if not line:
             continue
-        cleaned = re.sub(r"^\d+[.)]\s*", "", line)
+        cleaned = re.sub(r"^#{1,3}\s+", "", line)  # strip markdown headers
+        cleaned = re.sub(r"^\d+[.)]\s*", "", cleaned)
         cleaned = re.sub(r"^[-*]\s*", "", cleaned)
         cleaned = re.sub(r"^\*\*.*?\*\*\s*", "", cleaned)
-        cleaned = re.sub(r"^(LEARNINGS|SO WHAT):?\s*", "", cleaned, flags=re.IGNORECASE)
-        if cleaned:
+        cleaned = re.sub(r"^(LEARNINGS|SO WHAT|KEY POINTS?):?\s*", "", cleaned, flags=re.IGNORECASE)
+        if cleaned and not re.match(r'^["\'"].+["\']\s*[-–—]\s*', cleaned):
+            # Skip lines that are just paper titles: "Title" — subtitle
             learnings.append(cleaned)
 
     return learnings[:6]

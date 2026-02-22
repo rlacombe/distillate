@@ -707,8 +707,13 @@ def _generate_citekey(authors: list, title: str, date: str) -> str:
 
     surname = "unknown"
     if authors:
-        # Extract surname: take part before comma (e.g. "Doe, J." → "Doe")
-        raw = authors[0].split(",")[0].strip()
+        first = authors[0].strip()
+        if "," in first:
+            # Zotero format: "Doe, J." → surname is before comma
+            raw = first.split(",")[0].strip()
+        else:
+            # S2/natural format: "Morgan Kindel" → surname is last word
+            raw = first.rsplit(None, 1)[-1] if " " in first else first
         raw = _normalize_ascii(raw)
         surname = re.sub(r"[^a-z]", "", raw.lower()) or "unknown"
 
@@ -734,6 +739,22 @@ def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
     # Strip journal suffix added by some Zotero translators (e.g. "Title | Science")
     if " | " in title:
         title = title.rsplit(" | ", 1)[0].strip()
+    # Strip ": JournalName" suffix (e.g. "Title: Neuron" from Cell/Elsevier web clipper)
+    journal_name = (
+        data.get("publicationTitle")
+        or data.get("proceedingsTitle")
+        or data.get("bookTitle")
+        or ""
+    )
+    if journal_name and title.endswith(": " + journal_name):
+        title = title[: -(len(journal_name) + 2)].strip()
+    elif ": " in title:
+        # Fallback: strip trailing ": Word" when Word matches the URL's domain
+        # (handles broken web clipper saves like "Title: Neuron" from cell.com/neuron/)
+        suffix = title.rsplit(": ", 1)[1]
+        url = data.get("url", "")
+        if suffix and "/" + suffix.lower() + "/" in url.lower():
+            title = title.rsplit(": ", 1)[0].strip()
     # Strip author prefix (e.g. "Dario Amodei — Title" → "Title")
     if " — " in title:
         prefix, rest = title.split(" — ", 1)
@@ -773,11 +794,21 @@ def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
             citekey = line.split(":", 1)[1].strip()
             break
 
+    publication_date = data.get("date", "")
+    # Fallback: extract year from DOI when Zotero date is empty
+    # Matches patterns like chemrxiv-2026-xxx or preprint DOIs with embedded year
+    if not publication_date:
+        doi = data.get("DOI", "")
+        if doi:
+            import re as _re
+            m = _re.search(r"[/-](20[12]\d)-", doi)
+            if m:
+                publication_date = m.group(1)
+
     # Fallback: generate citekey from first author + first title word + year
     if not citekey:
-        citekey = _generate_citekey(authors, title, data.get("date", ""))
+        citekey = _generate_citekey(authors, title, publication_date)
 
-    publication_date = data.get("date", "")
     return {
         "title": title,
         "authors": authors,

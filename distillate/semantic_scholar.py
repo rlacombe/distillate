@@ -16,7 +16,7 @@ from distillate import config
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.semanticscholar.org"
-_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year,fieldsOfStudy"
+_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year,fieldsOfStudy,authors"
 
 # Delay between API calls to avoid rate limits (free tier: ~1 req/sec)
 _REQUEST_DELAY = 1.5
@@ -56,6 +56,9 @@ def lookup_paper(
     influential = paper.get("influentialCitationCount") or 0
     s2_url = paper.get("url") or ""
 
+    # Extract author names (S2 returns [{"authorId": ..., "name": "First Last"}, ...])
+    s2_authors = [a["name"] for a in (paper.get("authors") or []) if a.get("name")]
+
     return {
         "citation_count": citation_count,
         "influential_citation_count": influential,
@@ -64,6 +67,7 @@ def lookup_paper(
         "venue": paper.get("venue") or "",
         "year": paper.get("year") or 0,
         "fields_of_study": paper.get("fieldsOfStudy") or [],
+        "authors": s2_authors,
     }
 
 
@@ -79,10 +83,23 @@ def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, 
     meta["influential_citation_count"] = s2_data["influential_citation_count"]
     meta["s2_url"] = s2_data["s2_url"]
 
+    # Fill missing or unknown authors
+    existing_authors = meta.get("authors") or []
+    is_unknown = (
+        not existing_authors
+        or (len(existing_authors) == 1 and existing_authors[0].strip().lower() in ("", "unknown"))
+    )
+    if is_unknown and s2_data.get("authors"):
+        meta["authors"] = s2_data["authors"]
+        log.info("S2 filled authors: %s", s2_data["authors"])
+
     # Fill gaps only
-    if not meta.get("publication_date") and s2_data.get("publication_date"):
-        meta["publication_date"] = s2_data["publication_date"]
-        log.info("S2 filled publication_date: %s", s2_data["publication_date"])
+    s2_date = s2_data.get("publication_date") or ""
+    if not s2_date and s2_data.get("year"):
+        s2_date = str(s2_data["year"])
+    if not meta.get("publication_date") and s2_date:
+        meta["publication_date"] = s2_date
+        log.info("S2 filled publication_date: %s", s2_date)
 
     if not meta.get("journal") and s2_data.get("venue"):
         meta["journal"] = s2_data["venue"]

@@ -15,6 +15,73 @@ import requests
 
 log = logging.getLogger("distillate")
 
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+
+def _is_dark_background() -> bool:
+    """Guess if the terminal has a dark background.
+
+    Checks COLORFGBG (set by many terminals: 'fg;bg', bg>=8 is dark)
+    and common dark-theme env hints. Defaults to True (most terminals).
+    """
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if colorfgbg:
+        try:
+            bg = int(colorfgbg.rsplit(";", 1)[-1])
+            return bg < 8  # 0-7 are dark ANSI colors
+        except (ValueError, IndexError):
+            pass
+    # Common dark terminal indicators
+    if os.environ.get("TERM_PROGRAM") in ("iTerm.app", "Hyper", "Alacritty"):
+        return True
+    return True  # most terminals default dark
+
+
+def _bold(text: str) -> str:
+    """Wrap text in bold, bright white on dark backgrounds."""
+    if sys.stdout.isatty():
+        if _is_dark_background():
+            return f"\033[1;97m{text}{_RESET}"
+        return f"\033[1m{text}{_RESET}"
+    return text
+
+
+def _dim(text: str) -> str:
+    """Wrap text in ANSI dim, only when stdout is a TTY."""
+    if sys.stdout.isatty():
+        return f"{_DIM}{text}{_RESET}"
+    return text
+
+
+def _find_papers(query: str, state) -> list[tuple[str, dict]]:
+    """Resolve a query to a list of (item_key, doc) matches.
+
+    Tries (in order): index number, exact citekey, citekey substring,
+    then title substring.
+    """
+    query = query.strip().strip('"').strip("'")
+
+    # Try index number
+    if query.isdigit():
+        idx = int(query)
+        key = state.key_for_index(idx)
+        if key:
+            doc = state.get_document(key)
+            if doc:
+                return [(key, doc)]
+
+    query_lower = query.lower()
+    matches = []
+    for key, doc in state.documents.items():
+        ck = doc.get("metadata", {}).get("citekey", "")
+        if ck and ck.lower() == query_lower:
+            return [(key, doc)]  # exact citekey match
+        if (query_lower in ck.lower()
+                or query_lower in doc.get("title", "").lower()):
+            matches.append((key, doc))
+    return matches
+
 
 def _compute_engagement(
     highlights: dict | None, page_count: int,
@@ -58,15 +125,19 @@ def _reprocess(args: list[str]) -> None:
         print("No processed papers to reprocess.")
         return
 
-    # Filter to specific title if provided
+    # Filter by index, citekey, or title substring
     if args:
-        query = " ".join(args).lower()
-        matches = [d for d in processed if query in d["title"].lower()]
+        query = " ".join(args)
+        matches = _find_papers(query, state)
         if not matches:
-            print(f"No processed paper matching '{' '.join(args)}'")
-            print("Processed papers: " + ", ".join(d["title"] for d in processed))
+            print(f"No paper matching '{query}'")
             return
-        processed = matches
+        # Only keep processed papers from matches
+        match_keys = {k for k, _ in matches}
+        processed = [d for d in processed if d["zotero_item_key"] in match_keys]
+        if not processed:
+            print(f"No processed paper matching '{query}'")
+            return
 
     print(f"Reprocessing {len(processed)} paper(s)...")
 
@@ -294,7 +365,18 @@ def _backfill_s2() -> None:
             url=meta.get("url", ""),
         )
         if s2_data:
+            had_unknown = "unknown" in meta.get("citekey", "")
+            had_date = bool(meta.get("publication_date"))
             semantic_scholar.enrich_metadata(meta, s2_data)
+            # Regenerate citekey if S2 filled missing author or date
+            needs_regen = not had_date and meta.get("publication_date")
+            if had_unknown and s2_data.get("authors"):
+                needs_regen = True
+                doc["authors"] = meta["authors"]
+            if needs_regen:
+                meta["citekey"] = zotero_client._generate_citekey(
+                    meta["authors"], meta["title"], meta["publication_date"],
+                )
             print(f"  S2 enriched '{doc['title']}': {s2_data['citation_count']} citations")
         else:
             print(f"  S2: no data found for '{doc['title']}'")
@@ -306,11 +388,11 @@ def _backfill_s2() -> None:
     print(f"Backfilled S2 data for {count} paper(s).")
 
 
-def _refresh_metadata() -> None:
-    """Re-extract metadata from Zotero for all tracked papers.
+def _refresh_metadata(args: list[str] | None = None) -> None:
+    """Re-extract metadata from Zotero for tracked papers.
 
-    Detects citekey changes (e.g. from date format fixes) and renames
-    note/PDF files accordingly.
+    With no arguments, refreshes all papers. Pass a citekey, index number,
+    or title substring to refresh a single paper.
     """
     from distillate import config, zotero_client, obsidian, semantic_scholar
     from distillate.state import State
@@ -318,7 +400,25 @@ def _refresh_metadata() -> None:
     config.setup_logging()
 
     state = State()
-    keys = list(state.documents.keys())
+
+    if args:
+        query = " ".join(args)
+        matches = _find_papers(query, state)
+        if not matches:
+            print(f"\n  No paper matching '{query}'.\n")
+            return
+        if len(matches) > 1:
+            print(f"\n  Multiple papers match '{query}':")
+            for key, doc in matches:
+                idx = state.index_of(key)
+                ck = doc.get("metadata", {}).get("citekey", "")
+                print(f"    [{idx}] {doc['title']} ({ck})")
+            print("  Be more specific.\n")
+            return
+        keys = [matches[0][0]]
+    else:
+        keys = list(state.documents.keys())
+
     if not keys:
         print("No tracked papers.")
         return
@@ -342,8 +442,19 @@ def _refresh_metadata() -> None:
         new_meta = zotero_client.extract_metadata(item)
         any_change = False
 
-        # Re-query S2 for papers missing date or citation data
-        if not new_meta.get("publication_date") or not old_meta.get("s2_url"):
+        # Preserve S2-filled authors when Zotero has none
+        new_authors = new_meta.get("authors") or []
+        old_authors = old_meta.get("authors") or []
+        zotero_has_no_authors = not new_authors or new_authors == ["Unknown"]
+        if zotero_has_no_authors and old_authors and old_authors != ["Unknown"]:
+            new_meta["authors"] = old_authors
+            new_meta["citekey"] = zotero_client._generate_citekey(
+                old_authors, new_meta["title"], new_meta.get("publication_date", ""),
+            )
+
+        # Re-query S2 for papers missing date, citation data, or authors
+        had_unknown_author = "unknown" in new_meta.get("citekey", "")
+        if not new_meta.get("publication_date") or not old_meta.get("s2_url") or had_unknown_author:
             try:
                 s2_data = semantic_scholar.lookup_paper(
                     doi=new_meta.get("doi", ""), title=doc["title"],
@@ -352,14 +463,18 @@ def _refresh_metadata() -> None:
                 if s2_data:
                     had_date = bool(new_meta.get("publication_date"))
                     semantic_scholar.enrich_metadata(new_meta, s2_data)
-                    if not had_date and new_meta.get("publication_date"):
+                    needs_regen = not had_date and new_meta.get("publication_date")
+                    if had_unknown_author and s2_data.get("authors"):
+                        needs_regen = True
+                        doc["authors"] = new_meta["authors"]
+                    if needs_regen:
                         new_meta["citekey"] = zotero_client._generate_citekey(
                             new_meta["authors"], new_meta["title"],
                             new_meta["publication_date"],
                         )
                         if not any_change:
                             print(f"  [{i}/{total}] \"{title[:50]}\"")
-                        print(f"    S2 filled date: {new_meta['publication_date']} -> citekey: {new_meta['citekey']}")
+                        print(f"    S2 enrichment -> citekey: {new_meta['citekey']}")
                         any_change = True
             except Exception:
                 log.debug("S2 lookup failed for '%s'", doc["title"], exc_info=True)
@@ -381,15 +496,22 @@ def _refresh_metadata() -> None:
         new_title = new_meta.get("title", old_title)
 
         # Check for citekey change → rename Saved files
-        needs_rename = old_ck != new_ck
+        citekey_changed = old_ck != new_ck
+        needs_rename = citekey_changed
         # Also rename if file on disk doesn't match expected citekey
         if not needs_rename and new_ck and doc.get("status") == "processed":
             rd = obsidian._read_dir()
             if rd and not (rd / f"{new_ck}.md").exists():
                 needs_rename = True
-        if needs_rename and new_ck and doc.get("status") == "processed":
+        if citekey_changed and not any_change:
             print(f"  [{i}/{total}] \"{title[:50]}\"")
             print(f"    Citekey: {old_ck or '(title)'} -> {new_ck}")
+            any_change = True
+        if needs_rename and new_ck and doc.get("status") == "processed":
+            if not any_change:
+                print(f"  [{i}/{total}] \"{title[:50]}\"")
+                print(f"    Citekey: {old_ck or '(title)'} -> {new_ck}")
+                any_change = True
             obsidian.rename_paper(doc["title"], old_ck, new_ck)
 
             new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
@@ -397,9 +519,9 @@ def _refresh_metadata() -> None:
                 print("    Updating Obsidian link in Zotero")
                 zotero_client.update_obsidian_link(key, new_uri)
 
-            rd = obsidian._read_dir()
-            if rd:
-                new_pdf = rd / f"{new_ck}.pdf"
+            pd = obsidian._pdf_dir()
+            if pd:
+                new_pdf = pd / f"{new_ck}.pdf"
                 if new_pdf.exists():
                     print("    Updating linked PDF in Zotero")
                     zotero_client.update_linked_attachment_path(
@@ -648,19 +770,36 @@ def _status() -> None:
 
     # List queue papers (up to 10)
     if queue:
-        sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""))
+        sorted_queue = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)
         for doc in sorted_queue[:10]:
-            age = ""
+            idx = state.index_of(doc["zotero_item_key"])
+            ck = doc.get("metadata", {}).get("citekey", "")
+            # Date
+            date_str = ""
             uploaded = doc.get("uploaded_at", "")
             if uploaded:
                 try:
-                    days = (now - datetime.fromisoformat(uploaded)).days
-                    age = f" ({days}d)"
+                    dt = datetime.fromisoformat(uploaded)
+                    date_str = dt.strftime("%b %-d")
                 except (ValueError, TypeError):
                     pass
-            print(f"    - {doc['title']}{age}")
+            # Stats
+            stats = []
+            engagement = doc.get("engagement", 0)
+            highlight_count = doc.get("highlight_count", 0)
+            if engagement:
+                stats.append(f"{engagement}% engaged")
+            if highlight_count:
+                stats.append(f"{highlight_count} highlights")
+            stats_str = f" ({', '.join(stats)})" if stats else ""
+            detail = f"{date_str}{stats_str}"
+            if ck:
+                detail = f"{detail} - {ck}" if detail else ck
+            print(f"    {_dim(f'[{idx}]')} {_bold(doc['title'])}")
+            if detail:
+                print(f"        {_dim(detail)}")
         if len(queue) > 10:
-            print(f"    ... and {len(queue) - 10} more")
+            print(f"    {_dim(f'... and {len(queue) - 10} more')}")
 
     # Ready to process (in Read/ on reMarkable)
     try:
@@ -678,15 +817,16 @@ def _status() -> None:
     # Promoted (show last 3)
     promoted = state.promoted_papers
     if promoted:
-        titles = []
+        entries = []
         for key in promoted[-3:]:
             doc = state.get_document(key)
             if doc:
-                titles.append(doc["title"])
-        if titles:
-            print(f"  Promoted:  {titles[0]}")
-            for t in titles[1:]:
-                print(f"             {t}")
+                idx = state.index_of(key)
+                entries.append(f"{_dim(f'[{idx}]')} {_bold(doc['title'])}")
+        if entries:
+            print(f"  Promoted:  {entries[0]}")
+            for e in entries[1:]:
+                print(f"             {e}")
 
     # Last sync
     last_poll = state.last_poll_timestamp
@@ -705,11 +845,11 @@ def _status() -> None:
             else:
                 days = delta.days
                 ago = f"{days} day{'s' if days != 1 else ''} ago"
-            print(f"  Last sync: {ago}")
+            print(f"  {_dim(f'Last sync: {ago}')}")
         except (ValueError, TypeError):
             pass
     else:
-        print("  Last sync: never")
+        print(f"  {_dim('Last sync: never')}")
 
     # Reading stats
     week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
@@ -730,8 +870,8 @@ def _status() -> None:
         return f"{label}: {sep.join(parts)}"
 
     print()
-    print(f"  {_stats_line(week_papers, 'This week')}")
-    print(f"  {_stats_line(month_papers, 'This month')}")
+    print(f"  {_dim(_stats_line(week_papers, 'This week'))}")
+    print(f"  {_dim(_stats_line(month_papers, 'This month'))}")
 
     # Awaiting PDF (show titles with guidance)
     awaiting = state.documents_with_status("awaiting_pdf")
@@ -808,16 +948,18 @@ def _list() -> None:
         total += len(docs)
         print(f"  {label} ({len(docs)})")
         for doc in docs:
-            parts = [doc["title"]]
-            authors = doc.get("authors") or []
-            if authors and authors[0].strip():
-                first_author = authors[0].split(",")[0].split()[-1]
-                parts.append(first_author)
+            idx = state.index_of(doc["zotero_item_key"])
+            ck = doc.get("metadata", {}).get("citekey", "")
+            date_str = ""
             if status == "processed" and doc.get("processed_at"):
-                parts.append(doc["processed_at"][:10])
+                date_str = doc["processed_at"][:10]
             elif doc.get("uploaded_at"):
-                parts.append(doc["uploaded_at"][:10])
-            print(f"    - {' · '.join(parts)}")
+                date_str = doc["uploaded_at"][:10]
+            detail = " \u00b7 ".join(p for p in [date_str, ck] if p)
+            idx_str = f"{_dim(f'[{idx}]')} " if idx else ""
+            print(f"    {idx_str}{doc['title']}")
+            if detail:
+                print(f"      {_dim(detail)}")
         if status == "awaiting_pdf":
             print("    Sync the PDF in Zotero, then re-run distillate.")
         print()
@@ -836,17 +978,12 @@ def _remove(args: list[str]) -> None:
     config.setup_logging()
 
     if not args:
-        print("Usage: distillate --remove \"Paper Title\"")
+        print("Usage: distillate --remove <title|citekey|index>")
         return
 
-    query = " ".join(args).strip().strip('"').strip("'")
+    query = " ".join(args)
     state = State()
-    query_lower = query.lower()
-
-    matches = []
-    for key, doc in state.documents.items():
-        if query_lower in doc.get("title", "").lower():
-            matches.append((key, doc))
+    matches = _find_papers(query, state)
 
     if not matches:
         print(f"\n  No papers matching '{query}'.\n")
@@ -927,10 +1064,17 @@ def _print_digest() -> None:
             stats.append(f"{citation_count:,} citations")
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
+        ck = p.get("metadata", {}).get("citekey", "")
+        idx = state.index_of(p["zotero_item_key"])
+        idx_str = f"{_dim(f'[{idx}]')} " if idx else ""
+
         print()
-        print(f"  {title}")
-        if date_str or stats_str:
-            print(f"    {date_str}{stats_str}")
+        print(f"  {idx_str}{_bold(title)}")
+        detail = f"{date_str}{stats_str}"
+        if ck:
+            detail = f"{detail} \u00b7 {ck}" if detail else ck
+        if detail:
+            print(f"    {_dim(detail)}")
         if summary:
             print(f"    {summary}")
 
@@ -952,9 +1096,10 @@ def _print_digest() -> None:
         return f"{label}: {sep.join(parts)}"
 
     print()
-    print(f"  {_stats_line(papers, 'This week')}")
-    print(f"  {_stats_line(month_papers, 'This month')}")
-    print(f"  Queue: {len(unread)} paper{'s' if len(unread) != 1 else ''} waiting")
+    queue_s = "s" if len(unread) != 1 else ""
+    print(f"  {_dim(_stats_line(papers, 'This week'))}")
+    print(f"  {_dim(_stats_line(month_papers, 'This month'))}")
+    print(f"  {_dim(f'Queue: {len(unread)} paper{queue_s} waiting')}")
     print()
 
 
@@ -1086,7 +1231,7 @@ def _parse_suggestions(text: str) -> list[dict]:
     return entries
 
 
-def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
+def _print_suggestions(entries: list[dict], unread: list[dict], now, state=None) -> None:
     """Print formatted suggestion output matching --digest style."""
     from datetime import datetime
 
@@ -1110,6 +1255,13 @@ def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
                     doc = d
                     break
 
+        # Build index prefix
+        idx_str = ""
+        if doc and state:
+            idx = state.index_of(doc["zotero_item_key"])
+            if idx:
+                idx_str = f"[{idx}] "
+
         # Build stats line
         stats = []
         if doc:
@@ -1128,9 +1280,10 @@ def _print_suggestions(entries: list[dict], unread: list[dict], now) -> None:
         stats_str = f" ({', '.join(stats)})" if stats else ""
 
         print()
-        print(f"  {title}")
+        idx_dim = _dim(idx_str) if idx_str else ""
+        print(f"  {idx_dim}{_bold(title)}")
         if stats_str:
-            print(f"    {stats_str}")
+            print(f"    {_dim(stats_str)}")
         print(f"    {reason}")
 
     print()
@@ -1176,7 +1329,7 @@ def _suggest() -> None:
                         unread = state.documents_with_status("on_remarkable")
                         entries = _parse_suggestions(suggestion_text)
                         if entries:
-                            _print_suggestions(entries, unread, now)
+                            _print_suggestions(entries, unread, now, state=state)
                         else:
                             # Fall back to raw output if parsing fails
                             print()
@@ -1235,7 +1388,7 @@ def _suggest() -> None:
                 # Parse and print structured suggestions
                 entries = _parse_suggestions(result)
                 if entries:
-                    _print_suggestions(entries, unread, now)
+                    _print_suggestions(entries, unread, now, state=state)
                 else:
                     # Fall back to raw output if parsing fails
                     print()
@@ -1509,6 +1662,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     # Semantic Scholar enrichment
     try:
         had_date = bool(meta.get("publication_date"))
+        had_unknown_author = "unknown" in meta.get("citekey", "")
         s2_data = semantic_scholar.lookup_paper(
             doi=meta.get("doi", ""), title=title,
             url=meta.get("url", ""),
@@ -1519,12 +1673,17 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 "S2: %d citations",
                 s2_data["citation_count"],
             )
-            # Regenerate citekey if S2 filled a missing date
-            if not had_date and meta.get("publication_date"):
+            # Regenerate citekey if S2 filled a missing date or unknown author
+            needs_regen = (not had_date and meta.get("publication_date"))
+            if had_unknown_author and s2_data.get("authors"):
+                needs_regen = True
+                # Also update top-level authors list
+                authors = meta["authors"]
+            if needs_regen:
                 meta["citekey"] = zotero_client._generate_citekey(
                     meta["authors"], meta["title"], meta["publication_date"],
                 )
-                log.info("Regenerated citekey with S2 date: %s", meta["citekey"])
+                log.info("Regenerated citekey after S2 enrichment: %s", meta["citekey"])
     except Exception:
         log.debug("S2 lookup failed for '%s'", title, exc_info=True)
 
@@ -2252,6 +2411,24 @@ def _init_wizard() -> None:
             print("  Skipped. Notes will only be stored in Zotero.")
     print()
 
+    # PDF subfolder
+    print("  By default, annotated PDFs are stored in a 'pdf'")
+    print("  subfolder inside Saved/ so notes and PDFs stay")
+    print("  separate. Type 'none' to keep them together.")
+    print()
+    existing_sub = os.environ.get("PDF_SUBFOLDER", "pdf")
+    pdf_sub = input(f"  PDF subfolder name [{existing_sub}]: ").strip()
+    if not pdf_sub:
+        pdf_sub = existing_sub
+    if pdf_sub.lower() == "none":
+        pdf_sub = ""
+    save_to_env("PDF_SUBFOLDER", pdf_sub)
+    if pdf_sub:
+        print(f"  PDFs will go to: Saved/{pdf_sub}/")
+    else:
+        print("  PDFs will be alongside notes in Saved/")
+    print()
+
     # -- Step 4: PDF storage --
 
     print("  " + "-" * 48)
@@ -2319,7 +2496,7 @@ Management:
 Advanced:
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
-  --refresh-metadata      Re-fetch metadata from Zotero + Semantic Scholar
+  --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
 
 Options:
@@ -2404,7 +2581,8 @@ def main():
         return
 
     if "--refresh-metadata" in sys.argv:
-        _refresh_metadata()
+        idx = sys.argv.index("--refresh-metadata")
+        _refresh_metadata(sys.argv[idx + 1:] or None)
         return
 
     if "--suggest" in sys.argv:
@@ -2452,6 +2630,21 @@ def main():
         obsidian.ensure_stats_note()      # renames to Distillate Stats
         obsidian.ensure_bases_note()      # replaces Papers.base → Distillate Papers.base
 
+        # Move PDFs from Saved/ into Saved/<subfolder>/ (one-time migration)
+        moved_pdfs = obsidian.migrate_pdfs_to_subdir()
+        if moved_pdfs:
+            log.info("Migrated %d PDFs to %s/", len(moved_pdfs), config.PDF_SUBFOLDER)
+            # Update Zotero linked attachments to point to new paths
+            for new_path in moved_pdfs:
+                citekey = new_path.stem
+                doc = state.find_by_citekey(citekey)
+                if doc:
+                    item_key = doc.get("zotero_item_key", "")
+                    if item_key:
+                        zotero_client.update_linked_attachment_path(
+                            item_key, new_path.name, str(new_path),
+                        )
+
         # -- Retry papers awaiting PDF sync --
         awaiting = state.documents_with_status("awaiting_pdf")
         if awaiting:
@@ -2465,15 +2658,6 @@ def main():
                 try:
                     pdf_bytes = None
 
-                    # Re-check Zotero for a PDF attachment (user may have
-                    # added one since the paper was first imported)
-                    if not att_key:
-                        fresh_att = zotero_client.get_pdf_attachment(item_key)
-                        if fresh_att:
-                            att_key = fresh_att["key"]
-                            doc["zotero_attachment_key"] = att_key
-                            log.info("Found new PDF attachment for '%s'", title)
-
                     # Try Zotero cloud first (if we have an attachment key)
                     if att_key:
                         try:
@@ -2484,6 +2668,23 @@ def main():
                                 log.info("PDF still not synced in Zotero for '%s'", title)
                             else:
                                 raise
+
+                    # Re-check Zotero children for a newer PDF attachment
+                    # (user may have added one, or original was a linked URL)
+                    if pdf_bytes is None:
+                        fresh_att = zotero_client.get_pdf_attachment(item_key)
+                        if fresh_att and fresh_att["key"] != att_key:
+                            att_key = fresh_att["key"]
+                            doc["zotero_attachment_key"] = att_key
+                            log.info("Found new PDF attachment for '%s'", title)
+                            try:
+                                pdf_bytes = zotero_client.download_pdf(att_key)
+                                log.info("PDF now available for '%s' (%d bytes)", title, len(pdf_bytes))
+                            except requests.exceptions.HTTPError as e:
+                                if e.response is not None and e.response.status_code == 404:
+                                    log.info("New attachment also has no file for '%s'", title)
+                                else:
+                                    raise
 
                     # Fall back to WebDAV
                     if pdf_bytes is None and att_key:
@@ -2659,9 +2860,9 @@ def main():
                             if new_uri:
                                 zotero_client.update_obsidian_link(key, new_uri)
 
-                            rd = obsidian._read_dir()
-                            if rd:
-                                new_pdf = rd / f"{new_ck}.pdf"
+                            pd = obsidian._pdf_dir()
+                            if pd:
+                                new_pdf = pd / f"{new_ck}.pdf"
                                 if new_pdf.exists():
                                     zotero_client.update_linked_attachment_path(
                                         key, new_pdf.name, str(new_pdf),
