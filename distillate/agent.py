@@ -386,10 +386,13 @@ def _handle_turn(
     system_prompt = _build_system_prompt(state)
     tools = TOOL_SCHEMAS
 
+    # One blank line after the prompt — all spinners reuse this line
+    if stream:
+        print()
+
     for _step in range(_MAX_TOOL_STEPS):
         try:
             if stream:
-                print()  # blank line before spinner
                 response = _stream_response(
                     client, system_prompt, conversation, tools,
                 )
@@ -423,7 +426,7 @@ def _handle_turn(
         if not tool_uses:
             break  # Pure text response, done
 
-        # Execute tools with spinner
+        # Execute tools with spinner (reuses the same line)
         tool_results = []
         for tool_use in tool_uses:
             spinner = _ThinkingSpinner(_tool_label(tool_use.name))
