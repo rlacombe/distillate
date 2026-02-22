@@ -199,39 +199,32 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         _handle_turn(client, state, conversation, user_input, stream=True)
 
 
+def _term_width() -> int:
+    """Return terminal width, defaulting to 60."""
+    try:
+        return os.get_terminal_size().columns
+    except (ValueError, OSError):
+        return 60
+
+
 def _print_welcome(state: State) -> None:
-    """Print a compact welcome banner with distillation flask."""
+    """Print a compact welcome banner."""
     processed = state.documents_with_status("processed")
     queue = state.documents_with_status("on_remarkable")
     n_read = len(processed)
     n_queue = len(queue)
 
-    d = _dim
-    # fmt: off
-    lines = [
-        "",
-        d("          )"),
-        d("         ("),
-        d("        .-`-."),
-        d("        |   |"),
-        d("        |   |") + f"          {_bold('Nicolas')}",
-        d("        |   |") + f"          {n_read} papers read, {n_queue} in queue",
-        d("       _|   |_"),
-        d("      / |   | \\") + f"        {d('Your research alchemist.')}",
-        d("     /  |   |  \\") + f"       {d('Type /help or /quit.')}",
-        d("    /  /|   |\\  \\"),
-        d("   |  / |   | \\  |"),
-        d("   | /  |   |  \\ |"),
-        d("   |/  /_____\\  \\|"),
-        d("   |  /       \\  |"),
-        d("    \\/  ~   ~  \\/"),
-        d("     \\  ~   ~ /"),
-        d("      \\  ~ ~ /"),
-        d("       `---'"),
-    ]
-    # fmt: on
-    for line in lines:
-        print(line)
+    w = min(_term_width(), 64)
+    # "─── ⚗️  Nicolas " = 17 visible chars (emoji is 2 wide)
+    header_prefix = f"  {_dim('\u2500\u2500\u2500')} \u2697\ufe0f  {_bold('Nicolas')} "
+    header_tail = _dim("\u2500" * max(0, w - 19))
+    footer = _dim("  " + "\u2500" * (w - 2))
+
+    print()
+    print(header_prefix + header_tail)
+    print(f"  {n_read} papers read \u00b7 {n_queue} in queue")
+    print(f"  {_dim('Your research alchemist. Type /help or /quit.')}")
+    print(footer)
 
 
 def _print_help() -> None:
