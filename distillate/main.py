@@ -15,15 +15,35 @@ import requests
 
 log = logging.getLogger("distillate")
 
-_BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 
 
+def _is_dark_background() -> bool:
+    """Guess if the terminal has a dark background.
+
+    Checks COLORFGBG (set by many terminals: 'fg;bg', bg>=8 is dark)
+    and common dark-theme env hints. Defaults to True (most terminals).
+    """
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if colorfgbg:
+        try:
+            bg = int(colorfgbg.rsplit(";", 1)[-1])
+            return bg < 8  # 0-7 are dark ANSI colors
+        except (ValueError, IndexError):
+            pass
+    # Common dark terminal indicators
+    if os.environ.get("TERM_PROGRAM") in ("iTerm.app", "Hyper", "Alacritty"):
+        return True
+    return True  # most terminals default dark
+
+
 def _bold(text: str) -> str:
-    """Wrap text in ANSI bold, only when stdout is a TTY."""
+    """Wrap text in bold, bright white on dark backgrounds."""
     if sys.stdout.isatty():
-        return f"{_BOLD}{text}{_RESET}"
+        if _is_dark_background():
+            return f"\033[1;97m{text}{_RESET}"
+        return f"\033[1m{text}{_RESET}"
     return text
 
 
