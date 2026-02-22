@@ -321,6 +321,8 @@ def get_paper_details(*, state, identifier: str) -> dict:
         "citation_count": meta.get("citation_count", 0),
         "influential_citation_count": meta.get("influential_citation_count", 0),
         "s2_url": meta.get("s2_url", ""),
+        "github_repo": meta.get("github_repo", ""),
+        "github_stars": meta.get("github_stars"),
         "uploaded_at": doc.get("uploaded_at", ""),
         "processed_at": doc.get("processed_at", ""),
     }

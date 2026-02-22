@@ -37,7 +37,7 @@ def lookup_paper(
     paper = None
 
     # Try arXiv ID first (extracted from DOI or URL)
-    arxiv_id = _extract_arxiv_id(doi, url)
+    arxiv_id = extract_arxiv_id(doi, url)
     if arxiv_id:
         paper = _fetch_by_id(f"ARXIV:{arxiv_id}")
 
@@ -117,7 +117,7 @@ def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, 
     return meta
 
 
-def _extract_arxiv_id(doi: str, url: str) -> str:
+def extract_arxiv_id(doi: str, url: str) -> str:
     """Extract arXiv ID from a DOI or URL, or return empty string."""
     if doi:
         m = _ARXIV_DOI_RE.search(doi)

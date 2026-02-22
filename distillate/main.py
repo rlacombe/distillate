@@ -394,7 +394,7 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
     With no arguments, refreshes all papers. Pass a citekey, index number,
     or title substring to refresh a single paper.
     """
-    from distillate import config, zotero_client, obsidian, semantic_scholar
+    from distillate import config, zotero_client, obsidian, semantic_scholar, huggingface
     from distillate.state import State
 
     config.setup_logging()
@@ -488,6 +488,29 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
         # Preserve paper_type if present
         if "paper_type" in old_meta:
             new_meta["paper_type"] = old_meta["paper_type"]
+
+        # HuggingFace enrichment (backfill GitHub repo/stars)
+        if not new_meta.get("github_repo"):
+            try:
+                arxiv_id = semantic_scholar.extract_arxiv_id(
+                    new_meta.get("doi", ""), new_meta.get("url", ""),
+                )
+                if arxiv_id:
+                    hf_data = huggingface.lookup_paper(arxiv_id)
+                    if hf_data and hf_data.get("github_repo"):
+                        new_meta["github_repo"] = hf_data["github_repo"]
+                        new_meta["github_stars"] = hf_data.get("github_stars")
+                        if not any_change:
+                            print(f"  [{i}/{total}] \"{title[:50]}\"")
+                        print(f"    HF: GitHub {hf_data['github_repo']}")
+                        any_change = True
+            except Exception:
+                log.debug("HF lookup failed for '%s'", doc["title"], exc_info=True)
+        else:
+            # Preserve existing HF data
+            for field in ("github_repo", "github_stars"):
+                if field in old_meta:
+                    new_meta[field] = old_meta[field]
 
         # Detect what changed
         old_ck = old_meta.get("citekey", "")
@@ -1686,6 +1709,24 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
                 log.info("Regenerated citekey after S2 enrichment: %s", meta["citekey"])
     except Exception:
         log.debug("S2 lookup failed for '%s'", title, exc_info=True)
+
+    # HuggingFace enrichment (GitHub repo, stars)
+    try:
+        from distillate import huggingface
+        arxiv_id = semantic_scholar.extract_arxiv_id(
+            meta.get("doi", ""), meta.get("url", ""),
+        )
+        if arxiv_id:
+            hf_data = huggingface.lookup_paper(arxiv_id)
+            if hf_data:
+                meta.setdefault("github_repo", hf_data.get("github_repo"))
+                meta.setdefault("github_stars", hf_data.get("github_stars"))
+                if hf_data.get("github_repo"):
+                    log.info("HF: GitHub %s (%s stars)",
+                             hf_data["github_repo"],
+                             hf_data.get("github_stars", "?"))
+    except Exception:
+        log.debug("HF lookup failed for '%s'", title, exc_info=True)
 
     # Tag in Zotero
     zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)

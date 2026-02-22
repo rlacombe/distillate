@@ -581,6 +581,11 @@ def _paper_html(p, index: int = 0):
         stats_parts.append(f"{highlight_word_count} words")
     if citation_count:
         stats_parts.append(f"{citation_count:,} citations")
+    github_repo = p.get("metadata", {}).get("github_repo", "")
+    if github_repo:
+        stars = p.get("metadata", {}).get("github_stars")
+        star_str = f" \u2605{stars:,}" if stars else ""
+        stats_parts.append(f'<a href="{github_repo}" style="color:#999;">GitHub{star_str}</a>')
     stats_html = ""
     if stats_parts:
         stats_html = (
