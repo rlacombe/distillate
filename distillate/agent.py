@@ -117,9 +117,11 @@ _THINKING_PHRASES = [
     "Reading the residue",
     "Decanting the extract",
     "Measuring the tincture",
-    "Weighing the elements",
     "Stirring the crucible",
     "Consulting the codex",
+    "Preparing the solvent",
+    "Observing the reaction",
+    "Condensing the vapor",
 ]
 
 _SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
@@ -127,15 +129,15 @@ _SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "
 
 _TOOL_LABELS = {
     "search_papers": "Searching the library",
-    "get_paper_details": "Reading the manuscript",
+    "get_paper_details": "Unrolling the manuscript",
     "get_reading_stats": "Tallying the ledger",
-    "get_queue": "Checking the queue",
+    "get_queue": "Inspecting the queue",
     "get_recent_reads": "Reviewing recent reads",
     "suggest_next_reads": "Consulting the oracle",
     "synthesize_across_papers": "Cross-referencing texts",
-    "run_sync": "Running the sync",
-    "reprocess_paper": "Reprocessing the paper",
-    "promote_papers": "Promoting papers",
+    "run_sync": "Firing up the furnace",
+    "reprocess_paper": "Re-extracting the essence",
+    "promote_papers": "Promoting to the shelf",
 }
 
 
@@ -169,7 +171,7 @@ class _ThinkingSpinner:
         i = 0
         while not self._stop.is_set():
             frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
-            text = f"  {_DIM}{frame} {self._phrase}{_RESET}"
+            text = f"  \033[35m{frame}\033[1;35m {self._phrase}{_RESET}"
             print(f"\r\033[2K{text}", end="", flush=True)
             i += 1
             self._stop.wait(0.1)
@@ -467,8 +469,9 @@ def _stream_response(client, system_prompt, conversation, tools,
                     print(fmt.feed(event.delta.text), end="", flush=True)
         if first_token:
             spinner.stop()  # tool-only response, no text
-        print(fmt.flush(), end="")
-        print()  # newline after streamed text
+        else:
+            print(fmt.flush(), end="")
+            print()  # newline after streamed text
         return stream.get_final_message()
 
 
