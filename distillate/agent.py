@@ -179,7 +179,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
 
     while True:
         try:
-            user_input = input(f"\n{_dim('\u2697')} ").strip()
+            user_input = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -200,22 +200,38 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
 
 
 def _print_welcome(state: State) -> None:
-    """Print a compact welcome banner."""
+    """Print a compact welcome banner with distillation flask."""
     processed = state.documents_with_status("processed")
     queue = state.documents_with_status("on_remarkable")
     n_read = len(processed)
     n_queue = len(queue)
-    print()
-    print(_dim("        ."))
-    print(_dim("       /|\\"))
-    print(_dim("      / | \\"))
-    print(_dim("     /  |  \\"))
-    print(_dim("    /___|___\\"))
-    print(_dim("    \\       /"))
-    print(_dim("     \\_____/"))
-    print()
-    print(f"  \u2697\ufe0f  {_bold('Nicolas')} {_dim('\u00b7')} {n_read} papers read, {n_queue} in queue")
-    print(f"  {_dim('Your research alchemist. Ask anything, or type /quit to exit.')}")
+
+    d = _dim
+    # fmt: off
+    lines = [
+        "",
+        d("          )"),
+        d("         ("),
+        d("        .-`-."),
+        d("        |   |"),
+        d("        |   |") + f"          {_bold('Nicolas')}",
+        d("        |   |") + f"          {n_read} papers read, {n_queue} in queue",
+        d("       _|   |_"),
+        d("      / |   | \\") + f"        {d('Your research alchemist.')}",
+        d("     /  |   |  \\") + f"       {d('Type /help or /quit.')}",
+        d("    /  /|   |\\  \\"),
+        d("   |  / |   | \\  |"),
+        d("   | /  |   |  \\ |"),
+        d("   |/  /_____\\  \\|"),
+        d("   |  /       \\  |"),
+        d("    \\/  ~   ~  \\/"),
+        d("     \\  ~   ~ /"),
+        d("      \\  ~ ~ /"),
+        d("       `---'"),
+    ]
+    # fmt: on
+    for line in lines:
+        print(line)
 
 
 def _print_help() -> None:
