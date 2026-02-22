@@ -125,13 +125,31 @@ _THINKING_PHRASES = [
 _SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
 
 
+_TOOL_LABELS = {
+    "search_papers": "Searching the library",
+    "get_paper_details": "Reading the manuscript",
+    "get_reading_stats": "Tallying the ledger",
+    "get_queue": "Checking the queue",
+    "get_recent_reads": "Reviewing recent reads",
+    "suggest_next_reads": "Consulting the oracle",
+    "synthesize_across_papers": "Cross-referencing texts",
+    "run_sync": "Running the sync",
+    "reprocess_paper": "Reprocessing the paper",
+    "promote_papers": "Promoting papers",
+}
+
+
+def _tool_label(name: str) -> str:
+    return _TOOL_LABELS.get(name, name.replace("_", " ").title())
+
+
 class _ThinkingSpinner:
     """Animated spinner shown while waiting for the first token."""
 
-    def __init__(self) -> None:
+    def __init__(self, phrase: str | None = None) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._phrase = random.choice(_THINKING_PHRASES)  # noqa: S311
+        self._phrase = phrase or random.choice(_THINKING_PHRASES)  # noqa: S311
 
     def start(self) -> None:
         if not _is_tty():
@@ -370,7 +388,8 @@ def _handle_turn(
         try:
             if stream:
                 response = _stream_response(
-                    client, system_prompt, conversation, tools
+                    client, system_prompt, conversation, tools,
+                    leading_newline=(_step == 0),
                 )
             else:
                 response = client.messages.create(
@@ -402,10 +421,13 @@ def _handle_turn(
         if not tool_uses:
             break  # Pure text response, done
 
-        # Execute tools and append results
+        # Execute tools with spinner
         tool_results = []
         for tool_use in tool_uses:
+            spinner = _ThinkingSpinner(_tool_label(tool_use.name))
+            spinner.start()
             result = _execute_tool(tool_use.name, tool_use.input, state)
+            spinner.stop()
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
@@ -418,9 +440,12 @@ def _handle_turn(
         conversation[:] = conversation[-_CONVERSATION_KEEP:]
 
 
-def _stream_response(client, system_prompt, conversation, tools):
+def _stream_response(client, system_prompt, conversation, tools,
+                     leading_newline: bool = True):
     """Stream response text to terminal, return complete response."""
     fmt = _StreamFormatter()
+    if leading_newline:
+        print()  # blank line between user input and spinner
     spinner = _ThinkingSpinner()
     spinner.start()
     first_token = True
