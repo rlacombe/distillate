@@ -8,7 +8,10 @@ with tool use. Launched via ``distillate`` (in a TTY) or
 import json
 import logging
 import os
+import random
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -104,6 +107,55 @@ class _StreamFormatter:
             self._in_bold = False
             return _RESET
         return ""
+
+
+_THINKING_PHRASES = [
+    "Heating the flask",
+    "Dissolving the precipitate",
+    "Filtering the solution",
+    "Distilling the essence",
+    "Reading the residue",
+    "Decanting the extract",
+    "Measuring the tincture",
+    "Weighing the elements",
+    "Stirring the crucible",
+    "Consulting the codex",
+]
+
+_SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
+
+
+class _ThinkingSpinner:
+    """Animated spinner shown while waiting for the first token."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._phrase = random.choice(_THINKING_PHRASES)  # noqa: S311
+
+    def start(self) -> None:
+        if not _is_tty():
+            return
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        # Erase the spinner line
+        if _is_tty():
+            print(f"\r\033[2K", end="", flush=True)
+
+    def _spin(self) -> None:
+        i = 0
+        while not self._stop.is_set():
+            frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
+            text = f"  {_DIM}{frame} {self._phrase}{_RESET}"
+            print(f"\r\033[2K{text}", end="", flush=True)
+            i += 1
+            self._stop.wait(0.1)
+
 
 # Use the configured smart model (Sonnet by default)
 _AGENT_MODEL = None  # resolved lazily after config is loaded
@@ -368,8 +420,10 @@ def _handle_turn(
 
 def _stream_response(client, system_prompt, conversation, tools):
     """Stream response text to terminal, return complete response."""
-    print()  # blank line before response
     fmt = _StreamFormatter()
+    spinner = _ThinkingSpinner()
+    spinner.start()
+    first_token = True
 
     with client.messages.stream(
         model=_get_model(),
@@ -381,7 +435,13 @@ def _stream_response(client, system_prompt, conversation, tools):
         for event in stream:
             if hasattr(event, "type") and event.type == "content_block_delta":
                 if hasattr(event.delta, "text"):
+                    if first_token:
+                        spinner.stop()
+                        print()  # blank line before response
+                        first_token = False
                     print(fmt.feed(event.delta.text), end="", flush=True)
+        if first_token:
+            spinner.stop()  # tool-only response, no text
         print(fmt.flush(), end="")
         print()  # newline after streamed text
         return stream.get_final_message()
