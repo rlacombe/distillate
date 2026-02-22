@@ -794,11 +794,21 @@ def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
             citekey = line.split(":", 1)[1].strip()
             break
 
+    publication_date = data.get("date", "")
+    # Fallback: extract year from DOI when Zotero date is empty
+    # Matches patterns like chemrxiv-2026-xxx or preprint DOIs with embedded year
+    if not publication_date:
+        doi = data.get("DOI", "")
+        if doi:
+            import re as _re
+            m = _re.search(r"[/-](20[12]\d)-", doi)
+            if m:
+                publication_date = m.group(1)
+
     # Fallback: generate citekey from first author + first title word + year
     if not citekey:
-        citekey = _generate_citekey(authors, title, data.get("date", ""))
+        citekey = _generate_citekey(authors, title, publication_date)
 
-    publication_date = data.get("date", "")
     return {
         "title": title,
         "authors": authors,

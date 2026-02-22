@@ -94,9 +94,12 @@ def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, 
         log.info("S2 filled authors: %s", s2_data["authors"])
 
     # Fill gaps only
-    if not meta.get("publication_date") and s2_data.get("publication_date"):
-        meta["publication_date"] = s2_data["publication_date"]
-        log.info("S2 filled publication_date: %s", s2_data["publication_date"])
+    s2_date = s2_data.get("publication_date") or ""
+    if not s2_date and s2_data.get("year"):
+        s2_date = str(s2_data["year"])
+    if not meta.get("publication_date") and s2_date:
+        meta["publication_date"] = s2_date
+        log.info("S2 filled publication_date: %s", s2_date)
 
     if not meta.get("journal") and s2_data.get("venue"):
         meta["journal"] = s2_data["venue"]

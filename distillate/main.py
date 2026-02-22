@@ -496,15 +496,22 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
         new_title = new_meta.get("title", old_title)
 
         # Check for citekey change → rename Saved files
-        needs_rename = old_ck != new_ck
+        citekey_changed = old_ck != new_ck
+        needs_rename = citekey_changed
         # Also rename if file on disk doesn't match expected citekey
         if not needs_rename and new_ck and doc.get("status") == "processed":
             rd = obsidian._read_dir()
             if rd and not (rd / f"{new_ck}.md").exists():
                 needs_rename = True
-        if needs_rename and new_ck and doc.get("status") == "processed":
+        if citekey_changed and not any_change:
             print(f"  [{i}/{total}] \"{title[:50]}\"")
             print(f"    Citekey: {old_ck or '(title)'} -> {new_ck}")
+            any_change = True
+        if needs_rename and new_ck and doc.get("status") == "processed":
+            if not any_change:
+                print(f"  [{i}/{total}] \"{title[:50]}\"")
+                print(f"    Citekey: {old_ck or '(title)'} -> {new_ck}")
+                any_change = True
             obsidian.rename_paper(doc["title"], old_ck, new_ck)
 
             new_uri = obsidian.get_obsidian_uri(doc["title"], citekey=new_ck)
