@@ -319,6 +319,10 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         if user_input.lower() in ("/help",):
             _print_help()
             continue
+        if user_input.lower() in ("/init",):
+            _run_init()
+            state.reload()
+            continue
 
         _handle_turn(client, state, conversation, user_input, stream=True)
 
@@ -350,10 +354,30 @@ def _print_welcome(state: State) -> None:
     print(f"  {_dim('Your research alchemist. Type /help or /quit.')}")
     print(footer)
 
+    # Contextual suggestions
+    hints = []
+    if n_queue > 0:
+        hints.append("What's in my queue?")
+    if n_read > 0:
+        hints.append("Summarize my last read")
+    hints.append("What's trending in AI?")
+    print(f"\n  {_dim('Try:')} {_dim(' \u00b7 '.join(hints))}")
+
+
+def _run_init() -> None:
+    """Run the setup wizard inline, then reload config."""
+    import importlib
+
+    from distillate.main import _init_wizard
+    _init_wizard()
+    importlib.reload(config)
+    print(f"\n  {_dim('Config reloaded. Back to Nicolas.')}\n")
+
 
 def _print_help() -> None:
     print(
         f"\n  {_bold('Commands')}\n"
+        "    /init    Run the setup wizard\n"
         "    /clear   Clear conversation history\n"
         "    /quit    Exit the agent\n"
         "    /help    Show this help\n"
