@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.4 — 2026-02-21
+
+Paper index numbers, terminal colors, and reliability fixes.
+
+### Features
+
+- **Paper index numbers**: every paper gets a stable `[index]` shown in `--status`, `--digest`, `--suggest`, `--list`, and emails — use it to target papers in commands
+- **Paper lookup by index, citekey, or title**: `--reprocess 3`, `--remove kindel`, `--refresh-metadata "DynaSpec"` all work
+- **Single-paper refresh**: `--refresh-metadata` now accepts an optional query to refresh just one paper
+- **PDF subfolder**: annotated PDFs now saved to `Saved/pdf/` (configurable via `PDF_SUBFOLDER`), keeping notes and PDFs separate — auto-migrates existing files
+- **S2 author backfill**: papers with unknown authors are enriched from Semantic Scholar, with automatic citekey regeneration
+- **Terminal colors**: bold bright-white titles on dark terminals, dim gray metadata lines — TTY-aware with dark/light background detection
+
+### Bug Fixes
+
+- **Awaiting PDF retry**: re-checks Zotero children when the stored attachment returns 404 — fixes papers where the user adds a PDF after initial import
+- **Missing years in citekeys**: extracts year from DOI patterns (e.g. `chemrxiv-2026-xxx`) when Zotero has no date; uses S2 `year` field as fallback when `publicationDate` is empty
+- **Title cleaning**: strips `: JournalName` suffixes from Zotero web clipper titles (e.g. "Title: Neuron" → "Title")
+- **Citekey for S2 authors**: handles "First Last" name format (not just "Last, First") when generating citekeys from Semantic Scholar data
+- **Author preservation**: `--refresh-metadata` no longer overwrites S2-filled authors with empty Zotero creators
+- **Refresh reporting**: citekey changes for non-processed papers (queue, awaiting) are now reported instead of showing "up to date"
+
 ## 0.4.3 — 2026-02-19
 
 ### Bug Fixes
