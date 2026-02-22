@@ -360,6 +360,39 @@ class TestAddPaperToZotero:
         assert result["success"] is False
         assert "already" in result["error"]
 
+    def test_extracts_arxiv_from_url(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        state.find_by_title = lambda t: None
+        state.find_by_doi = lambda d: None
+
+        hf_data = {
+            "title": "Auto Title",
+            "authors": ["Eve"],
+            "abstract": "Abstract.",
+            "ai_keywords": ["RL"],
+        }
+        with patch("distillate.huggingface.lookup_paper", return_value=hf_data) as mock_hf, \
+             patch("distillate.zotero_client.create_paper", return_value="NEW3") as mock_create:
+            result = add_paper_to_zotero(
+                state=state, url="https://arxiv.org/abs/2401.99999",
+            )
+
+        assert result["success"] is True
+        # Should have extracted arXiv ID and enriched from HF
+        mock_hf.assert_called_once_with("2401.99999")
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["title"] == "Auto Title"
+        assert call_kwargs["authors"] == ["Eve"]
+        assert call_kwargs["url"] == "https://arxiv.org/abs/2401.99999"
+
+    def test_missing_title_returns_error(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        result = add_paper_to_zotero(state=state, doi="10.1234/test")
+        assert result["success"] is False
+        assert "title" in result["error"].lower()
+
     def test_zotero_create_failure(self):
         from distillate.tools import add_paper_to_zotero
         state = MockState({})

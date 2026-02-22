@@ -266,15 +266,18 @@ TOOL_SCHEMAS = [
         "name": "add_paper_to_zotero",
         "description": (
             "Add a new paper to the user's Zotero library so it gets synced to "
-            "reMarkable on the next distillate run. Accepts arXiv ID, DOI, or URL. "
-            "If an arXiv ID is provided, metadata is auto-enriched from HuggingFace."
+            "reMarkable on the next distillate run. Provide an arXiv ID or URL "
+            "and the PDF will be downloaded automatically during sync. "
+            "arXiv URLs are auto-converted to PDF downloads. "
+            "If an arXiv ID is provided or detected from the URL, metadata "
+            "(title, authors, abstract) is auto-enriched from HuggingFace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Paper title",
+                    "description": "Paper title (optional if arxiv_id or arXiv URL provided)",
                 },
                 "authors": {
                     "type": "array",
@@ -283,7 +286,7 @@ TOOL_SCHEMAS = [
                 },
                 "arxiv_id": {
                     "type": "string",
-                    "description": "arXiv ID (e.g. '2401.12345')",
+                    "description": "arXiv ID (e.g. '2401.12345'). PDF auto-downloaded during sync.",
                 },
                 "doi": {
                     "type": "string",
@@ -291,14 +294,13 @@ TOOL_SCHEMAS = [
                 },
                 "url": {
                     "type": "string",
-                    "description": "Paper URL (arXiv, publisher, or PDF)",
+                    "description": "Paper URL (arXiv, biorxiv, or direct PDF link). arXiv/biorxiv URLs auto-resolve to PDF.",
                 },
                 "abstract": {
                     "type": "string",
                     "description": "Paper abstract",
                 },
             },
-            "required": ["title"],
         },
     },
 ]
@@ -707,7 +709,7 @@ def get_trending_papers(*, state, limit: int = 10) -> dict:
 
 def add_paper_to_zotero(
     *, state,
-    title: str,
+    title: str = "",
     authors: List[str] | None = None,
     arxiv_id: str = "",
     doi: str = "",
@@ -717,7 +719,12 @@ def add_paper_to_zotero(
     """Add a new paper to the user's Zotero library."""
     from distillate import zotero_client
 
-    # Enrich from HuggingFace if arXiv ID provided
+    # Extract arXiv ID from URL if not provided explicitly
+    if not arxiv_id and url:
+        from distillate.semantic_scholar import extract_arxiv_id
+        arxiv_id = extract_arxiv_id("", url)
+
+    # Enrich from HuggingFace if we have an arXiv ID
     hf_data = None
     if arxiv_id:
         try:
@@ -730,6 +737,8 @@ def add_paper_to_zotero(
 
     # Use HF data to fill gaps
     if hf_data:
+        if not title or title == arxiv_id:
+            title = hf_data.get("title", title)
         if not authors:
             authors = hf_data.get("authors", [])
         if not abstract:
@@ -738,6 +747,13 @@ def add_paper_to_zotero(
     # Build DOI-based URL fallback
     if doi and not url:
         url = f"https://doi.org/{doi}"
+
+    # Must have at least a title
+    if not title:
+        return {
+            "success": False,
+            "error": "Could not determine paper title. Provide a title or a valid arXiv ID.",
+        }
 
     # Duplicate check
     existing = state.find_by_title(title)
