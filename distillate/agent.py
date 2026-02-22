@@ -439,9 +439,20 @@ def _handle_turn(
         except KeyboardInterrupt:
             print("\n  (interrupted)")
             return
-        except Exception:
+        except Exception as exc:
             log.exception("Agent API call failed")
-            print("\n  Something went wrong. Try again.")
+            msg = str(exc)
+            if "credit balance is too low" in msg:
+                print("\n  Anthropic API credits depleted.")
+                print("  Add credits at https://console.anthropic.com/settings/billing")
+            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
+                print("\n  Invalid Anthropic API key. Run /init to update it.")
+            elif "overloaded" in msg:
+                print("\n  Anthropic API is overloaded. Try again in a moment.")
+            elif "rate_limit" in msg:
+                print("\n  Rate limited. Wait a moment and try again.")
+            else:
+                print("\n  Something went wrong. Try again.")
             return
 
         # Append assistant response to conversation
