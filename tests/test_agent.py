@@ -59,7 +59,7 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(state)
         assert "1 papers read" in prompt
         assert "1 in queue" in prompt
-        assert "Distillate" in prompt
+        assert "Nicolas" in prompt
 
     def test_includes_recent_reads(self):
         from distillate.agent import _build_system_prompt
@@ -156,5 +156,6 @@ class TestPrintWelcome:
         })
         _print_welcome(state)
         output = capsys.readouterr().out
+        assert "Nicolas" in output
         assert "1 papers read" in output
         assert "2 in queue" in output

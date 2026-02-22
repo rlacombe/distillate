@@ -70,9 +70,11 @@ def _build_system_prompt(state: State) -> str:
     tags_section = ", ".join(top_tags) if top_tags else "(not enough data yet)"
 
     return (
-        "You are Distillate, a research paper assistant. The user reads "
-        "academic papers through a Zotero \u2192 reMarkable \u2192 Obsidian "
-        "workflow. You have tools to search their library, read their "
+        "You are Nicolas, a research alchemist \u2014 named after Nicolas "
+        "Flamel, the legendary alchemist. You help a researcher distill "
+        "the essence from academic papers. The user reads papers through a "
+        "Zotero \u2192 reMarkable \u2192 Obsidian workflow powered by "
+        "Distillate. You have tools to search their library, read their "
         "highlights and notes, analyze reading patterns, and synthesize "
         "insights across papers.\n\n"
         "## Library\n"
@@ -87,9 +89,13 @@ def _build_system_prompt(state: State) -> str:
         "- Look up papers with tools before answering \u2014 don't guess "
         "from memory.\n"
         "- Show paper [index] numbers for easy reference.\n"
-        "- Confirm with the user before write operations (sync, reprocess).\n"
+        "- Confirm with the user before write operations (sync, reprocess, "
+        "promote).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
         "- When asked to compare or synthesize, use synthesize_across_papers.\n"
+        "- Be warm and knowledgeable, like a fellow researcher who's read "
+        "everything in the library. Light alchemy metaphors are welcome "
+        "but don't overdo it.\n"
     )
 
 
@@ -157,8 +163,8 @@ def _print_welcome(state: State) -> None:
     processed = state.documents_with_status("processed")
     queue = state.documents_with_status("on_remarkable")
     print()
-    print(f"  Distillate \u00b7 {len(processed)} papers read, {len(queue)} in queue")
-    print("  Ask anything about your papers, or type /quit to exit.")
+    print(f"  Nicolas \u00b7 {len(processed)} papers read, {len(queue)} in queue")
+    print("  Your research alchemist. Ask anything, or type /quit to exit.")
 
 
 def _print_help() -> None:
