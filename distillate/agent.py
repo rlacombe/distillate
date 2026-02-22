@@ -171,7 +171,7 @@ class _ThinkingSpinner:
         i = 0
         while not self._stop.is_set():
             frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
-            text = f"  \033[35m{frame}\033[1;35m {self._phrase}{_RESET}"
+            text = f"\033[35m{frame}\033[1;35m {self._phrase}{_RESET}"
             print(f"\r\033[2K{text}", end="", flush=True)
             i += 1
             self._stop.wait(0.1)
@@ -389,9 +389,9 @@ def _handle_turn(
     for _step in range(_MAX_TOOL_STEPS):
         try:
             if stream:
+                print()  # blank line before spinner
                 response = _stream_response(
                     client, system_prompt, conversation, tools,
-                    leading_newline=(_step == 0),
                 )
             else:
                 response = client.messages.create(
@@ -442,12 +442,9 @@ def _handle_turn(
         conversation[:] = conversation[-_CONVERSATION_KEEP:]
 
 
-def _stream_response(client, system_prompt, conversation, tools,
-                     leading_newline: bool = True):
+def _stream_response(client, system_prompt, conversation, tools):
     """Stream response text to terminal, return complete response."""
     fmt = _StreamFormatter()
-    if leading_newline:
-        print()  # blank line between user input and spinner
     spinner = _ThinkingSpinner()
     spinner.start()
     first_token = True
@@ -464,7 +461,6 @@ def _stream_response(client, system_prompt, conversation, tools,
                 if hasattr(event.delta, "text"):
                     if first_token:
                         spinner.stop()
-                        print()  # blank line before response
                         first_token = False
                     print(fmt.feed(event.delta.text), end="", flush=True)
         if first_token:
