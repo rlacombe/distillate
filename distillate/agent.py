@@ -7,6 +7,7 @@ with tool use. Launched via ``distillate`` (in a TTY) or
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -16,6 +17,42 @@ from distillate.state import State
 from distillate.tools import TOOL_SCHEMAS
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ANSI helpers
+# ---------------------------------------------------------------------------
+
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+
+def _is_tty() -> bool:
+    return sys.stdout.isatty()
+
+
+def _is_dark_background() -> bool:
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if colorfgbg:
+        try:
+            bg = int(colorfgbg.rsplit(";", 1)[-1])
+            return bg >= 8 or bg == 0
+        except ValueError:
+            pass
+    return True
+
+
+def _bold(text: str) -> str:
+    if _is_tty():
+        if _is_dark_background():
+            return f"\033[1;97m{text}{_RESET}"
+        return f"\033[1m{text}{_RESET}"
+    return text
+
+
+def _dim(text: str) -> str:
+    if _is_tty():
+        return f"{_DIM}{text}{_RESET}"
+    return text
 
 # Use the configured smart model (Sonnet by default)
 _AGENT_MODEL = None  # resolved lazily after config is loaded
@@ -89,6 +126,10 @@ def _build_system_prompt(state: State) -> str:
         "- Look up papers with tools before answering \u2014 don't guess "
         "from memory.\n"
         "- Show paper [index] numbers for easy reference.\n"
+        "- **Bold paper titles** with markdown **title** for readability.\n"
+        "- Use one or two subtle chemistry/alchemy emojis per response "
+        "(\u2697\ufe0f \ud83e\uddea \ud83d\udd2c \u2728 \ud83d\udcdc) \u2014 never more. "
+        "Don't force them.\n"
         "- Confirm with the user before write operations (sync, reprocess, "
         "promote).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
@@ -138,7 +179,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
 
     while True:
         try:
-            user_input = input("\n> ").strip()
+            user_input = input(f"\n{_dim('\u2697')} ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -162,24 +203,34 @@ def _print_welcome(state: State) -> None:
     """Print a compact welcome banner."""
     processed = state.documents_with_status("processed")
     queue = state.documents_with_status("on_remarkable")
+    n_read = len(processed)
+    n_queue = len(queue)
     print()
-    print(f"  Nicolas \u00b7 {len(processed)} papers read, {len(queue)} in queue")
-    print("  Your research alchemist. Ask anything, or type /quit to exit.")
+    print(_dim("        ."))
+    print(_dim("       /|\\"))
+    print(_dim("      / | \\"))
+    print(_dim("     /  |  \\"))
+    print(_dim("    /___|___\\"))
+    print(_dim("    \\       /"))
+    print(_dim("     \\_____/"))
+    print()
+    print(f"  \u2697\ufe0f  {_bold('Nicolas')} {_dim('\u00b7')} {n_read} papers read, {n_queue} in queue")
+    print(f"  {_dim('Your research alchemist. Ask anything, or type /quit to exit.')}")
 
 
 def _print_help() -> None:
     print(
-        "\n  Commands:\n"
+        f"\n  {_bold('Commands')}\n"
         "    /clear   Clear conversation history\n"
         "    /quit    Exit the agent\n"
         "    /help    Show this help\n"
         "\n"
-        "  You can ask things like:\n"
-        '    "What\'s in my queue?"\n'
-        '    "Tell me about paper 42"\n'
-        '    "Compare my last two ML papers"\n'
-        '    "What should I read next?"\n'
-        '    "How many papers have I read this month?"\n'
+        f"  {_bold('Try asking')}\n"
+        f'    {_dim("What\'s in my queue?")}\n'
+        f'    {_dim("Tell me about paper 42")}\n'
+        f'    {_dim("Compare my last two ML papers")}\n'
+        f'    {_dim("What should I read next?")}\n'
+        f'    {_dim("How many papers have I read this month?")}\n'
     )
 
 
