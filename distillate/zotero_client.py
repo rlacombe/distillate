@@ -395,6 +395,63 @@ def get_linked_attachment(item_key: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def create_paper(
+    title: str,
+    authors: List[str],
+    item_type: str = "preprint",
+    doi: str = "",
+    url: str = "",
+    abstract: str = "",
+    publication_date: str = "",
+    tags: List[str] | None = None,
+) -> Optional[str]:
+    """Create a new paper item in the user's Zotero library.
+
+    Returns the new item's key, or None on failure.
+    """
+    creators = []
+    for name in authors:
+        parts = name.rsplit(" ", 1)
+        if len(parts) == 2:
+            creators.append({
+                "firstName": parts[0], "lastName": parts[1],
+                "creatorType": "author",
+            })
+        else:
+            creators.append({
+                "lastName": name, "creatorType": "author",
+            })
+
+    item: Dict[str, Any] = {
+        "itemType": item_type,
+        "title": title,
+        "creators": creators,
+        "tags": [{"tag": t} for t in (tags or [])],
+        "relations": {},
+    }
+    if doi:
+        item["DOI"] = doi
+    if url:
+        item["url"] = url
+    if abstract:
+        item["abstractNote"] = abstract
+    if publication_date:
+        item["date"] = publication_date
+
+    # Add inbox tag so the sync loop picks it up
+    item["tags"].append({"tag": config.ZOTERO_TAG_INBOX})
+
+    resp = _post("/items", json=[item])
+    result = resp.json()
+    successful = result.get("successful", {})
+    if "0" in successful:
+        key = successful["0"]["key"]
+        log.info("Created paper '%s' -> %s", title[:60], key)
+        return key
+    log.warning("Failed to create paper: %s", result.get("failed"))
+    return None
+
+
 def create_linked_attachment(
     parent_key: str, filename: str, local_path: str,
 ) -> Optional[str]:

@@ -262,6 +262,45 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "add_paper_to_zotero",
+        "description": (
+            "Add a new paper to the user's Zotero library so it gets synced to "
+            "reMarkable on the next distillate run. Accepts arXiv ID, DOI, or URL. "
+            "If an arXiv ID is provided, metadata is auto-enriched from HuggingFace."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Paper title",
+                },
+                "authors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Author names (e.g. ['Alice Smith', 'Bob Jones'])",
+                },
+                "arxiv_id": {
+                    "type": "string",
+                    "description": "arXiv ID (e.g. '2401.12345')",
+                },
+                "doi": {
+                    "type": "string",
+                    "description": "DOI (e.g. '10.1234/example')",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Paper URL (arXiv, publisher, or PDF)",
+                },
+                "abstract": {
+                    "type": "string",
+                    "description": "Paper abstract",
+                },
+            },
+            "required": ["title"],
+        },
+    },
 ]
 
 
@@ -664,3 +703,76 @@ def get_trending_papers(*, state, limit: int = 10) -> dict:
             entry["github_stars"] = p.get("github_stars")
         results.append(entry)
     return {"papers": results, "total": len(results)}
+
+
+def add_paper_to_zotero(
+    *, state,
+    title: str,
+    authors: List[str] | None = None,
+    arxiv_id: str = "",
+    doi: str = "",
+    url: str = "",
+    abstract: str = "",
+) -> dict:
+    """Add a new paper to the user's Zotero library."""
+    from distillate import zotero_client
+
+    # Enrich from HuggingFace if arXiv ID provided
+    hf_data = None
+    if arxiv_id:
+        try:
+            from distillate import huggingface
+            hf_data = huggingface.lookup_paper(arxiv_id)
+        except Exception:
+            log.debug("HF lookup failed for %s", arxiv_id, exc_info=True)
+        if not url:
+            url = f"https://arxiv.org/abs/{arxiv_id}"
+
+    # Use HF data to fill gaps
+    if hf_data:
+        if not authors:
+            authors = hf_data.get("authors", [])
+        if not abstract:
+            abstract = hf_data.get("abstract", "")
+
+    # Build DOI-based URL fallback
+    if doi and not url:
+        url = f"https://doi.org/{doi}"
+
+    # Duplicate check
+    existing = state.find_by_title(title)
+    if existing:
+        return {
+            "success": False,
+            "error": f"Paper '{title}' is already in your library.",
+        }
+    if doi:
+        existing = state.find_by_doi(doi)
+        if existing:
+            return {
+                "success": False,
+                "error": f"A paper with DOI {doi} is already in your library.",
+            }
+
+    # Create in Zotero
+    tags = hf_data.get("ai_keywords", []) if hf_data else []
+    item_key = zotero_client.create_paper(
+        title=title,
+        authors=authors or [],
+        doi=doi,
+        url=url,
+        abstract=abstract,
+        tags=tags,
+    )
+    if not item_key:
+        return {"success": False, "error": "Failed to create paper in Zotero."}
+
+    return {
+        "success": True,
+        "item_key": item_key,
+        "title": title,
+        "message": (
+            f"Added '{title}' to Zotero. "
+            "It will sync to reMarkable on the next distillate run."
+        ),
+    }

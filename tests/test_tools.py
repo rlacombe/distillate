@@ -305,10 +305,79 @@ class TestSynthesizeAcrossPapers:
         assert "error" in result
 
 
+class TestAddPaperToZotero:
+    def test_adds_paper_with_arxiv_id(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        state.find_by_title = lambda t: None
+        state.find_by_doi = lambda d: None
+
+        hf_data = {
+            "authors": ["Alice Smith", "Bob Jones"],
+            "abstract": "An abstract.",
+            "ai_keywords": ["ML"],
+            "github_repo": "https://github.com/org/repo",
+        }
+        with patch("distillate.huggingface.lookup_paper", return_value=hf_data), \
+             patch("distillate.zotero_client.create_paper", return_value="NEW1") as mock_create:
+            result = add_paper_to_zotero(
+                state=state, title="Test Paper", arxiv_id="2401.12345",
+            )
+
+        assert result["success"] is True
+        assert result["item_key"] == "NEW1"
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["authors"] == ["Alice Smith", "Bob Jones"]
+        assert call_kwargs["url"] == "https://arxiv.org/abs/2401.12345"
+        assert call_kwargs["tags"] == ["ML"]
+
+    def test_adds_paper_with_doi(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        state.find_by_title = lambda t: None
+        state.find_by_doi = lambda d: None
+
+        with patch("distillate.zotero_client.create_paper", return_value="NEW2") as mock_create:
+            result = add_paper_to_zotero(
+                state=state, title="DOI Paper",
+                authors=["Alice"], doi="10.1234/test",
+            )
+
+        assert result["success"] is True
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["doi"] == "10.1234/test"
+        assert call_kwargs["url"] == "https://doi.org/10.1234/test"
+
+    def test_duplicate_detection_by_title(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({"K1": _make_doc(key="K1", title="Existing Paper")})
+        state.find_by_title = lambda t: _make_doc(key="K1", title="Existing Paper")
+        state.find_by_doi = lambda d: None
+
+        result = add_paper_to_zotero(
+            state=state, title="Existing Paper",
+        )
+        assert result["success"] is False
+        assert "already" in result["error"]
+
+    def test_zotero_create_failure(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        state.find_by_title = lambda t: None
+        state.find_by_doi = lambda d: None
+
+        with patch("distillate.zotero_client.create_paper", return_value=None):
+            result = add_paper_to_zotero(
+                state=state, title="Failing Paper", authors=["Author"],
+            )
+        assert result["success"] is False
+        assert "Failed" in result["error"]
+
+
 class TestToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.tools import TOOL_SCHEMAS
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 12
         for schema in TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema

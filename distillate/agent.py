@@ -139,6 +139,7 @@ _TOOL_LABELS = {
     "reprocess_paper": "Re-extracting the essence",
     "promote_papers": "Promoting to the shelf",
     "get_trending_papers": "Scanning the latest papers",
+    "add_paper_to_zotero": "Adding to the library",
 }
 
 
@@ -527,6 +528,7 @@ def _execute_tool(name: str, input_data: dict, state: State) -> dict:
         "reprocess_paper": tools.reprocess_paper,
         "promote_papers": tools.promote_papers,
         "get_trending_papers": tools.get_trending_papers,
+        "add_paper_to_zotero": tools.add_paper_to_zotero,
     }
 
     fn = dispatch.get(name)
