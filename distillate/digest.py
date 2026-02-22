@@ -393,6 +393,48 @@ def _queue_health_html(state: State) -> str:
     )
 
 
+def _trending_html(papers: list) -> str:
+    """Build HTML for a 'Trending on HuggingFace' section."""
+    if not papers:
+        return ""
+    lines = [
+        '<p style="margin-top:20px;"><strong>Trending on HuggingFace</strong></p>',
+        "<ul style='padding-left: 20px;'>",
+    ]
+    for p in papers:
+        title = p.get("title", "?")
+        hf_url = p.get("hf_url", "")
+        ai_summary = p.get("ai_summary", "")
+        upvotes = p.get("upvotes", 0)
+
+        title_html = (
+            f'<a href="{hf_url}" style="color:#333;">{title}</a>'
+            if hf_url else title
+        )
+        summary_html = f" &mdash; {ai_summary}" if ai_summary else ""
+        upvote_badge = (
+            f' <span style="color:#999;font-size:12px;">'
+            f"\u25b2{upvotes}</span>"
+        )
+        lines.append(
+            f"<li style='margin-bottom:10px;'>"
+            f"{title_html}{summary_html}{upvote_badge}</li>"
+        )
+    lines.append("</ul>")
+    return "\n".join(lines)
+
+
+def _fetch_trending_for_email(state: State, limit: int = 5) -> list:
+    """Fetch trending papers, optionally filtered by user's topics."""
+    try:
+        from distillate import huggingface
+        papers = huggingface.trending_papers(limit=limit)
+        return papers
+    except Exception:
+        log.warning("Could not fetch HF trending for email", exc_info=True)
+        return []
+
+
 def _push_pending_to_gist(picks: list, suggestion_text: str) -> None:
     """Write pending.json to the state Gist so local --sync can promote."""
     gist_id = config.STATE_GIST_ID
@@ -576,6 +618,9 @@ def _build_body(papers, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)
@@ -784,6 +829,9 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)
