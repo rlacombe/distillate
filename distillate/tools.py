@@ -776,12 +776,16 @@ def add_paper_to_zotero(
                 timeout=10,
             )
             if resp.ok:
+                # arXiv Atom XML has two <title> tags: feed-level (query
+                # string) and entry-level (paper title). Use findall and
+                # take the second one.
                 if not title or title == arxiv_id:
-                    m = re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL)
-                    if m:
-                        fetched = m.group(1).strip().replace("\n", " ")
-                        if not fetched.startswith("ArXiv"):
-                            title = fetched
+                    all_titles = re.findall(r"<title>(.*?)</title>", resp.text, re.DOTALL)
+                    for t in all_titles:
+                        t = t.strip().replace("\n", " ")
+                        if not t.lower().startswith("arxiv"):
+                            title = t
+                            break
                 if not authors:
                     author_matches = re.findall(r"<name>(.*?)</name>", resp.text)
                     if author_matches:
