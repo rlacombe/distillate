@@ -465,13 +465,14 @@ def get_queue(*, state) -> dict:
             "title": doc.get("title", ""),
             "citekey": meta.get("citekey", ""),
             "days_in_queue": days,
-            "tags": meta.get("tags", []),
+            "uploaded_at": uploaded,
+            "tags": meta.get("tags", [])[:5],
             "citation_count": meta.get("citation_count", 0),
-            "paper_type": meta.get("paper_type", ""),
             "promoted": key in promoted,
         })
 
-    papers.sort(key=lambda p: p["days_in_queue"], reverse=True)
+    # Newest first so the model can identify recently added papers
+    papers.sort(key=lambda p: p["uploaded_at"], reverse=True)
     return {"queue": papers, "total": len(papers)}
 
 
