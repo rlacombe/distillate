@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Distillate — From Zotero through reMarkable to structured notes</title>
-  <meta name="description" content="Automate your paper reading workflow: Zotero to reMarkable to structured notes with highlights and AI summaries.">
-  <meta property="og:title" content="Distillate — The essence of every paper you read">
-  <meta property="og:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <title>Distillate — Your research assistant in the terminal</title>
+  <meta name="description" content="An AI research assistant that lives in your terminal. Manages your Zotero library, syncs to reMarkable, extracts highlights, and helps you think across papers.">
+  <meta property="og:title" content="Distillate — Your research assistant in the terminal">
+  <meta property="og:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
   <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Distillate — The essence of every paper you read">
-  <meta name="twitter:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <meta name="twitter:title" content="Distillate — Your research assistant in the terminal">
+  <meta name="twitter:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
   <script>
@@ -74,18 +74,23 @@
     }
 
     .flow {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
+      background: #1c1917;
+      border: 1px solid #333;
       border-radius: 8px;
       padding: 24px 28px;
       margin-bottom: 32px;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.85rem;
-      line-height: 1.8;
-      color: var(--fg);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: #e7e5e4;
       white-space: pre;
       overflow-x: auto;
     }
+
+    .flow .prompt { color: #a78bfa; }
+    .flow .dim { color: #78716c; }
+    .flow .green { color: #86efac; }
+    .flow .bold { color: #fafaf9; font-weight: 600; }
 
     .integration {
       font-size: 0.85rem;
@@ -399,68 +404,73 @@
       text-decoration: underline;
       text-underline-offset: 2px;
     }
+
+    .extra-hero {
+      grid-column: 1 / -1;
+      background: #faf5ff;
+      border-color: #ddd6fe;
+    }
   </style>
 </head>
 <body>
-  <div class="banner">v0.4.4 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.5 &mdash; Now with an AI research assistant &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a></div>
   <div class="container">
     <h1>Distillate</h1>
-    <p class="tagline">The essence of every paper you read.</p>
-    <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
+    <p class="tagline">A research assistant that lives in your terminal.</p>
+    <p class="subtitle">Manages your Zotero library. Syncs to reMarkable. Extracts your highlights. Helps you think across papers.</p>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.4.4</span>
+      <span class="badge badge-purple">PyPI v0.5.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
 
-    <div class="flow">$ distillate   # turn papers into notes!
+    <div class="flow"><span class="prompt">$</span> distillate
 
-save to Zotero ──&gt; auto-syncs to reMarkable
-                       │
-        read &amp; highlight on tablet
-        just move to Read/ when done
-                       │
-                       V
-        auto-saves notes + highlights</div>
+  <span class="dim">───</span> ⚗️  <span class="bold">Nicolas</span> <span class="dim">──────────────────────────────</span>
+  <span class="dim">42 papers read · 7 in queue</span>
+  <span class="dim">Your research alchemist. Type /help or /quit.</span>
+
+<span class="prompt">&gt;</span> What should I read next?
+
+  <span class="green">🔮 Consulting the oracle</span>
+
+  Based on your recent interest in multimodal agents,
+  I'd suggest <span class="bold">ReAct</span> [3] — a complementary
+  approach to what you highlighted in <span class="bold">Toolformer</span>.
+  It's been in your queue the longest at 12 days.</div>
 
     <div class="install">
-      <code>$ pip install distillate
+      <code>$ pip install distillate[ai]
 $ distillate --init</code>
     </div>
 
     <div class="steps">
       <h2>How it works</h2>
-      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Distill.</p>
+      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Ask.</p>
 
       <div class="step">
         <span class="step-number">1</span>
         <strong>Save a paper to Zotero</strong>
-        <p>Use the Zotero browser connector or mobile app. Distillate automatically picks up new papers from your library.</p>
+        <p>Use the Zotero browser connector, mobile app, or ask Nicolas to add a paper by arXiv ID or URL.</p>
       </div>
 
       <div class="step">
         <span class="step-number">2</span>
         <strong>PDF syncs to your reMarkable</strong>
-        <p>Distillate uploads the PDF to your tablet. Optionally removes it from Zotero to save storage (300 MB free tier).</p>
+        <p>Distillate uploads the PDF to your tablet. Read and highlight the passages that matter.</p>
       </div>
 
       <div class="step">
         <span class="step-number">3</span>
-        <strong>Read and highlight on your tablet</strong>
-        <p>Highlight the passages that matter to you. When you're done, just move the document to the Read folder and Distillate does the rest.</p>
+        <strong>Highlights become structured notes</strong>
+        <p>Move the document to Read/ when done. Distillate extracts highlights, generates a summary, and saves a markdown note.</p>
       </div>
 
       <div class="step">
         <span class="step-number">4</span>
-        <strong>Distillate extracts your highlights</strong>
-        <p>Highlighted text is pulled from the reMarkable, cleaned up, and saved as a structured markdown note grouped by page.</p>
-      </div>
-
-      <div class="step">
-        <span class="step-number">5</span>
-        <strong>Everything stays on your machine</strong>
-        <p>Your highlights, reading log, and PDFs are saved to an Obsidian vault or a plain folder on your computer.</p>
+        <strong>Ask Nicolas anything about your library</strong>
+        <p>Search papers, compare findings, get reading suggestions, check stats — all in natural language from your terminal.</p>
       </div>
     </div>
 
@@ -468,6 +478,11 @@ $ distillate --init</code>
       <h2>Built in</h2>
       <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
       <div class="extras-grid">
+        <div class="extra extra-hero">
+          <strong>⚗️ Research assistant</strong>
+          <em class="extra-subtitle">Interactive agent</em>
+          <span>Ask questions about your library in natural language. Nicolas searches papers, synthesizes across your highlights, suggests what to read next, and adds papers to Zotero — all from the terminal.</span>
+        </div>
         <div class="extra">
           <strong>Local-first</strong>
           <em class="extra-subtitle">Plain files you own</em>
@@ -476,7 +491,7 @@ $ distillate --init</code>
         <div class="extra">
           <strong>Zotero Round-Trip</strong>
           <em class="extra-subtitle">Highlights sync back</em>
-          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps</span>
+          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps.</span>
         </div>
         <div class="extra">
           <strong>Handwritten notes</strong>
@@ -488,11 +503,6 @@ $ distillate --init</code>
           <em class="extra-subtitle">Automatic</em>
           <span>When metadata changes in Zotero, notes and PDFs are renamed to match. No orphaned files or broken links.</span>
         </div>
-        <div class="extra">
-          <strong>Scheduling</strong>
-          <em class="extra-subtitle">launchd &amp; cron</em>
-          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
-        </div>
       </div>
     </div>
 
@@ -503,7 +513,7 @@ $ distillate --init</code>
         <div class="extra">
           <strong>AI summaries</strong>
           <em class="extra-subtitle">Anthropic API</em>
-          <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
+          <span>One-liner, key learnings, and a paragraph summary for each paper you read.</span>
         </div>
         <div class="extra">
           <strong>Handwriting extraction</strong>
@@ -511,24 +521,24 @@ $ distillate --init</code>
           <span>Margin notes transcribed via Claude and woven into your AI summary. Your thinking becomes part of your notes.</span>
         </div>
         <div class="extra">
-          <strong>Paper suggestions</strong>
-          <em class="extra-subtitle">Anthropic API</em>
-          <span>Pick what to read next from your queue. Suggestions are promoted to your reMarkable home screen.</span>
+          <strong>Trending papers</strong>
+          <em class="extra-subtitle extra-free">HuggingFace</em>
+          <span>Browse what's trending in AI research. Included in daily emails and available via the agent.</span>
         </div>
         <div class="extra">
           <strong>Smart metadata</strong>
           <em class="extra-subtitle extra-free">Semantic Scholar</em>
-          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
+          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete.</span>
         </div>
         <div class="extra">
           <strong>Collection filtering</strong>
           <em class="extra-subtitle extra-free">Zotero collections</em>
-          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library</span>
+          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library.</span>
         </div>
         <div class="extra">
           <strong>Email digest</strong>
           <em class="extra-subtitle extra-free">Free Resend account</em>
-          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
+          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox.</span>
         </div>
       </div>
     </div>
@@ -541,14 +551,14 @@ $ distillate --init</code>
     <div class="commands">
       <h2>Commands</h2>
       <div class="command-list">
-        <div class="command"><code>distillate</code><span>Sync Zotero -> reMarkable -> notes (default)</span></div>
+        <div class="command"><code>distillate</code><span>Launch the research assistant (default)</span></div>
+        <div class="command"><code>distillate "What's in my queue?"</code><span>Ask a one-off question</span></div>
+        <div class="command"><code>distillate --sync</code><span>Sync Zotero &rarr; reMarkable &rarr; notes</span></div>
         <div class="command"><code>distillate --import</code><span>Import existing papers from Zotero</span></div>
         <div class="command"><code>distillate --status</code><span>Show queue health and reading stats</span></div>
         <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
         <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
         <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
-        <div class="command"><code>distillate --refresh-metadata</code><span>Re-fetch metadata from Zotero + Semantic Scholar</span></div>
-        <div class="command"><code>distillate --list</code><span>List all tracked papers</span></div>
         <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
       </div>
     </div>
@@ -559,9 +569,9 @@ $ distillate --init</code>
         <tr><th>Component</th><th>Notes</th><th></th></tr>
         <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a> account</td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
         <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a> tablet</td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-purple">Required</span></td></tr>
+        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a> API key</td><td>Powers the agent, summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a> vault</td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://www.semanticscholar.org/" class="integration" style="color:#1857b6;background:#dbeafe;">Semantic Scholar</a></td><td>Auto-completes dates, venues, and citation counts</td><td><span class="badge badge-green">Free</span></td></tr>
-        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a> API key</td><td>For AI summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a> account</td><td>For weekly digest emails</td><td><span class="badge badge-green">Free</span></td></tr>
       </table>
     </div>
