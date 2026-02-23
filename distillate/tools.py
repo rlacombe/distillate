@@ -612,19 +612,22 @@ def synthesize_across_papers(
 
 
 def run_sync(*, state) -> dict:
-    """Trigger the full sync pipeline via subprocess."""
+    """Trigger the full sync pipeline via subprocess.
+
+    stdout passes through to the terminal (live progress), stderr is
+    captured for error reporting.
+    """
     import subprocess
     import sys
     try:
         result = subprocess.run(
             [sys.executable, "-m", "distillate", "--sync"],
-            capture_output=True, text=True, timeout=300,
+            stderr=subprocess.PIPE, text=True, timeout=300,
         )
-        output = result.stdout.strip()
         if result.returncode != 0:
-            err = result.stderr.strip() or output or "Sync failed"
+            err = result.stderr.strip() or "Sync failed"
             return {"success": False, "error": err}
-        return {"success": True, "output": output}
+        return {"success": True, "output": "Sync completed."}
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Sync timed out after 5 minutes."}
     except FileNotFoundError:
@@ -759,22 +762,24 @@ def add_paper_to_zotero(
         if not abstract:
             abstract = hf_data.get("abstract", "")
 
-    # Fallback: fetch title from arXiv API if HF didn't have it
-    if arxiv_id and (not title or title == arxiv_id):
+    # Fill remaining gaps from arXiv API (title, authors, abstract, date)
+    pub_date = ""
+    if arxiv_id and (not title or title == arxiv_id or not authors or not abstract):
         try:
+            import re
+
             import requests as _req
             resp = _req.get(
                 f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
                 timeout=10,
             )
             if resp.ok:
-                import re
-                m = re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL)
-                if m:
-                    fetched = m.group(1).strip().replace("\n", " ")
-                    # Skip the feed-level title "ArXiv Query:..."
-                    if not fetched.startswith("ArXiv"):
-                        title = fetched
+                if not title or title == arxiv_id:
+                    m = re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL)
+                    if m:
+                        fetched = m.group(1).strip().replace("\n", " ")
+                        if not fetched.startswith("ArXiv"):
+                            title = fetched
                 if not authors:
                     author_matches = re.findall(r"<name>(.*?)</name>", resp.text)
                     if author_matches:
@@ -783,6 +788,10 @@ def add_paper_to_zotero(
                     sm = re.search(r"<summary>(.*?)</summary>", resp.text, re.DOTALL)
                     if sm:
                         abstract = sm.group(1).strip().replace("\n", " ")
+                # Extract publication date
+                dm = re.search(r"<published>(.*?)</published>", resp.text)
+                if dm:
+                    pub_date = dm.group(1).strip()[:10]  # "2025-01-18"
         except Exception:
             log.debug("arXiv API lookup failed for %s", arxiv_id, exc_info=True)
 
@@ -820,6 +829,7 @@ def add_paper_to_zotero(
         doi=doi,
         url=url,
         abstract=abstract,
+        publication_date=pub_date,
         tags=tags,
     )
     if not item_key:
