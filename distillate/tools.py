@@ -56,16 +56,16 @@ def _paper_summary(key: str, doc: dict, state) -> dict:
     """Build a concise paper summary dict for tool results."""
     meta = doc.get("metadata", {})
     idx = state.index_of(key)
+    summary = doc.get("summary", "") or ""
     return {
         "index": idx,
-        "key": key,
         "title": doc.get("title", ""),
         "citekey": meta.get("citekey", ""),
         "status": doc.get("status", ""),
-        "authors": doc.get("authors", []),
-        "summary": doc.get("summary", ""),
+        "authors": doc.get("authors", [])[:3],
+        "summary": summary[:200] + ("..." if len(summary) > 200 else ""),
         "engagement": doc.get("engagement", 0),
-        "tags": meta.get("tags", []),
+        "tags": meta.get("tags", [])[:5],
         "citation_count": meta.get("citation_count", 0),
         "publication_date": meta.get("publication_date", ""),
     }
@@ -326,7 +326,7 @@ def search_papers(*, state, query: str, status: str = None) -> dict:
     if status:
         matches = [(k, d) for k, d in matches if d.get("status") == status]
 
-    results = [_paper_summary(k, d, state) for k, d in matches[:20]]
+    results = [_paper_summary(k, d, state) for k, d in matches[:10]]
     return {"results": results, "total": len(matches)}
 
 
@@ -353,7 +353,7 @@ def get_paper_details(*, state, identifier: str) -> dict:
         "publication_date": meta.get("publication_date", ""),
         "paper_type": meta.get("paper_type", ""),
         "tags": meta.get("tags", []),
-        "abstract": meta.get("abstract", ""),
+        "abstract": (meta.get("abstract", "") or "")[:500],
         "summary": doc.get("summary", ""),
         "engagement": doc.get("engagement", 0),
         "highlight_count": doc.get("highlight_count", 0),
@@ -375,13 +375,15 @@ def get_paper_details(*, state, identifier: str) -> dict:
     note_content = _read_note_content(citekey, doc.get("title", ""))
     if note_content:
         highlights = _extract_highlights_from_note(note_content)
+        if len(highlights) > 2000:
+            highlights = highlights[:2000] + "\n... (truncated)"
         # Extract handwritten notes section too
         hw_start = note_content.find("## Handwritten Notes")
         if hw_start >= 0:
             hw_end = note_content.find("\n## ", hw_start + 1)
             notes_text = note_content[hw_start:hw_end] if hw_end > 0 else note_content[hw_start:]
-            if len(notes_text) > 1500:
-                notes_text = notes_text[:1500] + "\n... (truncated)"
+            if len(notes_text) > 1000:
+                notes_text = notes_text[:1000] + "\n... (truncated)"
 
     return {
         "found": True,
@@ -567,7 +569,7 @@ def synthesize_across_papers(
             parts.append(f"Summary: {doc['summary']}")
         abstract = meta.get("abstract", "")
         if abstract:
-            parts.append(f"Abstract: {abstract}")
+            parts.append(f"Abstract: {abstract[:500]}")
 
         # Read highlights from note
         note = _read_note_content(meta.get("citekey", ""), title)

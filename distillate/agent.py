@@ -179,19 +179,20 @@ class _ThinkingSpinner:
             self._stop.wait(0.1)
 
 
-# Use the configured smart model (Sonnet by default)
+# Use the configured agent model (Haiku by default — fast + cheap for REPL)
 _AGENT_MODEL = None  # resolved lazily after config is loaded
 
 _MAX_TOOL_STEPS = 5
-_MAX_TOKENS = 2048
-_CONVERSATION_TRIM_THRESHOLD = 40
-_CONVERSATION_KEEP = 20
+_MAX_TOKENS = 1024
+_CONVERSATION_TRIM_THRESHOLD = 20
+_CONVERSATION_KEEP = 10
+_MAX_TOOL_RESULT_CHARS = 4000  # truncate large tool responses
 
 
 def _get_model() -> str:
     global _AGENT_MODEL
     if _AGENT_MODEL is None:
-        _AGENT_MODEL = config.CLAUDE_SMART_MODEL
+        _AGENT_MODEL = config.CLAUDE_AGENT_MODEL
     return _AGENT_MODEL
 
 
@@ -478,10 +479,13 @@ def _handle_turn(
             spinner.start()
             result = _execute_tool(tool_use.name, tool_use.input, state)
             spinner.stop()
+            result_json = json.dumps(result)
+            if len(result_json) > _MAX_TOOL_RESULT_CHARS:
+                result_json = result_json[:_MAX_TOOL_RESULT_CHARS] + '..."}'
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
-                "content": json.dumps(result),
+                "content": result_json,
             })
         conversation.append({"role": "user", "content": tool_results})
 
