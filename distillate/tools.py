@@ -614,9 +614,10 @@ def synthesize_across_papers(
 def run_sync(*, state) -> dict:
     """Trigger the full sync pipeline via subprocess."""
     import subprocess
+    import sys
     try:
         result = subprocess.run(
-            ["distillate", "--sync"],
+            [sys.executable, "-m", "distillate", "--sync"],
             capture_output=True, text=True, timeout=300,
         )
         output = result.stdout.strip()
@@ -627,7 +628,7 @@ def run_sync(*, state) -> dict:
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Sync timed out after 5 minutes."}
     except FileNotFoundError:
-        return {"success": False, "error": "distillate command not found."}
+        return {"success": False, "error": "Python executable not found."}
 
 
 def reprocess_paper(*, state, identifier: str) -> dict:

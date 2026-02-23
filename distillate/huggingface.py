@@ -73,7 +73,8 @@ def trending_papers_for_week(week: str = "", limit: int = 5) -> List[Dict[str, A
 def lookup_paper(arxiv_id: str) -> Optional[Dict[str, Any]]:
     """Look up a paper by arXiv ID for metadata enrichment.
 
-    Returns github_repo, github_stars, upvotes, ai_keywords — or None.
+    Returns title, authors, abstract, github_repo, github_stars,
+    upvotes, ai_keywords — or None if not found.
     """
     if not arxiv_id:
         return None
@@ -84,6 +85,13 @@ def lookup_paper(arxiv_id: str) -> Optional[Dict[str, Any]]:
         resp.raise_for_status()
         data = resp.json()
         return {
+            "title": data.get("title", ""),
+            "authors": [
+                a["name"]
+                for a in data.get("authors", [])
+                if not a.get("hidden")
+            ],
+            "abstract": data.get("summary", ""),
             "github_repo": data.get("githubRepo"),
             "github_stars": data.get("githubStars"),
             "upvotes": data.get("upvotes", 0),

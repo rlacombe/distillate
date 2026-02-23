@@ -453,6 +453,10 @@ def create_paper(
     # that already have workflow tags.  The sync loop adds the inbox tag
     # in _upload_paper() after processing.
 
+    # Place in the user's collection so scoped syncs pick it up
+    if config.ZOTERO_COLLECTION_KEY:
+        item["collections"] = [config.ZOTERO_COLLECTION_KEY]
+
     resp = _post("/items", json=[item])
     result = resp.json()
     successful = result.get("successful", {})

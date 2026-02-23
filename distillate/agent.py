@@ -38,7 +38,7 @@ def _is_dark_background() -> bool:
     if colorfgbg:
         try:
             bg = int(colorfgbg.rsplit(";", 1)[-1])
-            return bg >= 8 or bg == 0
+            return bg < 8  # 0-7 are dark ANSI colors
         except ValueError:
             pass
     return True
@@ -110,36 +110,36 @@ class _StreamFormatter:
 
 
 _THINKING_PHRASES = [
-    "Heating the flask",
-    "Dissolving the precipitate",
-    "Filtering the solution",
-    "Distilling the essence",
-    "Reading the residue",
-    "Decanting the extract",
-    "Measuring the tincture",
-    "Stirring the crucible",
-    "Consulting the codex",
-    "Preparing the solvent",
-    "Observing the reaction",
-    "Condensing the vapor",
+    "\U0001F525 Heating the flask",
+    "\U0001F9EA Dissolving the precipitate",
+    "\u2697\ufe0f Filtering the solution",
+    "\U0001F4A7 Distilling the essence",
+    "\U0001F52C Reading the residue",
+    "\U0001F9EB Decanting the extract",
+    "\u2697\ufe0f Measuring the tincture",
+    "\U0001F31F Stirring the crucible",
+    "\U0001F4DC Consulting the codex",
+    "\U0001F9EA Preparing the solvent",
+    "\U0001F52C Observing the reaction",
+    "\U0001F4A8 Condensing the vapor",
 ]
 
 _SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
 
 
 _TOOL_LABELS = {
-    "search_papers": "Searching the library",
-    "get_paper_details": "Unrolling the manuscript",
-    "get_reading_stats": "Tallying the ledger",
-    "get_queue": "Inspecting the queue",
-    "get_recent_reads": "Reviewing recent reads",
-    "suggest_next_reads": "Consulting the oracle",
-    "synthesize_across_papers": "Cross-referencing texts",
-    "run_sync": "Firing up the furnace",
-    "reprocess_paper": "Re-extracting the essence",
-    "promote_papers": "Promoting to the shelf",
-    "get_trending_papers": "Scanning the latest papers",
-    "add_paper_to_zotero": "Adding to the library",
+    "search_papers": "\U0001F50D Searching the library",
+    "get_paper_details": "\U0001F4DC Unrolling the manuscript",
+    "get_reading_stats": "\U0001F4CA Tallying the ledger",
+    "get_queue": "\u2697\ufe0f Inspecting the queue",
+    "get_recent_reads": "\U0001F4DA Reviewing recent reads",
+    "suggest_next_reads": "\U0001F52E Consulting the oracle",
+    "synthesize_across_papers": "\u2728 Cross-referencing texts",
+    "run_sync": "\U0001F525 Firing up the furnace",
+    "reprocess_paper": "\U0001F9EA Re-extracting the essence",
+    "promote_papers": "\u2B50 Promoting to the shelf",
+    "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
+    "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
 }
 
 
@@ -198,6 +198,30 @@ def _get_model() -> str:
     if _AGENT_MODEL is None:
         _AGENT_MODEL = config.CLAUDE_AGENT_MODEL
     return _AGENT_MODEL
+
+
+def _truncate_result(result: dict, max_chars: int) -> dict:
+    """Truncate a tool result dict so its JSON stays under max_chars.
+
+    Walks top-level string values and list values, shortening them
+    until the serialized size fits. Produces valid JSON unlike naive slicing.
+    """
+    import json as _json
+    if len(_json.dumps(result)) <= max_chars:
+        return result
+
+    out = dict(result)
+    # First pass: truncate long string values
+    for key, val in out.items():
+        if isinstance(val, str) and len(val) > 500:
+            out[key] = val[:500] + "... (truncated)"
+        elif isinstance(val, list) and len(val) > 10:
+            out[key] = val[:10] + ["... (truncated)"]
+    # Second pass: if still too large, drop the biggest fields
+    while len(_json.dumps(out)) > max_chars and out:
+        biggest = max(out, key=lambda k: len(_json.dumps(out[k])))
+        out[biggest] = "(truncated)"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +360,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         if not user_input:
             continue
         if user_input.lower().rstrip(".!") in ("exit", "quit", "/quit", "/exit", "/q"):
-            print("  See you next time!")
+            print("  \u2697\ufe0f See you next time!")
             return
         if user_input.lower() in ("/clear",):
             conversation.clear()
@@ -376,7 +400,7 @@ def _print_welcome(state: State) -> None:
 
     print()
     print(header_prefix + header_tail)
-    print(f"  {n_read} papers read \u00b7 {n_queue} in queue")
+    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue")
     print(f"  {_dim('Your research alchemist. Type /help or /quit.')}")
     print(footer)
 
@@ -512,7 +536,7 @@ def _handle_turn(
                 spinner.stop()
             result_json = json.dumps(result)
             if len(result_json) > _MAX_TOOL_RESULT_CHARS:
-                result_json = result_json[:_MAX_TOOL_RESULT_CHARS] + '..."}'
+                result_json = json.dumps(_truncate_result(result, _MAX_TOOL_RESULT_CHARS))
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
@@ -522,7 +546,12 @@ def _handle_turn(
 
     # Trim conversation to prevent context overflow
     if len(conversation) > _CONVERSATION_TRIM_THRESHOLD:
-        conversation[:] = conversation[-_CONVERSATION_KEEP:]
+        trimmed = conversation[-_CONVERSATION_KEEP:]
+        # Ensure conversation starts with a user message (not an orphaned
+        # tool_result left over from a mid-sequence trim).
+        while trimmed and trimmed[0].get("role") == "assistant":
+            trimmed.pop(0)
+        conversation[:] = trimmed
 
 
 def _stream_response(client, system_prompt, conversation, tools):

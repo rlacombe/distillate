@@ -174,6 +174,9 @@ class TestLookupPaper:
         mock_get.return_value = mock_resp
 
         result = lookup_paper("2501.12948")
+        assert result["title"] == "Test Paper"
+        assert result["authors"] == ["Alice"]
+        assert result["abstract"] == "Abstract."
         assert result["github_repo"] == "https://github.com/org/repo"
         assert result["github_stars"] == 5000
         assert result["upvotes"] == 441
@@ -208,6 +211,9 @@ class TestLookupPaper:
         mock_get.return_value = mock_resp
 
         result = lookup_paper("2501.12948")
+        assert result["title"] == ""
+        assert result["authors"] == []
+        assert result["abstract"] == ""
         assert result["github_repo"] is None
         assert result["github_stars"] is None
         assert result["upvotes"] == 10
