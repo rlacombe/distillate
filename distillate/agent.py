@@ -11,7 +11,7 @@ import os
 import random
 import sys
 import threading
-import time
+
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -171,7 +171,7 @@ class _ThinkingSpinner:
                 print(flush=True)
             else:
                 # Erase the spinner line
-                print(f"\r\033[2K", end="", flush=True)
+                print("\r\033[2K", end="", flush=True)
 
     def _spin(self) -> None:
         i = 0
@@ -394,7 +394,8 @@ def _print_welcome(state: State) -> None:
 
     w = min(_term_width(), 64)
     # "─── ⚗️  Nicolas " = 17 visible chars (emoji is 2 wide)
-    header_prefix = f"  {_dim('\u2500\u2500\u2500')} \u2697\ufe0f  {_bold('Nicolas')} "
+    dashes = _dim("\u2500\u2500\u2500")
+    header_prefix = f"  {dashes} \u2697\ufe0f  {_bold('Nicolas')} "
     header_tail = _dim("\u2500" * max(0, w - 19))
     footer = _dim("  " + "\u2500" * (w - 2))
 
@@ -411,7 +412,8 @@ def _print_welcome(state: State) -> None:
     if n_read > 0:
         hints.append("Summarize my last read")
     hints.append("What's trending in AI?")
-    print(f"\n  {_dim('Try:')} {_dim(' \u00b7 '.join(hints))}")
+    sep = " \u00b7 "
+    print(f"\n  {_dim('Try:')} {_dim(sep.join(hints))}")
 
 
 def _run_init() -> None:
@@ -433,11 +435,11 @@ def _print_help() -> None:
         "    /help    Show this help\n"
         "\n"
         f"  {_bold('Try asking')}\n"
-        f'    {_dim("What\'s in my queue?")}\n'
-        f'    {_dim("Tell me about paper 42")}\n'
-        f'    {_dim("Compare my last two ML papers")}\n'
-        f'    {_dim("What should I read next?")}\n'
-        f'    {_dim("How many papers have I read this month?")}\n'
+        f"    {_dim('What is in my queue?')}\n"
+        f"    {_dim('Tell me about paper 42')}\n"
+        f"    {_dim('Compare my last two ML papers')}\n"
+        f"    {_dim('What should I read next?')}\n"
+        f"    {_dim('How many papers have I read this month?')}\n"
     )
 
 
