@@ -430,7 +430,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         if not user_input:
             continue
         if user_input.lower().rstrip(".!") in ("exit", "quit", "/quit", "/exit", "/q"):
-            print("\n  \u2697\ufe0f See you next time!\n")
+            print("\n  \u2697\ufe0f  See you next time!\n")
             break
         if user_input.lower() in ("/clear",):
             conversation.clear()

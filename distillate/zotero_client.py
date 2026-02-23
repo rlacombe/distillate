@@ -422,6 +422,9 @@ def create_paper(
     """
     creators = []
     for name in authors:
+        name = name.strip()
+        if not name:
+            continue
         parts = name.rsplit(" ", 1)
         if len(parts) == 2:
             creators.append({
@@ -430,7 +433,8 @@ def create_paper(
             })
         else:
             creators.append({
-                "lastName": name, "creatorType": "author",
+                "firstName": "", "lastName": name,
+                "creatorType": "author",
             })
 
     item: Dict[str, Any] = {
