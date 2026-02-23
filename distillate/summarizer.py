@@ -244,7 +244,7 @@ def _call_claude(prompt: str, max_tokens: int = 400, model: Optional[str] = None
     except ImportError:
         log.error(
             "AI summaries require the 'anthropic' package. "
-            "Install it with: pip install distillate[ai]"
+            "Install it with: pip install distillate"
         )
         return None
 

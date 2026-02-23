@@ -331,7 +331,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
     except ImportError:
         print(
             "\n  Agent mode requires the 'anthropic' package.\n"
-            "  Install it with: pip install distillate[ai]\n"
+            "  Install it with: pip install distillate\n"
         )
         sys.exit(1)
 

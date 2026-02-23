@@ -24,6 +24,12 @@ Interactive agent mode — distillate becomes a research assistant.
 - **Actionable API errors**: credit depletion, invalid key, rate limiting, and overloaded errors now show specific messages with next steps
 - **Pending summary placeholder**: papers processed without API credits show "(Summary pending — reprocess when API credits are available.)" instead of a confusing fallback
 
+### Migration from 0.4.x
+
+- **`distillate` now opens the agent REPL** — use `distillate --sync` for the previous sync-only behavior
+- **Optional extras removed** — `[ai]`, `[email]`, and `[all]` install extras are gone. `pip install distillate` (or `uv tool install distillate`) now includes everything
+- **Newsletter signup** — the init wizard (`--init`) now offers an optional email signup at the end
+
 ### Bug Fixes
 
 - **Collection-aware paper creation**: `create_paper()` now adds items to the user's Zotero collection when `ZOTERO_COLLECTION_KEY` is set

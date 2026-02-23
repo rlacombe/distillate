@@ -46,7 +46,7 @@ def _send_email(subject: str, html: str) -> dict | None:
     except ImportError:
         log.error(
             "Email requires the 'resend' package. "
-            "Install it with: pip install distillate[email]"
+            "Install it with: pip install distillate"
         )
         return None
     if not config.RESEND_API_KEY:

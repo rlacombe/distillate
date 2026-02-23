@@ -1977,6 +1977,35 @@ def _schedule_linux() -> None:
     print()
 
 
+_SUBSCRIBE_URL = "https://distillate-subscribe.distillate.workers.dev/"
+
+
+def _init_newsletter() -> None:
+    """Offer to subscribe to product update emails."""
+    print()
+    print("  Product Updates")
+    print("  " + "-" * 40)
+    print("  Get notified about new features and releases.")
+    print("  One email per release, unsubscribe anytime.")
+    print()
+    email = input("  Your email (Enter to skip): ").strip()
+    if not email:
+        print("  Skipped.")
+        return
+    try:
+        resp = requests.post(
+            _SUBSCRIBE_URL,
+            json={"email": email},
+            timeout=5,
+        )
+        if resp.ok:
+            print("  You're in! We'll keep you posted.")
+        else:
+            print("  Couldn't subscribe right now, but no worries.")
+    except Exception:
+        print("  Couldn't reach the server, but no worries.")
+
+
 def _init_done(env_path) -> None:
     """Print post-setup instructions, offer import of existing papers, and automated syncing."""
     print()
@@ -2031,6 +2060,9 @@ def _init_done(env_path) -> None:
 
     # Offer automated sync via _schedule()
     _schedule()
+
+    # Newsletter opt-in
+    _init_newsletter()
 
     print()
     print("  " + "=" * 48)
