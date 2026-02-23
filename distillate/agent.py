@@ -312,7 +312,9 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         _handle_turn(client, state, conversation, query, stream=False)
         return
 
-    # Interactive REPL
+    # Interactive REPL — clear screen for full-screen feel
+    if _is_tty():
+        print("\033[2J\033[H", end="", flush=True)
     _print_welcome(state)
 
     while True:
