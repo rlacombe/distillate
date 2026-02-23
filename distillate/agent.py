@@ -271,6 +271,9 @@ def _build_system_prompt(state: State) -> str:
         "- Confirm with the user before write operations (sync, reprocess, "
         "promote).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
+        "- End with a statement, not a question. Don't ask \"Want to know more?\" "
+        "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
+        "will ask if they want more.\n"
         "- When asked to compare or synthesize, use synthesize_across_papers.\n"
     )
 
