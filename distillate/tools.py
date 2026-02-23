@@ -758,6 +758,33 @@ def add_paper_to_zotero(
         if not abstract:
             abstract = hf_data.get("abstract", "")
 
+    # Fallback: fetch title from arXiv API if HF didn't have it
+    if arxiv_id and (not title or title == arxiv_id):
+        try:
+            import requests as _req
+            resp = _req.get(
+                f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
+                timeout=10,
+            )
+            if resp.ok:
+                import re
+                m = re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL)
+                if m:
+                    fetched = m.group(1).strip().replace("\n", " ")
+                    # Skip the feed-level title "ArXiv Query:..."
+                    if not fetched.startswith("ArXiv"):
+                        title = fetched
+                if not authors:
+                    author_matches = re.findall(r"<name>(.*?)</name>", resp.text)
+                    if author_matches:
+                        authors = author_matches
+                if not abstract:
+                    sm = re.search(r"<summary>(.*?)</summary>", resp.text, re.DOTALL)
+                    if sm:
+                        abstract = sm.group(1).strip().replace("\n", " ")
+        except Exception:
+            log.debug("arXiv API lookup failed for %s", arxiv_id, exc_info=True)
+
     # Build DOI-based URL fallback
     if doi and not url:
         url = f"https://doi.org/{doi}"

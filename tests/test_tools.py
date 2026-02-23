@@ -386,6 +386,32 @@ class TestAddPaperToZotero:
         assert call_kwargs["authors"] == ["Eve"]
         assert call_kwargs["url"] == "https://arxiv.org/abs/2401.99999"
 
+    def test_falls_back_to_arxiv_api(self):
+        from distillate.tools import add_paper_to_zotero
+        state = MockState({})
+        state.find_by_title = lambda t: None
+        state.find_by_doi = lambda d: None
+
+        arxiv_xml = """<?xml version="1.0"?>
+        <feed><entry>
+            <title>Mem0: Building Production-Ready AI Agents</title>
+            <name>Alice</name><name>Bob</name>
+            <summary>A memory system for agents.</summary>
+        </entry></feed>"""
+        mock_resp = type("R", (), {"ok": True, "text": arxiv_xml})()
+
+        with patch("distillate.huggingface.lookup_paper", return_value=None), \
+             patch("requests.get", return_value=mock_resp), \
+             patch("distillate.zotero_client.create_paper", return_value="NEW4") as mock_create:
+            result = add_paper_to_zotero(
+                state=state, arxiv_id="2504.19413",
+            )
+
+        assert result["success"] is True
+        call_kwargs = mock_create.call_args[1]
+        assert "Mem0" in call_kwargs["title"]
+        assert call_kwargs["authors"] == ["Alice", "Bob"]
+
     def test_missing_title_returns_error(self):
         from distillate.tools import add_paper_to_zotero
         state = MockState({})
