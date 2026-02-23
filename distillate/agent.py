@@ -161,13 +161,17 @@ class _ThinkingSpinner:
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, keep_label: bool = False) -> None:
         self._stop.set()
         if self._thread:
             self._thread.join()
-        # Erase the spinner line
         if _is_tty():
-            print(f"\r\033[2K", end="", flush=True)
+            if keep_label:
+                # Freeze the spinner text and move to next line
+                print(flush=True)
+            else:
+                # Erase the spinner line
+                print(f"\r\033[2K", end="", flush=True)
 
     def _spin(self) -> None:
         i = 0
@@ -248,6 +252,14 @@ def _build_system_prompt(state: State) -> str:
         f"{recent_section}\n\n"
         "## Research Interests\n"
         f"{tags_section}\n\n"
+        "## Personality\n"
+        "You're warm, witty, and genuinely curious about the user's research. "
+        "Think of yourself as a fellow scholar who happens to live in an "
+        "alchemist's workshop \u2014 you might say a paper's findings are "
+        "\"pure gold\" or that you'll \"distill the key insights.\" Keep the "
+        "alchemy flavor light and natural, not forced. Show enthusiasm when "
+        "a paper is interesting. Be opinionated \u2014 if a result is "
+        "surprising or a method is clever, say so.\n\n"
         "## Guidelines\n"
         "- Look up papers with tools before answering \u2014 don't guess "
         "from memory.\n"
@@ -260,9 +272,6 @@ def _build_system_prompt(state: State) -> str:
         "promote).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
         "- When asked to compare or synthesize, use synthesize_across_papers.\n"
-        "- Be warm and knowledgeable, like a fellow researcher who's read "
-        "everything in the library. Light alchemy metaphors are welcome "
-        "but don't overdo it.\n"
     )
 
 
@@ -472,13 +481,20 @@ def _handle_turn(
         if stream and has_text:
             print()
 
-        # Execute tools with spinner (reuses the same line)
+        # Execute tools with spinner
+        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers"}
         tool_results = []
         for tool_use in tool_uses:
             spinner = _ThinkingSpinner(_tool_label(tool_use.name))
+            verbose = tool_use.name in _VERBOSE_TOOLS
             spinner.start()
-            result = _execute_tool(tool_use.name, tool_use.input, state)
-            spinner.stop()
+            if verbose:
+                # These tools print progress — freeze spinner label first
+                spinner.stop(keep_label=True)
+                result = _execute_tool(tool_use.name, tool_use.input, state)
+            else:
+                result = _execute_tool(tool_use.name, tool_use.input, state)
+                spinner.stop()
             result_json = json.dumps(result)
             if len(result_json) > _MAX_TOOL_RESULT_CHARS:
                 result_json = result_json[:_MAX_TOOL_RESULT_CHARS] + '..."}'
