@@ -825,12 +825,19 @@ def add_paper_to_zotero(
     if not item_key:
         return {"success": False, "error": "Failed to create paper in Zotero."}
 
+    # Auto-sync so the PDF downloads and uploads to reMarkable immediately
+    sync_result = run_sync(state=state)
+    if sync_result.get("success"):
+        message = f"Added '{title}' to Zotero and synced to reMarkable."
+    else:
+        message = (
+            f"Added '{title}' to Zotero. "
+            "Sync had issues — run 'distillate --sync' to retry."
+        )
+
     return {
         "success": True,
         "item_key": item_key,
         "title": title,
-        "message": (
-            f"Added '{title}' to Zotero. "
-            "It will sync to reMarkable on the next distillate run."
-        ),
+        "message": message,
     }

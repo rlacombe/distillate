@@ -22,6 +22,63 @@ from distillate.tools import TOOL_SCHEMAS
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Conversation log — persists across sessions
+# ---------------------------------------------------------------------------
+
+_CONVERSATION_LOG_PATH = config.CONFIG_DIR / "conversations.json"
+_MAX_SESSIONS = 50
+_PROMPT_SESSIONS = 3  # how many past sessions to include in system prompt
+
+
+def _load_conversation_log() -> list[dict]:
+    """Load conversation history from disk."""
+    try:
+        return json.loads(_CONVERSATION_LOG_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_conversation_log(sessions: list[dict]) -> None:
+    """Save conversation history, keeping the most recent sessions."""
+    trimmed = sessions[-_MAX_SESSIONS:]
+    _CONVERSATION_LOG_PATH.write_text(
+        json.dumps(trimmed, ensure_ascii=False, indent=None),
+        encoding="utf-8",
+    )
+
+
+def _format_past_sessions(sessions: list[dict]) -> str:
+    """Format recent sessions for inclusion in the system prompt."""
+    if not sessions:
+        return ""
+
+    now = datetime.now(timezone.utc)
+    lines = []
+    for s in sessions[-_PROMPT_SESSIONS:]:
+        queries = [m["content"] for m in s.get("messages", []) if m["role"] == "user"]
+        if not queries:
+            continue
+        # Human-readable relative date
+        try:
+            ts = datetime.fromisoformat(s["session_id"])
+            delta = (now - ts).days
+            if delta == 0:
+                when = "Today"
+            elif delta == 1:
+                when = "Yesterday"
+            else:
+                when = f"{delta} days ago"
+        except (ValueError, KeyError):
+            when = "Earlier"
+        quoted = ", ".join(f'"{q[:60]}"' for q in queries[:5])
+        lines.append(f"- {when}: {quoted}")
+
+    if not lines:
+        return ""
+    return "## Recent Conversations\n" + "\n".join(lines) + "\n\n"
+
+
+# ---------------------------------------------------------------------------
 # ANSI helpers
 # ---------------------------------------------------------------------------
 
@@ -162,6 +219,8 @@ class _ThinkingSpinner:
         self._thread.start()
 
     def stop(self, keep_label: bool = False) -> None:
+        if self._stop.is_set():
+            return  # already stopped — idempotent
         self._stop.set()
         if self._thread:
             self._thread.join()
@@ -228,7 +287,7 @@ def _truncate_result(result: dict, max_chars: int) -> dict:
 # System prompt
 # ---------------------------------------------------------------------------
 
-def _build_system_prompt(state: State) -> str:
+def _build_system_prompt(state: State, past_sessions: list[dict] | None = None) -> str:
     """Build a context-rich system prompt from current library state."""
     now = datetime.now(timezone.utc)
 
@@ -276,6 +335,7 @@ def _build_system_prompt(state: State) -> str:
         f"{recent_section}\n\n"
         "## Research Interests\n"
         f"{tags_section}\n\n"
+        f"{_format_past_sessions(past_sessions or [])}"
         "## Personality\n"
         "You're warm, witty, and genuinely curious about the user's research. "
         "Think of yourself as a fellow scholar who happens to live in an "
@@ -339,10 +399,20 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     conversation: list[dict] = []
 
+    # Load conversation history for cross-session memory
+    all_sessions = _load_conversation_log()
+    current_session: dict = {
+        "session_id": datetime.now(timezone.utc).isoformat(),
+        "messages": [],
+    }
+
     # Single-turn mode: answer one question and exit
     if initial_args:
         query = " ".join(initial_args)
-        _handle_turn(client, state, conversation, query, stream=False)
+        _handle_turn(
+            client, state, conversation, query,
+            stream=False, past_sessions=all_sessions,
+        )
         return
 
     # Interactive REPL — clear screen for full-screen feel
@@ -361,7 +431,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             continue
         if user_input.lower().rstrip(".!") in ("exit", "quit", "/quit", "/exit", "/q"):
             print("  \u2697\ufe0f See you next time!")
-            return
+            break
         if user_input.lower() in ("/clear",):
             conversation.clear()
             print("  Conversation cleared.")
@@ -374,7 +444,28 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             state.reload()
             continue
 
-        _handle_turn(client, state, conversation, user_input, stream=True)
+        _handle_turn(
+            client, state, conversation, user_input,
+            stream=True, past_sessions=all_sessions,
+        )
+
+        # Log this exchange
+        current_session["messages"].append({"role": "user", "content": user_input})
+        # Extract assistant text from the last assistant message
+        for msg in reversed(conversation):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+                texts = [b.text for b in content if hasattr(b, "text")]
+                if texts:
+                    current_session["messages"].append(
+                        {"role": "assistant", "content": " ".join(texts)[:200]}
+                    )
+                break
+
+    # Save session on exit (only if there were messages)
+    if current_session["messages"]:
+        all_sessions.append(current_session)
+        _save_conversation_log(all_sessions)
 
 
 def _term_width() -> int:
@@ -453,6 +544,7 @@ def _handle_turn(
     conversation: list[dict],
     user_input: str,
     stream: bool = True,
+    past_sessions: list[dict] | None = None,
 ) -> None:
     """Handle one user turn, including multi-step tool use."""
     conversation.append({"role": "user", "content": user_input})
@@ -460,7 +552,7 @@ def _handle_turn(
     # Refresh state from disk (picks up changes from concurrent sync)
     state.reload()
 
-    system_prompt = _build_system_prompt(state)
+    system_prompt = _build_system_prompt(state, past_sessions=past_sessions)
     tools = TOOL_SCHEMAS
 
     # One blank line after the prompt — all spinners reuse this line
@@ -523,19 +615,19 @@ def _handle_turn(
             print()
 
         # Execute tools with spinner
-        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers"}
+        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers", "add_paper_to_zotero"}
         tool_results = []
         for tool_use in tool_uses:
             spinner = _ThinkingSpinner(_tool_label(tool_use.name))
             verbose = tool_use.name in _VERBOSE_TOOLS
             spinner.start()
-            if verbose:
-                # These tools print progress — freeze spinner label first
-                spinner.stop(keep_label=True)
+            try:
+                if verbose:
+                    # These tools print progress — freeze spinner label first
+                    spinner.stop(keep_label=True)
                 result = _execute_tool(tool_use.name, tool_use.input, state)
-            else:
-                result = _execute_tool(tool_use.name, tool_use.input, state)
-                spinner.stop()
+            finally:
+                spinner.stop()  # idempotent — clears line if not already stopped
             result_json = json.dumps(result)
             if len(result_json) > _MAX_TOOL_RESULT_CHARS:
                 result_json = json.dumps(_truncate_result(result, _MAX_TOOL_RESULT_CHARS))
