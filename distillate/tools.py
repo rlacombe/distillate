@@ -313,6 +313,27 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "refresh_metadata",
+        "description": (
+            "Re-fetch metadata from Zotero and Semantic Scholar for tracked papers. "
+            "Fixes missing dates, authors, citation counts, venues, and citekeys. "
+            "Can target a single paper or refresh all papers if no identifier given. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": (
+                        "Paper to refresh (index, citekey, or title). "
+                        "Omit to refresh all papers."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 
@@ -634,6 +655,27 @@ def run_sync(*, state) -> dict:
         return {"success": False, "error": "Python executable not found."}
 
 
+def refresh_metadata(*, state, identifier: str = "") -> dict:
+    """Re-fetch metadata from Zotero + Semantic Scholar."""
+    import subprocess
+    import sys
+    cmd = [sys.executable, "-m", "distillate", "--refresh-metadata"]
+    if identifier:
+        cmd.append(identifier)
+    try:
+        result = subprocess.run(
+            cmd, stderr=subprocess.PIPE, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            err = result.stderr.strip() or "Refresh failed"
+            return {"success": False, "error": err}
+        return {"success": True, "output": "Metadata refreshed."}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Refresh timed out after 5 minutes."}
+    except FileNotFoundError:
+        return {"success": False, "error": "Python executable not found."}
+
+
 def reprocess_paper(*, state, identifier: str) -> dict:
     """Re-extract highlights and regenerate note for a paper."""
     matches = _find_papers_from_state(identifier, state)
@@ -799,6 +841,21 @@ def add_paper_to_zotero(
                     pub_date = dm.group(1).strip()[:10]  # "2025-01-18"
         except Exception:
             log.debug("arXiv API lookup failed for %s", arxiv_id, exc_info=True)
+
+    # Semantic Scholar enrichment — citations, venue, date backfill
+    s2_data = None
+    try:
+        from distillate import semantic_scholar
+        s2_data = semantic_scholar.lookup_paper(
+            doi=doi, title=title, url=url,
+        )
+    except Exception:
+        log.debug("S2 lookup failed for '%s'", title or arxiv_id, exc_info=True)
+    if s2_data:
+        if not authors and s2_data.get("authors"):
+            authors = s2_data["authors"]
+        if not pub_date and s2_data.get("publication_date"):
+            pub_date = s2_data["publication_date"]
 
     # Build DOI-based URL fallback
     if doi and not url:

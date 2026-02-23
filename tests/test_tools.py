@@ -436,7 +436,7 @@ class TestAddPaperToZotero:
 class TestToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.tools import TOOL_SCHEMAS
-        assert len(TOOL_SCHEMAS) == 12
+        assert len(TOOL_SCHEMAS) == 13
         for schema in TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema

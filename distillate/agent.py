@@ -615,7 +615,7 @@ def _handle_turn(
             print()
 
         # Execute tools with spinner
-        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers", "add_paper_to_zotero"}
+        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers", "add_paper_to_zotero", "refresh_metadata"}
         tool_results = []
         for tool_use in tool_uses:
             spinner = _ThinkingSpinner(_tool_label(tool_use.name))
@@ -695,6 +695,7 @@ def _execute_tool(name: str, input_data: dict, state: State) -> dict:
         "suggest_next_reads": tools.suggest_next_reads,
         "synthesize_across_papers": tools.synthesize_across_papers,
         "run_sync": tools.run_sync,
+        "refresh_metadata": tools.refresh_metadata,
         "reprocess_paper": tools.reprocess_paper,
         "promote_papers": tools.promote_papers,
         "get_trending_papers": tools.get_trending_papers,
