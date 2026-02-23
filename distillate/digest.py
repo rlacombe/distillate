@@ -712,7 +712,11 @@ def _get_todays_suggestions(state: State) -> str | None:
 
 
 def send_suggestion() -> None:
-    """Send a daily suggestion email. Computes suggestions at most once per day."""
+    """Send a daily suggestion email. Computes suggestions at most once per day.
+
+    When Claude is unavailable (e.g. depleted API credits), sends a fallback
+    email with queue health, reading stats, and trending papers.
+    """
     config.setup_logging()
 
     state = State()
@@ -729,11 +733,14 @@ def send_suggestion() -> None:
         log.info("Suggestions already computed today, re-sending email")
     else:
         result = _compute_suggestions(state)
-        if not result:
-            return
 
-    subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
-    body = _build_suggestion_body(result, unread, state)
+    if result:
+        subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
+        body = _build_suggestion_body(result, unread, state)
+    else:
+        # Claude unavailable — send a fallback email with stats + trending
+        subject = datetime.now().strftime("Your reading queue \u2013 %b %-d, %Y")
+        body = _build_fallback_suggestion_body(unread, state)
 
     _send_email(subject, body)
 
@@ -829,6 +836,50 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
             f'<span style="color:#999;">[{idx_label}]</span> '
             f"{title_html}{reason_html}{pills_html}{url_html}"
             f"</li>"
+        )
+
+    lines.append("</ul>")
+    lines.append(_reading_stats_html(state))
+    lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
+    lines.append(_SIGNATURE)
+    lines.append("</body></html>")
+    return "\n".join(lines)
+
+
+def _build_fallback_suggestion_body(unread: list, state: State) -> str:
+    """Build a fallback email when Claude can't generate suggestions.
+
+    Shows queue overview, reading stats, and trending papers.
+    """
+    count = len(unread)
+    lines = [
+        "<html><body style='font-family: sans-serif; max-width: 600px; "
+        "margin: 0 auto; padding: 20px; color: #333;'>",
+        f'<p>You have {count} paper{"s" if count != 1 else ""} in your reading queue:</p>',
+        "<ul style='padding-left: 20px;'>",
+    ]
+
+    for doc in sorted(unread, key=lambda d: d.get("uploaded_at", ""), reverse=True):
+        title = doc.get("title", "Untitled")
+        url = _paper_url(doc)
+        idx = state.index_of(doc.get("zotero_item_key", ""))
+        tags = doc.get("metadata", {}).get("tags", [])
+        pills = _tag_pills_html(tags, max_tags=3)
+
+        title_html = (
+            f'<a href="{url}" style="color:#333;text-decoration:none;">'
+            f"<strong>{title}</strong></a>"
+            if url else f"<strong>{title}</strong>"
+        )
+        idx_html = f'<span style="color:#999;">[{idx}]</span> ' if idx else ""
+        pills_html = f"<br>{pills}" if pills else ""
+
+        lines.append(
+            f"<li style='margin-bottom: 10px;'>"
+            f"{idx_html}{title_html}{pills_html}</li>"
         )
 
     lines.append("</ul>")

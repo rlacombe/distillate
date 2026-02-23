@@ -1048,6 +1048,89 @@ class TestSuggestionDedup:
         mock_email.assert_called_once()
 
 
+class TestSuggestionFallback:
+    """When Claude is unavailable, send a fallback email with queue + trending."""
+
+    @patch("distillate.digest._fetch_trending_for_email")
+    @patch("distillate.digest.fetch_pending_from_gist")
+    @patch("distillate.digest._sync_tags")
+    @patch("distillate.digest.State")
+    @patch("distillate.digest.summarizer")
+    @patch("distillate.digest._send_email")
+    @patch("distillate.digest._push_pending_to_gist")
+    def test_sends_fallback_when_claude_fails(
+        self, mock_push, mock_email, mock_summarizer,
+        mock_state_cls, mock_sync, mock_fetch, mock_trending,
+    ):
+        """When Claude returns None, should still send an email."""
+        from datetime import datetime, timedelta, timezone
+        from distillate.digest import send_suggestion
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        mock_state = MagicMock()
+        mock_state.documents_with_status.return_value = [
+            {"zotero_item_key": "K1", "title": "Queued Paper",
+             "status": "on_remarkable", "metadata": {"tags": ["ML"]},
+             "uploaded_at": yesterday},
+        ]
+        mock_state.documents_processed_since.return_value = []
+        mock_state._data = {}
+        mock_state_cls.return_value = mock_state
+        mock_fetch.return_value = None
+        mock_trending.return_value = []
+
+        # Claude fails
+        mock_summarizer.suggest_papers.return_value = None
+
+        send_suggestion()
+
+        # Should still send an email
+        mock_email.assert_called_once()
+        subject = mock_email.call_args[0][0]
+        assert "reading queue" in subject.lower()
+        body = mock_email.call_args[0][1]
+        assert "Queued Paper" in body
+
+    @patch("distillate.digest._fetch_trending_for_email")
+    @patch("distillate.digest.fetch_pending_from_gist")
+    @patch("distillate.digest._sync_tags")
+    @patch("distillate.digest.State")
+    @patch("distillate.digest.summarizer")
+    @patch("distillate.digest._send_email")
+    @patch("distillate.digest._push_pending_to_gist")
+    def test_fallback_includes_trending(
+        self, mock_push, mock_email, mock_summarizer,
+        mock_state_cls, mock_sync, mock_fetch, mock_trending,
+    ):
+        """Fallback email should include trending papers if available."""
+        from datetime import datetime, timedelta, timezone
+        from distillate.digest import send_suggestion
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        mock_state = MagicMock()
+        mock_state.documents_with_status.return_value = [
+            {"zotero_item_key": "K1", "title": "Queued Paper",
+             "status": "on_remarkable", "metadata": {"tags": []},
+             "uploaded_at": yesterday},
+        ]
+        mock_state.documents_processed_since.return_value = []
+        mock_state._data = {}
+        mock_state_cls.return_value = mock_state
+        mock_fetch.return_value = None
+        mock_trending.return_value = [
+            {"title": "Hot Paper", "hf_url": "https://hf.co/papers/1", "upvotes": 100},
+        ]
+
+        mock_summarizer.suggest_papers.return_value = None
+
+        send_suggestion()
+
+        mock_email.assert_called_once()
+        body = mock_email.call_args[0][1]
+        assert "Hot Paper" in body
+        assert "Trending" in body
+
+
 class TestCollectionFiltering:
     """Collection-scoped paper discovery."""
 
