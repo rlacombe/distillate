@@ -623,8 +623,9 @@ def _handle_turn(
             spinner.start()
             try:
                 if verbose:
-                    # These tools print progress — freeze spinner label first
-                    spinner.stop(keep_label=True)
+                    # These tools print their own progress — clear spinner
+                    # so the tool's output replaces it cleanly
+                    spinner.stop()
                 result = _execute_tool(tool_use.name, tool_use.input, state)
             finally:
                 spinner.stop()  # idempotent — clears line if not already stopped

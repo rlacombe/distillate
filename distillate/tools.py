@@ -762,9 +762,11 @@ def add_paper_to_zotero(
         if not abstract:
             abstract = hf_data.get("abstract", "")
 
-    # Fill remaining gaps from arXiv API (title, authors, abstract, date)
+    # Fill remaining gaps from arXiv API (title, authors, abstract, date).
+    # Always query when we have an arxiv_id — even if HF filled some fields,
+    # arXiv is the authoritative source for publication date and full author list.
     pub_date = ""
-    if arxiv_id and (not title or title == arxiv_id or not authors or not abstract):
+    if arxiv_id:
         try:
             import re
 
@@ -788,7 +790,6 @@ def add_paper_to_zotero(
                     sm = re.search(r"<summary>(.*?)</summary>", resp.text, re.DOTALL)
                     if sm:
                         abstract = sm.group(1).strip().replace("\n", " ")
-                # Extract publication date
                 dm = re.search(r"<published>(.*?)</published>", resp.text)
                 if dm:
                     pub_date = dm.group(1).strip()[:10]  # "2025-01-18"
