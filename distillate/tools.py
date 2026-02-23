@@ -16,6 +16,16 @@ log = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _to_local(iso_utc: str) -> str:
+    """Convert a UTC ISO timestamp to local time string (e.g. '2026-02-22 3:15 PM')."""
+    if not iso_utc:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_utc).astimezone()
+        return dt.strftime("%Y-%m-%d %-I:%M %p")
+    except (ValueError, TypeError):
+        return iso_utc
+
 def _find_papers_from_state(query: str, state) -> List[tuple]:
     """Find matching (item_key, doc) pairs from state.
 
@@ -364,8 +374,8 @@ def get_paper_details(*, state, identifier: str) -> dict:
         "s2_url": meta.get("s2_url", ""),
         "github_repo": meta.get("github_repo", ""),
         "github_stars": meta.get("github_stars"),
-        "uploaded_at": doc.get("uploaded_at", ""),
-        "processed_at": doc.get("processed_at", ""),
+        "uploaded_at": _to_local(doc.get("uploaded_at", "")),
+        "processed_at": _to_local(doc.get("processed_at", "")),
     }
 
     # Read highlights from Obsidian note
@@ -465,14 +475,15 @@ def get_queue(*, state) -> dict:
             "title": doc.get("title", ""),
             "citekey": meta.get("citekey", ""),
             "days_in_queue": days,
-            "uploaded_at": uploaded,
+            "uploaded_at": _to_local(uploaded),
+            "_sort": uploaded,
             "tags": meta.get("tags", [])[:5],
             "citation_count": meta.get("citation_count", 0),
             "promoted": key in promoted,
         })
 
     # Newest first so the model can identify recently added papers
-    papers.sort(key=lambda p: p["uploaded_at"], reverse=True)
+    papers.sort(key=lambda p: p.pop("_sort", ""), reverse=True)
     return {"queue": papers, "total": len(papers)}
 
 
@@ -495,7 +506,7 @@ def get_recent_reads(*, state, count: int = 10) -> dict:
             "citekey": meta.get("citekey", ""),
             "summary": doc.get("summary", ""),
             "engagement": doc.get("engagement", 0),
-            "date_read": doc.get("processed_at", ""),
+            "date_read": _to_local(doc.get("processed_at", "")),
             "tags": meta.get("tags", []),
             "highlight_count": doc.get("highlight_count", 0),
             "citation_count": meta.get("citation_count", 0),
@@ -524,7 +535,7 @@ def suggest_next_reads(*, state) -> dict:
             "title": doc.get("title", ""),
             "tags": meta.get("tags", []),
             "paper_type": meta.get("paper_type", ""),
-            "uploaded_at": doc.get("uploaded_at", ""),
+            "uploaded_at": _to_local(doc.get("uploaded_at", "")),
             "citation_count": meta.get("citation_count", 0),
         })
 
