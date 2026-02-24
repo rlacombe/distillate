@@ -32,6 +32,13 @@ Interactive agent mode — distillate becomes a research assistant.
 
 ### Bug Fixes
 
+- **S2 enrichment at add time**: papers added via the agent now get Semantic Scholar metadata (citations, venue, date) immediately — no more "unknown_" citekeys
+- **Refresh metadata tool**: agent can now properly refresh metadata for existing papers instead of incorrectly suggesting `run_sync`
+- **Single-name Zotero authors**: `create_paper()` handles single-name authors (e.g. "DeepSeek-AI") that previously caused Zotero API errors
+- **arXiv title parsing**: fixed feed-level title leak ("arXiv Query:...") by skipping non-paper titles case-insensitively
+- **Spinner cleanup**: idempotent stop, try/finally, verbose tools clear instead of freeze — no more lingering spinners
+- **Conversation log**: agent sessions persist locally for cross-session memory ("the papers you added yesterday")
+- **Auto-sync after add**: `add_paper_to_zotero` triggers a full sync so PDFs land on reMarkable immediately
 - **Collection-aware paper creation**: `create_paper()` now adds items to the user's Zotero collection when `ZOTERO_COLLECTION_KEY` is set
 - **HF enrichment complete**: `lookup_paper()` now returns title, authors, and abstract (was only returning GitHub/keyword data)
 - **Dark background detection**: fixed inverted logic in agent terminal color detection
