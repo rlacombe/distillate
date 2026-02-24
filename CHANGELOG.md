@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2 — 2026-02-24
+
+### Bug Fixes
+
+- **WebDAV error handling**: `download_pdf_from_webdav()` now catches all HTTP errors (401, 403, 500, etc.) instead of only ConnectionError/Timeout — previously a non-404 HTTP error would propagate as an unhandled exception, leaving papers stuck as "Awaiting PDF"
+- **WebDAV diagnostics**: BadZipFile warnings now log the first 100 bytes of the response (catches HTML error pages masquerading as ZIPs), and empty-zip warnings show the actual file list
+- **WebDAV empty auth**: no longer sends empty Basic Auth header when `ZOTERO_WEBDAV_USERNAME` is not set
+- **Manual upload detection**: the awaiting-PDF retry loop now checks if a paper is already on reMarkable (e.g. manually uploaded) and updates status instead of re-downloading
+- **Visible retry output**: the awaiting-PDF retry loop now prints progress to the terminal instead of logging silently — users see which papers are retrying, succeeding, or still waiting
+
 ## 0.5.1 — 2026-02-23
 
 ### Bug Fixes

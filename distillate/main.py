@@ -2736,14 +2736,27 @@ def main():
         # -- Retry papers awaiting PDF sync --
         awaiting = state.documents_with_status("awaiting_pdf")
         if awaiting:
+            print(f"\n  Retrying {len(awaiting)} paper{'s' if len(awaiting) != 1 else ''} awaiting PDF...")
             log.info("Retrying %d papers awaiting PDF sync...", len(awaiting))
             remarkable_client.ensure_folders()
+            on_rm = set(remarkable_client.list_folder(config.RM_FOLDER_INBOX))
             for doc in awaiting:
                 title = doc["title"]
                 att_key = doc["zotero_attachment_key"]
                 item_key = doc["zotero_item_key"]
                 meta = doc.get("metadata", {})
+                rm_name = doc.get("remarkable_doc_name", "")
                 try:
+                    # Check if paper is already on reMarkable (manually uploaded)
+                    if rm_name and rm_name in on_rm or title in on_rm:
+                        log.info("'%s' already on reMarkable, updating status", title)
+                        zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
+                        state.set_status(item_key, "on_remarkable")
+                        state.save()
+                        sent_count += 1
+                        print(f"  Found \"{title}\" on reMarkable.")
+                        continue
+
                     pdf_bytes = None
 
                     # Try Zotero cloud first (if we have an attachment key)
@@ -2790,6 +2803,7 @@ def main():
 
                     if pdf_bytes is None:
                         log.info("No PDF available yet for '%s', will retry", title)
+                        print(f"  Still awaiting PDF: \"{title}\"")
                         continue
 
                     remarkable_client.upload_pdf_bytes(
@@ -2809,9 +2823,11 @@ def main():
                     state.set_status(item_key, "on_remarkable")
                     state.save()
                     sent_count += 1
+                    print(f"  Sent to reMarkable: \"{title}\"")
                     log.info("Sent to reMarkable: %s", title)
                 except Exception:
                     log.exception("Failed to retry '%s'", title)
+                    print(f"  Failed to sync \"{title}\" — check log for details.")
             state.save()
 
         # -- Step 1: Poll Zotero for new papers --

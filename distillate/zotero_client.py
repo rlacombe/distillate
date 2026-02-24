@@ -263,28 +263,39 @@ def download_pdf_from_webdav(attachment_key: str) -> Optional[bytes]:
     log.debug("Trying WebDAV: %s", url)
 
     try:
-        resp = requests.get(
-            url,
-            auth=(config.ZOTERO_WEBDAV_USERNAME, config.ZOTERO_WEBDAV_PASSWORD),
-            timeout=config.HTTP_TIMEOUT,
-        )
+        auth = None
+        if config.ZOTERO_WEBDAV_USERNAME:
+            auth = (config.ZOTERO_WEBDAV_USERNAME, config.ZOTERO_WEBDAV_PASSWORD)
+        resp = requests.get(url, auth=auth, timeout=config.HTTP_TIMEOUT)
         if resp.status_code == 404:
             log.debug("WebDAV 404 for %s", attachment_key)
             return None
         resp.raise_for_status()
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+    except requests.exceptions.RequestException as exc:
         log.warning("WebDAV download failed for '%s': %s", attachment_key, exc)
         return None
+
+    log.debug(
+        "WebDAV response: %d, %d bytes, type=%s",
+        resp.status_code, len(resp.content),
+        resp.headers.get("Content-Type", "unknown"),
+    )
 
     try:
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             pdf_names = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
             if not pdf_names:
-                log.warning("WebDAV zip for '%s' contains no PDF", attachment_key)
+                log.warning(
+                    "WebDAV zip for '%s' contains no PDF (files: %s)",
+                    attachment_key, zf.namelist(),
+                )
                 return None
             return zf.read(pdf_names[0])
     except zipfile.BadZipFile:
-        log.warning("WebDAV download for '%s' is not a valid zip", attachment_key)
+        log.warning(
+            "WebDAV response for '%s' is not a valid zip (%d bytes, starts: %r)",
+            attachment_key, len(resp.content), resp.content[:100],
+        )
         return None
 
 

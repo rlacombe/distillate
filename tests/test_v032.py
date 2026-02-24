@@ -948,6 +948,52 @@ class TestDownloadPdfFromWebdav:
 
         assert download_pdf_from_webdav("OFFLINE") is None
 
+    @patch("distillate.zotero_client.requests.get")
+    def test_http_error_returns_none(self, mock_get, monkeypatch):
+        """HTTPError (401, 403, 500 etc.) should be caught, not propagated."""
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        resp = MagicMock(status_code=401)
+        resp.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "401 Unauthorized", response=resp,
+        )
+        mock_get.return_value = resp
+
+        assert download_pdf_from_webdav("AUTHFAIL") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_html_error_page_returns_none(self, mock_get, monkeypatch):
+        """Server returning HTML instead of zip should be handled gracefully."""
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "user")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "pass")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        mock_resp = MagicMock(status_code=200, content=b"<html>Error</html>")
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        assert download_pdf_from_webdav("HTMLERR") is None
+
+    @patch("distillate.zotero_client.requests.get")
+    def test_no_auth_when_username_empty(self, mock_get, monkeypatch):
+        """When ZOTERO_WEBDAV_USERNAME is empty, auth should be None."""
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_URL", "https://dav.example.com")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_USERNAME", "")
+        monkeypatch.setattr("distillate.config.ZOTERO_WEBDAV_PASSWORD", "")
+        from distillate.zotero_client import download_pdf_from_webdav
+
+        mock_resp = MagicMock(status_code=404)
+        mock_get.return_value = mock_resp
+
+        download_pdf_from_webdav("NOAUTH")
+        _, kwargs = mock_get.call_args
+        assert kwargs.get("auth") is None
+
 
 # ---------------------------------------------------------------------------
 # Zotero collection filtering
