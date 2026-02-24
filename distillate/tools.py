@@ -521,11 +521,14 @@ def get_recent_reads(*, state, count: int = 10) -> dict:
     for doc in all_recent[:count]:
         key = doc.get("zotero_item_key", "")
         meta = doc.get("metadata", {})
+        summary = doc.get("summary", "")
+        if len(summary) > 200:
+            summary = summary[:200] + "..."
         papers.append({
             "index": state.index_of(key),
             "title": doc.get("title", ""),
             "citekey": meta.get("citekey", ""),
-            "summary": doc.get("summary", ""),
+            "summary": summary,
             "engagement": doc.get("engagement", 0),
             "date_read": _to_local(doc.get("processed_at", "")),
             "tags": meta.get("tags", []),
@@ -752,11 +755,14 @@ def get_trending_papers(*, state, limit: int = 10) -> dict:
     papers = huggingface.trending_papers(limit=limit)
     results = []
     for p in papers:
+        summary = p["ai_summary"] or ""
+        if len(summary) > 200:
+            summary = summary[:200] + "..."
         entry = {
             "title": p["title"],
             "authors": p["authors"][:3],
             "upvotes": p["upvotes"],
-            "ai_summary": p["ai_summary"],
+            "ai_summary": summary,
             "ai_keywords": p["ai_keywords"],
             "hf_url": p["hf_url"],
         }

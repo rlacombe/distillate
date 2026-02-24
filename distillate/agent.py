@@ -246,10 +246,10 @@ class _ThinkingSpinner:
 _AGENT_MODEL = None  # resolved lazily after config is loaded
 
 _MAX_TOOL_STEPS = 5
-_MAX_TOKENS = 1024
+_MAX_TOKENS = 2048
 _CONVERSATION_TRIM_THRESHOLD = 20
 _CONVERSATION_KEEP = 10
-_MAX_TOOL_RESULT_CHARS = 4000  # truncate large tool responses
+_MAX_TOOL_RESULT_CHARS = 12000  # truncate large tool responses
 
 
 def _get_model() -> str:
