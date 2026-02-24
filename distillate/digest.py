@@ -397,28 +397,29 @@ def _trending_html(papers: list) -> str:
     """Build HTML for a 'Trending on HuggingFace' section."""
     if not papers:
         return ""
+    # Sort by upvotes descending (API usually returns this, but be explicit)
+    papers = sorted(papers, key=lambda p: p.get("upvotes", 0), reverse=True)
     lines = [
-        '<p style="margin-top:20px;"><strong>Trending on HuggingFace</strong></p>',
-        "<ul style='padding-left: 20px;'>",
+        '<p style="margin-top:20px;font-size:13px;color:#666;">'
+        "<strong>Trending on HuggingFace</strong></p>",
+        "<ul style='padding-left:20px;font-size:13px;color:#666;'>",
     ]
     for p in papers:
         title = p.get("title", "?")
         hf_url = p.get("hf_url", "")
-        ai_summary = p.get("ai_summary", "")
         upvotes = p.get("upvotes", 0)
 
         title_html = (
-            f'<a href="{hf_url}" style="color:#333;">{title}</a>'
+            f'<a href="{hf_url}" style="color:#666;">{title}</a>'
             if hf_url else title
         )
-        summary_html = f" &mdash; {ai_summary}" if ai_summary else ""
         upvote_badge = (
-            f' <span style="color:#999;font-size:12px;">'
+            f' <span style="color:#999;font-size:11px;">'
             f"\u25b2{upvotes}</span>"
         )
         lines.append(
-            f"<li style='margin-bottom:10px;'>"
-            f"{title_html}{summary_html}{upvote_badge}</li>"
+            f"<li style='margin-bottom:6px;'>"
+            f"{title_html}{upvote_badge}</li>"
         )
     lines.append("</ul>")
     return "\n".join(lines)
@@ -623,7 +624,7 @@ def _build_body(papers, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
-    trending = _fetch_trending_for_email(state, limit=5)
+    trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
@@ -771,7 +772,7 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     lines = [
         "<html><body style='font-family: sans-serif; max-width: 600px; "
         "margin: 0 auto; padding: 20px; color: #333;'>",
-        "<p>Here are 3 papers to consider today:</p>",
+        "<p>Here are 3 papers from your queue to consider today:</p>",
         "<ul style='padding-left: 20px;'>",
     ]
 
@@ -841,7 +842,7 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
-    trending = _fetch_trending_for_email(state, limit=5)
+    trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
@@ -885,7 +886,7 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
-    trending = _fetch_trending_for_email(state, limit=5)
+    trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
