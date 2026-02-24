@@ -626,7 +626,21 @@ def _handle_turn(
                     # These tools print their own progress — clear spinner
                     # so the tool's output replaces it cleanly
                     spinner.stop()
-                result = _execute_tool(tool_use.name, tool_use.input, state)
+                    # Color subprocess output dim magenta to distinguish
+                    # from the agent's own text
+                    if _is_tty():
+                        _orig_write = sys.stdout.write
+                        sys.stdout.write = lambda s, _w=_orig_write: (
+                            _w(f"\033[2;35m{s}{_RESET}") if s.strip() else _w(s)
+                        )
+                    try:
+                        result = _execute_tool(tool_use.name, tool_use.input, state)
+                    finally:
+                        if _is_tty():
+                            sys.stdout.write = _orig_write
+                        print()  # blank line after verbose output
+                else:
+                    result = _execute_tool(tool_use.name, tool_use.input, state)
             finally:
                 spinner.stop()  # idempotent — clears line if not already stopped
             result_json = json.dumps(result)
