@@ -257,6 +257,145 @@ class TestUploadPaper:
         assert doc["status"] == "awaiting_pdf"
 
 
+# -- Tests for WebDAV PDF downloads --
+
+class TestWebDAVAttachment:
+    """Regression: get_pdf_attachment must find WebDAV (linked_url) attachments."""
+
+    def test_linked_url_attachment_found(self):
+        """WebDAV attachments have linkMode='linked_url' and must be matched."""
+        from unittest.mock import MagicMock
+        from distillate import zotero_client
+
+        child = {
+            "key": "WDAV1",
+            "data": {
+                "itemType": "attachment",
+                "contentType": "application/pdf",
+                "linkMode": "linked_url",
+                "md5": "abc123",
+            },
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [child]
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "distillate.zotero_client._get",
+                lambda path, **kw: mock_resp,
+            )
+            result = zotero_client.get_pdf_attachment("ITEM1")
+
+        assert result is not None
+        assert result["key"] == "WDAV1"
+
+    def test_imported_file_still_found(self):
+        """Standard Zotero cloud attachments (imported_file) still matched."""
+        from unittest.mock import MagicMock
+        from distillate import zotero_client
+
+        child = {
+            "key": "CLOUD1",
+            "data": {
+                "itemType": "attachment",
+                "contentType": "application/pdf",
+                "linkMode": "imported_file",
+                "md5": "def456",
+            },
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [child]
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "distillate.zotero_client._get",
+                lambda path, **kw: mock_resp,
+            )
+            result = zotero_client.get_pdf_attachment("ITEM2")
+
+        assert result is not None
+        assert result["key"] == "CLOUD1"
+
+    def test_linked_file_not_matched(self):
+        """Local linked_file attachments (Obsidian PDFs) should NOT be matched."""
+        from unittest.mock import MagicMock
+        from distillate import zotero_client
+
+        child = {
+            "key": "LOCAL1",
+            "data": {
+                "itemType": "attachment",
+                "contentType": "application/pdf",
+                "linkMode": "linked_file",
+            },
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [child]
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "distillate.zotero_client._get",
+                lambda path, **kw: mock_resp,
+            )
+            result = zotero_client.get_pdf_attachment("ITEM3")
+
+        assert result is None
+
+    def test_webdav_fallback_in_upload(self, monkeypatch):
+        """When Zotero cloud returns 404, WebDAV should be tried."""
+        import requests as _req
+        from distillate.main import _upload_paper
+        from distillate.state import State
+
+        state = State()
+        paper = _make_paper("WD1", "WebDAV Paper")
+
+        # Simulate a WebDAV attachment (linked_url)
+        attachment = {"key": "WDATT1", "data": {"md5": "abc"}}
+        monkeypatch.setattr(
+            "distillate.zotero_client.get_pdf_attachment",
+            lambda k: attachment,
+        )
+
+        # Zotero cloud returns 404
+        http_err = _req.exceptions.HTTPError(response=MagicMock(status_code=404))
+        monkeypatch.setattr(
+            "distillate.zotero_client.download_pdf",
+            MagicMock(side_effect=http_err),
+        )
+
+        # WebDAV returns PDF bytes
+        monkeypatch.setattr(
+            "distillate.zotero_client.download_pdf_from_webdav",
+            lambda k: b"webdav-pdf-bytes",
+        )
+        monkeypatch.setattr(
+            "distillate.remarkable_client.upload_pdf_bytes",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "distillate.remarkable_client.sanitize_filename",
+            lambda n: n,
+        )
+        monkeypatch.setattr(
+            "distillate.obsidian.save_inbox_pdf",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            "distillate.zotero_client.add_tag",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "distillate.semantic_scholar.lookup_paper",
+            lambda **kw: None,
+        )
+
+        result = _upload_paper(paper, state, existing_on_rm=set())
+        assert result is True
+        doc = state.get_document("WD1")
+        assert doc["status"] == "on_remarkable"  # not awaiting_pdf
+
+
 # -- Tests for _import --
 
 class TestImport:
