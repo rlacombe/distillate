@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 — 2026-02-23
+
+### Bug Fixes
+
+- **WebDAV PDF downloads broken since 0.4.4**: `get_pdf_attachment()` only matched `imported_file` and `imported_url` link modes, missing WebDAV's `linked_url` attachments — papers got stuck as "Awaiting PDF" instead of downloading
+
 ## 0.5.0 — 2026-02-23
 
 Interactive agent mode — distillate becomes a research assistant.

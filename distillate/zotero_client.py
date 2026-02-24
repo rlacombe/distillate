@@ -232,7 +232,9 @@ def get_pdf_attachment(item_key: str) -> Optional[Dict[str, Any]]:
         if (
             data.get("itemType") == "attachment"
             and data.get("contentType") == "application/pdf"
-            and data.get("linkMode") in ("imported_file", "imported_url")
+            and data.get("linkMode") in (
+                "imported_file", "imported_url", "linked_url",
+            )
         ):
             return child
     return None
