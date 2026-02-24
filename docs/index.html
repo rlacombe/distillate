@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Distillate — From Zotero through reMarkable to structured notes</title>
-  <meta name="description" content="Automate your paper reading workflow: Zotero to reMarkable to structured notes with highlights and AI summaries.">
-  <meta property="og:title" content="Distillate — The essence of every paper you read">
-  <meta property="og:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <title>Distillate — Your research assistant in the terminal</title>
+  <meta name="description" content="An AI research assistant that lives in your terminal. Manages your Zotero library, syncs to reMarkable, extracts highlights, and helps you think across papers.">
+  <meta property="og:title" content="Distillate — Your research assistant in the terminal">
+  <meta property="og:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
   <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Distillate — The essence of every paper you read">
-  <meta name="twitter:description" content="Save to Zotero. Read on reMarkable. Distillate extracts highlights, keeps notes, and archives your reading.">
+  <meta name="twitter:title" content="Distillate — Your research assistant in the terminal">
+  <meta name="twitter:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
   <script>
@@ -21,7 +21,7 @@
     gtag('js', new Date());
     gtag('config', 'G-KX9S2725MF');
   </script>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%237c3aed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v7'/%3E%3Cpath d='M14 2v5a1 1 0 0 0 1 1h5'/%3E%3Cpath d='M3.62 18.8A2.25 2.25 0 1 1 7 15.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a1 1 0 0 1-1.507 0z'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
   <style>
     :root {
       --bg: #fafaf9;
@@ -51,41 +51,86 @@
 
     h1 {
       font-family: Palatino, 'Palatino Linotype', 'Book Antiqua', serif;
-      font-size: 3.2rem;
+      font-size: 3.4rem;
       font-weight: 700;
       letter-spacing: -0.02em;
       margin-bottom: 16px;
       line-height: 1.1;
+      background: linear-gradient(135deg, #7c3aed 0%, #a855f7 40%, #b45309 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
 
     .tagline {
-      font-family: Palatino, 'Palatino Linotype', 'Book Antiqua', serif;
-      font-size: 1.25rem;
-      font-style: italic;
+      font-size: 1.15rem;
+      font-weight: 500;
       color: var(--fg);
       margin-bottom: 8px;
       line-height: 1.4;
     }
 
     .subtitle {
-      font-size: 1rem;
+      font-size: 0.95rem;
       color: var(--muted);
-      margin-bottom: 48px;
+      margin-bottom: 40px;
+    }
+
+    .terminal {
+      background: #1c1917;
+      border-radius: 12px;
+      margin-bottom: 32px;
+      box-shadow:
+        0 0 60px rgba(124, 58, 237, 0.10),
+        0 8px 32px rgba(0, 0, 0, 0.12);
+      overflow: hidden;
+    }
+
+    .terminal-bar {
+      background: #2a2725;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot.red { background: #ff5f56; }
+    .terminal-dot.yellow { background: #ffbd2e; }
+    .terminal-dot.green { background: #27c93f; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.72rem;
+      color: #78716c;
+      margin-right: 52px;
     }
 
     .flow {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 24px 28px;
-      margin-bottom: 32px;
+      background: #1c1917;
+      border: none;
+      border-radius: 0;
+      padding: 20px 28px 24px;
+      margin-bottom: 0;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.85rem;
-      line-height: 1.8;
-      color: var(--fg);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: #e7e5e4;
       white-space: pre;
       overflow-x: auto;
     }
+
+    .flow .prompt { color: #a78bfa; }
+    .flow .dim { color: #78716c; }
+    .flow .green { color: #86efac; }
+    .flow .bold { color: #fafaf9; font-weight: 600; }
 
     .integration {
       font-size: 0.85rem;
@@ -117,9 +162,8 @@
     }
 
     h2 {
-      font-family: Palatino, 'Palatino Linotype', 'Book Antiqua', serif;
-      font-size: 1.2rem;
-      font-weight: 600;
+      font-size: 1.5rem;
+      font-weight: 700;
       margin-bottom: 16px;
       margin-top: 0;
     }
@@ -290,6 +334,7 @@
 
     .links {
       display: flex;
+      justify-content: center;
       gap: 24px;
       padding-top: 16px;
       border-top: 1px solid var(--border);
@@ -352,6 +397,82 @@
       text-decoration: underline;
     }
 
+    .newsletter {
+      text-align: center;
+      margin-bottom: 48px;
+      padding: 32px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: white;
+    }
+
+    .newsletter h2 {
+      margin-bottom: 6px;
+    }
+
+    .newsletter p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+
+    .newsletter form {
+      display: flex;
+      gap: 8px;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .newsletter input[type="email"] {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .newsletter input[type="email"]:focus {
+      border-color: #7c3aed;
+    }
+
+    .newsletter button {
+      padding: 10px 20px;
+      background: #7c3aed;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    .newsletter button:hover {
+      opacity: 0.85;
+    }
+
+    .newsletter button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .newsletter .msg {
+      font-size: 0.85rem;
+      margin-top: 10px;
+    }
+
+    .newsletter .msg.ok { color: #15803d; }
+    .newsletter .msg.err { color: #dc2626; }
+
+    @media (max-width: 480px) {
+      .newsletter form { flex-direction: column; }
+    }
+
     .badges {
       display: flex;
       gap: 8px;
@@ -399,68 +520,82 @@
       text-decoration: underline;
       text-underline-offset: 2px;
     }
+
+    .extra-hero {
+      grid-column: 1 / -1;
+      background: #faf5ff;
+      border-color: #ddd6fe;
+    }
   </style>
 </head>
 <body>
-  <div class="banner">v0.4.4 Research Preview &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a> and share feedback</div>
+  <div class="banner">v0.5 &mdash; Now with an AI research assistant &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a></div>
   <div class="container">
-    <h1>Distillate</h1>
-    <p class="tagline">The essence of every paper you read.</p>
-    <p class="subtitle">Save to Zotero. Read on reMarkable. Distillate does the rest.</p>
+    <h1><img src="logo.svg" alt="" width="48" height="48" style="vertical-align: -6px; margin-right: 12px;">Distillate</h1>
+    <p class="tagline">A research alchemist in your terminal.</p>
+    <p class="subtitle">arXiv papers &rarr; Zotero library &rarr; reMarkable highlights &rarr; Obsidian notes.</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">distillate</span>
+      </div>
+      <div class="flow"><span class="prompt">$</span> distillate
+
+  <span class="dim">───</span> ⚗️  <span class="bold">Nicolas</span> <span class="dim">──────────────────────────────</span>
+  <span class="dim">42 papers read · 7 in queue</span>
+  <span class="dim">Your research alchemist. Type /help or /quit.</span>
+
+<span class="prompt">&gt;</span> What should I read next?
+
+  <span class="green">🔮 Consulting the oracle</span>
+
+  Based on your recent interest in multimodal agents,
+  I'd suggest <span class="bold">ReAct</span> [3] — a complementary
+  approach to what you highlighted in <span class="bold">Toolformer</span>.
+  It's been in your queue the longest at 12 days.</div>
+    </div>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.4.4</span>
+      <span class="badge badge-purple">PyPI v0.5.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
 
-    <div class="flow">$ distillate   # turn papers into notes!
-
-save to Zotero ──&gt; auto-syncs to reMarkable
-                       │
-        read &amp; highlight on tablet
-        just move to Read/ when done
-                       │
-                       V
-        auto-saves notes + highlights</div>
-
     <div class="install">
-      <code>$ pip install distillate
+      <p style="font-size: 0.9rem; color: var(--muted); margin-bottom: 10px;">Try it out:</p>
+      <code>$ uv tool install distillate
 $ distillate --init</code>
     </div>
 
     <div class="steps">
       <h2>How it works</h2>
-      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Distill.</p>
+      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Ask.</p>
 
       <div class="step">
         <span class="step-number">1</span>
         <strong>Save a paper to Zotero</strong>
-        <p>Use the Zotero browser connector or mobile app. Distillate automatically picks up new papers from your library.</p>
+        <p>Use the Zotero browser connector, mobile app, or ask Nicolas to add a paper by arXiv ID or URL.</p>
       </div>
 
       <div class="step">
         <span class="step-number">2</span>
         <strong>PDF syncs to your reMarkable</strong>
-        <p>Distillate uploads the PDF to your tablet. Optionally removes it from Zotero to save storage (300 MB free tier).</p>
+        <p>Distillate uploads the PDF to your tablet. Read and highlight the passages that matter.</p>
       </div>
 
       <div class="step">
         <span class="step-number">3</span>
-        <strong>Read and highlight on your tablet</strong>
-        <p>Highlight the passages that matter to you. When you're done, just move the document to the Read folder and Distillate does the rest.</p>
+        <strong>Highlights become structured notes</strong>
+        <p>Move the document to Read/ when done. Distillate extracts highlights, generates a summary, and saves a markdown note.</p>
       </div>
 
       <div class="step">
         <span class="step-number">4</span>
-        <strong>Distillate extracts your highlights</strong>
-        <p>Highlighted text is pulled from the reMarkable, cleaned up, and saved as a structured markdown note grouped by page.</p>
-      </div>
-
-      <div class="step">
-        <span class="step-number">5</span>
-        <strong>Everything stays on your machine</strong>
-        <p>Your highlights, reading log, and PDFs are saved to an Obsidian vault or a plain folder on your computer.</p>
+        <strong>Ask Nicolas anything about your library</strong>
+        <p>Search papers, compare findings, get reading suggestions, check stats — all in natural language from your terminal.</p>
       </div>
     </div>
 
@@ -468,6 +603,11 @@ $ distillate --init</code>
       <h2>Built in</h2>
       <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
       <div class="extras-grid">
+        <div class="extra extra-hero">
+          <strong>⚗️ Meet Nicolas</strong>
+          <em class="extra-subtitle">Interactive agent</em>
+          <span>Named after Nicolas Flamel, the legendary alchemist. Ask him about your library in natural language — he searches papers, synthesizes across your highlights, suggests what to read next, and adds papers to Zotero.</span>
+        </div>
         <div class="extra">
           <strong>Local-first</strong>
           <em class="extra-subtitle">Plain files you own</em>
@@ -476,7 +616,7 @@ $ distillate --init</code>
         <div class="extra">
           <strong>Zotero Round-Trip</strong>
           <em class="extra-subtitle">Highlights sync back</em>
-          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps</span>
+          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps.</span>
         </div>
         <div class="extra">
           <strong>Handwritten notes</strong>
@@ -488,11 +628,6 @@ $ distillate --init</code>
           <em class="extra-subtitle">Automatic</em>
           <span>When metadata changes in Zotero, notes and PDFs are renamed to match. No orphaned files or broken links.</span>
         </div>
-        <div class="extra">
-          <strong>Scheduling</strong>
-          <em class="extra-subtitle">launchd &amp; cron</em>
-          <span>Set it and forget it. Runs automatically on macOS or Linux.</span>
-        </div>
       </div>
     </div>
 
@@ -503,7 +638,7 @@ $ distillate --init</code>
         <div class="extra">
           <strong>AI summaries</strong>
           <em class="extra-subtitle">Anthropic API</em>
-          <span>One-liner, key learnings, and a paragraph summary for each paper you read</span>
+          <span>One-liner, key learnings, and a paragraph summary for each paper you read.</span>
         </div>
         <div class="extra">
           <strong>Handwriting extraction</strong>
@@ -511,26 +646,36 @@ $ distillate --init</code>
           <span>Margin notes transcribed via Claude and woven into your AI summary. Your thinking becomes part of your notes.</span>
         </div>
         <div class="extra">
-          <strong>Paper suggestions</strong>
-          <em class="extra-subtitle">Anthropic API</em>
-          <span>Pick what to read next from your queue. Suggestions are promoted to your reMarkable home screen.</span>
+          <strong>Trending papers</strong>
+          <em class="extra-subtitle extra-free">HuggingFace</em>
+          <span>Browse what's trending in AI research. Included in daily emails and available via the agent.</span>
         </div>
         <div class="extra">
           <strong>Smart metadata</strong>
           <em class="extra-subtitle extra-free">Semantic Scholar</em>
-          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete</span>
+          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete.</span>
         </div>
         <div class="extra">
           <strong>Collection filtering</strong>
           <em class="extra-subtitle extra-free">Zotero collections</em>
-          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library</span>
+          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library.</span>
         </div>
         <div class="extra">
           <strong>Email digest</strong>
           <em class="extra-subtitle extra-free">Free Resend account</em>
-          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox</span>
+          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox.</span>
         </div>
       </div>
+    </div>
+
+    <div class="newsletter">
+      <h2>Stay in the loop</h2>
+      <p>Get notified about new features and releases. No spam, unsubscribe anytime.</p>
+      <form id="newsletter-form">
+        <input type="email" id="nl-email" placeholder="you@example.com" required>
+        <button type="submit">Get updates</button>
+      </form>
+      <p id="nl-msg" class="msg" style="display:none;"></p>
     </div>
 
     <div class="github-cta">
@@ -541,14 +686,14 @@ $ distillate --init</code>
     <div class="commands">
       <h2>Commands</h2>
       <div class="command-list">
-        <div class="command"><code>distillate</code><span>Sync Zotero -> reMarkable -> notes (default)</span></div>
+        <div class="command"><code>distillate</code><span>Launch the research assistant (default)</span></div>
+        <div class="command"><code>distillate "What's in my queue?"</code><span>Ask a one-off question</span></div>
+        <div class="command"><code>distillate --sync</code><span>Sync Zotero &rarr; reMarkable &rarr; notes</span></div>
         <div class="command"><code>distillate --import</code><span>Import existing papers from Zotero</span></div>
         <div class="command"><code>distillate --status</code><span>Show queue health and reading stats</span></div>
         <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
         <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
         <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
-        <div class="command"><code>distillate --refresh-metadata</code><span>Re-fetch metadata from Zotero + Semantic Scholar</span></div>
-        <div class="command"><code>distillate --list</code><span>List all tracked papers</span></div>
         <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
       </div>
     </div>
@@ -557,12 +702,11 @@ $ distillate --init</code>
       <h2>What you need</h2>
       <table>
         <tr><th>Component</th><th>Notes</th><th></th></tr>
-        <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a> account</td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
-        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a> tablet</td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-purple">Required</span></td></tr>
-        <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a> vault</td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
-        <tr><td><a href="https://www.semanticscholar.org/" class="integration" style="color:#1857b6;background:#dbeafe;">Semantic Scholar</a></td><td>Auto-completes dates, venues, and citation counts</td><td><span class="badge badge-green">Free</span></td></tr>
-        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a> API key</td><td>For AI summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
-        <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a> account</td><td>For weekly digest emails</td><td><span class="badge badge-green">Free</span></td></tr>
+        <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a></td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
+        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a></td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-purple">Required</span></td></tr>
+        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a></td><td>Powers the agent, summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
+        <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a></td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
+        <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a></td><td>For weekly digest emails</td><td><span class="badge badge-blue">Optional</span></td></tr>
       </table>
     </div>
 
@@ -576,5 +720,37 @@ $ distillate --init</code>
 
     <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe" style="color:var(--muted);text-decoration:underline;">Romain Lacombe</a>. Powered by <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);text-decoration:underline;">rmapi</a>, <a href="https://github.com/ricklupton/rmscene" style="color:var(--muted);text-decoration:underline;">rmscene</a>, <a href="https://pymupdf.readthedocs.io/" style="color:var(--muted);text-decoration:underline;">PyMuPDF</a>, and <a href="https://claude.ai/claude-code" style="color:var(--muted);text-decoration:underline;">Claude Code</a>.</p>
   </div>
+  <script>
+    document.getElementById("newsletter-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector("button");
+      const msg = document.getElementById("nl-msg");
+      const email = document.getElementById("nl-email").value.trim();
+      btn.disabled = true;
+      btn.textContent = "Subscribing\u2026";
+      msg.style.display = "none";
+      try {
+        const res = await fetch("https://distillate-subscribe.distillate.workers.dev/", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({email}),
+        });
+        if (res.ok) {
+          msg.className = "msg ok";
+          msg.textContent = "You\u2019re in! We\u2019ll keep you posted.";
+          e.target.reset();
+          gtag("event", "newsletter_signup", {event_category: "engagement"});
+        } else {
+          throw new Error();
+        }
+      } catch {
+        msg.className = "msg err";
+        msg.textContent = "Something went wrong. Try again?";
+      }
+      msg.style.display = "block";
+      btn.disabled = false;
+      btn.textContent = "Get updates";
+    });
+  </script>
 </body>
 </html>

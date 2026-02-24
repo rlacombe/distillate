@@ -102,6 +102,7 @@ HTTP_TIMEOUT: int = int(os.environ.get("HTTP_TIMEOUT", "30"))
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 CLAUDE_FAST_MODEL: str = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001").strip()
 CLAUDE_SMART_MODEL: str = os.environ.get("CLAUDE_SMART_MODEL", "claude-sonnet-4-5-20250929").strip()
+CLAUDE_AGENT_MODEL: str = os.environ.get("CLAUDE_AGENT_MODEL", "claude-haiku-4-5-20251001").strip()
 
 
 _loaded = False

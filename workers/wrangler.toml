@@ -1,0 +1,9 @@
+name = "distillate-subscribe"
+main = "subscribe.js"
+compatibility_date = "2024-01-01"
+
+# Deploy: wrangler deploy
+# Secret:  wrangler secret put RESEND_API_KEY
+#
+# Custom domain: add route in Cloudflare dashboard
+#   subscribe.distillate.dev/* -> distillate-subscribe

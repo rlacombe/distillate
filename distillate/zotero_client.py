@@ -301,6 +301,13 @@ def download_pdf_from_url(url: str) -> Optional[bytes]:
     if m:
         pdf_url = f"https://arxiv.org/pdf/{m.group(1)}.pdf"
 
+    # arxiv direct PDF link: https://arxiv.org/pdf/XXXX or .pdf
+    if not pdf_url:
+        m = _re.search(r"arxiv\.org/pdf/([\d.]+)", url)
+        if m:
+            arxiv_id = m.group(1)
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
     # biorxiv/medrxiv: .../content/ID -> .../content/ID.full.pdf
     if not pdf_url:
         m = _re.search(r"(bio|med)rxiv\.org/content/([\d./v]+)", url)
@@ -308,6 +315,10 @@ def download_pdf_from_url(url: str) -> Optional[bytes]:
             base = url.rstrip("/")
             if not base.endswith(".pdf"):
                 pdf_url = f"{base}.full.pdf"
+
+    # Direct PDF link (any URL ending in .pdf)
+    if not pdf_url and url.rstrip("/").lower().endswith(".pdf"):
+        pdf_url = url
 
     if not pdf_url:
         return None
@@ -392,6 +403,72 @@ def get_linked_attachment(item_key: str) -> Optional[Dict[str, Any]]:
             and data.get("linkMode") == "linked_file"
         ):
             return child
+    return None
+
+
+def create_paper(
+    title: str,
+    authors: List[str],
+    item_type: str = "preprint",
+    doi: str = "",
+    url: str = "",
+    abstract: str = "",
+    publication_date: str = "",
+    tags: List[str] | None = None,
+) -> Optional[str]:
+    """Create a new paper item in the user's Zotero library.
+
+    Returns the new item's key, or None on failure.
+    """
+    creators = []
+    for name in authors:
+        name = name.strip()
+        if not name:
+            continue
+        parts = name.rsplit(" ", 1)
+        if len(parts) == 2:
+            creators.append({
+                "firstName": parts[0], "lastName": parts[1],
+                "creatorType": "author",
+            })
+        else:
+            creators.append({
+                "firstName": "", "lastName": name,
+                "creatorType": "author",
+            })
+
+    item: Dict[str, Any] = {
+        "itemType": item_type,
+        "title": title,
+        "creators": creators,
+        "tags": [{"tag": t} for t in (tags or [])],
+        "relations": {},
+    }
+    if doi:
+        item["DOI"] = doi
+    if url:
+        item["url"] = url
+    if abstract:
+        item["abstractNote"] = abstract
+    if publication_date:
+        item["date"] = publication_date
+
+    # Do NOT add the inbox tag here — filter_new_papers() skips items
+    # that already have workflow tags.  The sync loop adds the inbox tag
+    # in _upload_paper() after processing.
+
+    # Place in the user's collection so scoped syncs pick it up
+    if config.ZOTERO_COLLECTION_KEY:
+        item["collections"] = [config.ZOTERO_COLLECTION_KEY]
+
+    resp = _post("/items", json=[item])
+    result = resp.json()
+    successful = result.get("successful", {})
+    if "0" in successful:
+        key = successful["0"]["key"]
+        log.info("Created paper '%s' -> %s", title[:60], key)
+        return key
+    log.warning("Failed to create paper: %s", result.get("failed"))
     return None
 
 

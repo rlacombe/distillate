@@ -244,7 +244,7 @@ def _call_claude(prompt: str, max_tokens: int = 400, model: Optional[str] = None
     except ImportError:
         log.error(
             "AI summaries require the 'anthropic' package. "
-            "Install it with: pip install distillate[ai]"
+            "Install it with: pip install distillate"
         )
         return None
 
@@ -264,6 +264,9 @@ def _call_claude(prompt: str, max_tokens: int = 400, model: Optional[str] = None
         return None
 
 
+_PENDING_SUMMARY = "(Summary pending — reprocess when API credits are available.)"
+
+
 def _fallback_read(
     title: str, abstract: str, key_learnings: Optional[List[str]],
 ) -> Tuple[str, str]:
@@ -279,6 +282,6 @@ def _fallback_read(
         return summary, one_liner
     if key_learnings:
         return key_learnings[0], key_learnings[0]
-    return f"Read *{title}*.", f"Read *{title}*."
+    return _PENDING_SUMMARY, _PENDING_SUMMARY
 
 

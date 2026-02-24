@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.4.4"
+version = "0.5.0"
 description = "Distill research papers from Zotero through reMarkable into structured notes"
 readme = "README.md"
 license = "MIT"
@@ -28,12 +28,6 @@ dependencies = [
     "requests",
     "rmscene>=0.7.0",
     "pymupdf>=1.24.0",
-]
-
-[project.optional-dependencies]
-ai = ["anthropic>=0.40.0"]
-email = ["resend>=2.0.0"]
-all = [
     "anthropic>=0.40.0",
     "resend>=2.0.0",
 ]

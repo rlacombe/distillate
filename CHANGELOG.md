@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0 — 2026-02-23
+
+Interactive agent mode — distillate becomes a research assistant.
+
+### Features
+
+- **Agent REPL**: `distillate` now launches an interactive research assistant ("Nicolas") powered by Claude. Ask about your library, get paper recommendations, compare papers, add new ones — all from your terminal
+- **Natural language interface**: search papers, check reading stats, browse your queue, and trigger syncs by asking in plain English
+- **Add papers from the REPL**: give Nicolas an arXiv ID or URL and the paper is added to Zotero, enriched with metadata from HuggingFace and arXiv, ready to sync to reMarkable
+- **Cross-paper synthesis**: ask Nicolas to compare or synthesize across multiple papers — uses Claude to generate analysis from your highlights and notes
+- **HuggingFace Daily Papers**: new `get_trending_papers` tool surfaces trending research from HuggingFace, with GitHub repo links and community votes
+- **HuggingFace metadata enrichment**: papers with arXiv IDs are auto-enriched with GitHub repo URLs, star counts, and AI-generated keywords from HuggingFace
+- **Trending in emails**: digest and suggestion emails now include a "Trending on HuggingFace" section
+- **Fallback suggestion email**: when Claude API credits are depleted, the daily email still sends with queue overview, reading stats, and trending papers instead of silently skipping
+- **Promote from REPL**: `promote_papers` tool moves suggested papers to the reMarkable home screen
+
+### Improvements
+
+- **Alchemy-themed UI**: thinking spinner with alchemy phrases, emoji-decorated tool labels, streaming bold text, full-screen terminal clear
+- **Streaming responses**: agent output streams token-by-token with `**bold**` markdown rendered as ANSI bold
+- **Token-efficient**: uses Haiku by default (`CLAUDE_AGENT_MODEL`), aggressive conversation trimming, tool result truncation — keeps API costs low
+- **Actionable API errors**: credit depletion, invalid key, rate limiting, and overloaded errors now show specific messages with next steps
+- **Pending summary placeholder**: papers processed without API credits show "(Summary pending — reprocess when API credits are available.)" instead of a confusing fallback
+
+### Migration from 0.4.x
+
+- **`distillate` now opens the agent REPL** — use `distillate --sync` for the previous sync-only behavior
+- **Optional extras removed** — `[ai]`, `[email]`, and `[all]` install extras are gone. `pip install distillate` (or `uv tool install distillate`) now includes everything
+- **Newsletter signup** — the init wizard (`--init`) now offers an optional email signup at the end
+
+### Bug Fixes
+
+- **S2 enrichment at add time**: papers added via the agent now get Semantic Scholar metadata (citations, venue, date) immediately — no more "unknown_" citekeys
+- **Refresh metadata tool**: agent can now properly refresh metadata for existing papers instead of incorrectly suggesting `run_sync`
+- **Single-name Zotero authors**: `create_paper()` handles single-name authors (e.g. "DeepSeek-AI") that previously caused Zotero API errors
+- **arXiv title parsing**: fixed feed-level title leak ("arXiv Query:...") by skipping non-paper titles case-insensitively
+- **Spinner cleanup**: idempotent stop, try/finally, verbose tools clear instead of freeze — no more lingering spinners
+- **Conversation log**: agent sessions persist locally for cross-session memory ("the papers you added yesterday")
+- **Auto-sync after add**: `add_paper_to_zotero` triggers a full sync so PDFs land on reMarkable immediately
+- **Collection-aware paper creation**: `create_paper()` now adds items to the user's Zotero collection when `ZOTERO_COLLECTION_KEY` is set
+- **HF enrichment complete**: `lookup_paper()` now returns title, authors, and abstract (was only returning GitHub/keyword data)
+- **Dark background detection**: fixed inverted logic in agent terminal color detection
+- **Subprocess resolution**: `run_sync` uses `sys.executable -m distillate` instead of PATH lookup
+- **Valid JSON truncation**: tool results are truncated at the dict level, producing valid JSON instead of sliced strings
+- **Conversation trimming**: ensures trimmed conversations start with a user message, not an orphaned tool result
+
 ## 0.4.4 — 2026-02-21
 
 Paper index numbers, terminal colors, and reliability fixes.

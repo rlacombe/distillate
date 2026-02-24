@@ -28,6 +28,7 @@ def _run_wizard(inputs, tmp_path, monkeypatch):
 
     with patch("builtins.input", lambda _: next(input_iter)), \
          patch("requests.get", return_value=mock_resp), \
+         patch("requests.post", return_value=mock_resp), \
          patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
          patch("platform.system", return_value="Linux"):
         from distillate.main import _init_wizard
@@ -50,7 +51,7 @@ class TestInitWizard:
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
-            "n",                # Skip automatic syncing (Linux shows crontab)
+            "",                 # Skip newsletter
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -84,6 +85,7 @@ class TestInitWizard:
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -101,6 +103,7 @@ class TestInitWizard:
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -119,6 +122,7 @@ class TestInitWizard:
             "sk-ant-test123",       # Anthropic key
             "re_test456",           # Resend key
             "user@example.com",     # Email
+            "",                     # Skip newsletter
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -137,6 +141,7 @@ class TestInitWizard:
             "2",                # Remove PDFs from Zotero after sync
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -161,12 +166,14 @@ class TestInitRerun:
             "",                     # Default choice (2 = optional features)
             "sk-ant-new123",        # Anthropic key
             "",                     # Skip Resend
+            "",                     # Skip newsletter
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
         with patch("builtins.input", lambda _: next(inputs)), \
              patch("requests.get", return_value=mock_resp), \
+             patch("requests.post", return_value=mock_resp), \
              patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
              patch("platform.system", return_value="Linux"):
             from distillate.main import _init_wizard
@@ -203,12 +210,14 @@ class TestInitRerun:
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
         with patch("builtins.input", lambda _: next(inputs)), \
              patch("requests.get", return_value=mock_resp), \
+             patch("requests.post", return_value=mock_resp), \
              patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
              patch("platform.system", return_value="Linux"):
             from distillate.main import _init_wizard
@@ -241,12 +250,14 @@ class TestInitRerun:
             "",                 # Keep PDFs
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
         with patch("builtins.input", lambda _: next(inputs)), \
              patch("requests.get", return_value=mock_resp), \
+             patch("requests.post", return_value=mock_resp), \
              patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
              patch("platform.system", return_value="Linux"):
             from distillate.main import _init_wizard
@@ -275,12 +286,14 @@ class TestInitRerun:
             "",                 # Keep PDFs
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
         with patch("builtins.input", lambda _: next(inputs)), \
              patch("requests.get", return_value=mock_resp), \
+             patch("requests.post", return_value=mock_resp), \
              patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
              patch("platform.system", return_value="Linux"):
             from distillate.main import _init_wizard
@@ -310,12 +323,14 @@ class TestInitRerun:
             "",                 # Keep default (now 2 since existing is false)
             "",                 # Skip Anthropic
             "",                 # Skip Resend
+            "",                 # Skip newsletter
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
         with patch("builtins.input", lambda _: next(inputs)), \
              patch("requests.get", return_value=mock_resp), \
+             patch("requests.post", return_value=mock_resp), \
              patch("shutil.which", return_value="/usr/local/bin/rmapi"), \
              patch("platform.system", return_value="Linux"):
             from distillate.main import _init_wizard

@@ -46,7 +46,7 @@ def _send_email(subject: str, html: str) -> dict | None:
     except ImportError:
         log.error(
             "Email requires the 'resend' package. "
-            "Install it with: pip install distillate[email]"
+            "Install it with: pip install distillate"
         )
         return None
     if not config.RESEND_API_KEY:
@@ -393,6 +393,48 @@ def _queue_health_html(state: State) -> str:
     )
 
 
+def _trending_html(papers: list) -> str:
+    """Build HTML for a 'Trending on HuggingFace' section."""
+    if not papers:
+        return ""
+    lines = [
+        '<p style="margin-top:20px;"><strong>Trending on HuggingFace</strong></p>',
+        "<ul style='padding-left: 20px;'>",
+    ]
+    for p in papers:
+        title = p.get("title", "?")
+        hf_url = p.get("hf_url", "")
+        ai_summary = p.get("ai_summary", "")
+        upvotes = p.get("upvotes", 0)
+
+        title_html = (
+            f'<a href="{hf_url}" style="color:#333;">{title}</a>'
+            if hf_url else title
+        )
+        summary_html = f" &mdash; {ai_summary}" if ai_summary else ""
+        upvote_badge = (
+            f' <span style="color:#999;font-size:12px;">'
+            f"\u25b2{upvotes}</span>"
+        )
+        lines.append(
+            f"<li style='margin-bottom:10px;'>"
+            f"{title_html}{summary_html}{upvote_badge}</li>"
+        )
+    lines.append("</ul>")
+    return "\n".join(lines)
+
+
+def _fetch_trending_for_email(state: State, limit: int = 5) -> list:
+    """Fetch trending papers, optionally filtered by user's topics."""
+    try:
+        from distillate import huggingface
+        papers = huggingface.trending_papers(limit=limit)
+        return papers
+    except Exception:
+        log.warning("Could not fetch HF trending for email", exc_info=True)
+        return []
+
+
 def _push_pending_to_gist(picks: list, suggestion_text: str) -> None:
     """Write pending.json to the state Gist so local --sync can promote."""
     gist_id = config.STATE_GIST_ID
@@ -539,6 +581,11 @@ def _paper_html(p, index: int = 0):
         stats_parts.append(f"{highlight_word_count} words")
     if citation_count:
         stats_parts.append(f"{citation_count:,} citations")
+    github_repo = p.get("metadata", {}).get("github_repo", "")
+    if github_repo:
+        stars = p.get("metadata", {}).get("github_stars")
+        star_str = f" \u2605{stars:,}" if stars else ""
+        stats_parts.append(f'<a href="{github_repo}" style="color:#999;">GitHub{star_str}</a>')
     stats_html = ""
     if stats_parts:
         stats_html = (
@@ -576,6 +623,9 @@ def _build_body(papers, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)
@@ -662,7 +712,11 @@ def _get_todays_suggestions(state: State) -> str | None:
 
 
 def send_suggestion() -> None:
-    """Send a daily suggestion email. Computes suggestions at most once per day."""
+    """Send a daily suggestion email. Computes suggestions at most once per day.
+
+    When Claude is unavailable (e.g. depleted API credits), sends a fallback
+    email with queue health, reading stats, and trending papers.
+    """
     config.setup_logging()
 
     state = State()
@@ -679,11 +733,14 @@ def send_suggestion() -> None:
         log.info("Suggestions already computed today, re-sending email")
     else:
         result = _compute_suggestions(state)
-        if not result:
-            return
 
-    subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
-    body = _build_suggestion_body(result, unread, state)
+    if result:
+        subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
+        body = _build_suggestion_body(result, unread, state)
+    else:
+        # Claude unavailable — send a fallback email with stats + trending
+        subject = datetime.now().strftime("Your reading queue \u2013 %b %-d, %Y")
+        body = _build_fallback_suggestion_body(unread, state)
 
     _send_email(subject, body)
 
@@ -784,6 +841,53 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
     lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
+    lines.append(_SIGNATURE)
+    lines.append("</body></html>")
+    return "\n".join(lines)
+
+
+def _build_fallback_suggestion_body(unread: list, state: State) -> str:
+    """Build a fallback email when Claude can't generate suggestions.
+
+    Shows queue overview, reading stats, and trending papers.
+    """
+    count = len(unread)
+    lines = [
+        "<html><body style='font-family: sans-serif; max-width: 600px; "
+        "margin: 0 auto; padding: 20px; color: #333;'>",
+        f'<p>You have {count} paper{"s" if count != 1 else ""} in your reading queue:</p>',
+        "<ul style='padding-left: 20px;'>",
+    ]
+
+    for doc in sorted(unread, key=lambda d: d.get("uploaded_at", ""), reverse=True):
+        title = doc.get("title", "Untitled")
+        url = _paper_url(doc)
+        idx = state.index_of(doc.get("zotero_item_key", ""))
+        tags = doc.get("metadata", {}).get("tags", [])
+        pills = _tag_pills_html(tags, max_tags=3)
+
+        title_html = (
+            f'<a href="{url}" style="color:#333;text-decoration:none;">'
+            f"<strong>{title}</strong></a>"
+            if url else f"<strong>{title}</strong>"
+        )
+        idx_html = f'<span style="color:#999;">[{idx}]</span> ' if idx else ""
+        pills_html = f"<br>{pills}" if pills else ""
+
+        lines.append(
+            f"<li style='margin-bottom: 10px;'>"
+            f"{idx_html}{title_html}{pills_html}</li>"
+        )
+
+    lines.append("</ul>")
+    lines.append(_reading_stats_html(state))
+    lines.append(_queue_health_html(state))
+    trending = _fetch_trending_for_email(state, limit=5)
+    if trending:
+        lines.append(_trending_html(trending))
     lines.append(_SIGNATURE)
     lines.append("</body></html>")
     return "\n".join(lines)
