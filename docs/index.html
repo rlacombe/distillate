@@ -4,15 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distillate — Your research assistant in the terminal</title>
-  <meta name="description" content="An AI research assistant that lives in your terminal. Manages your Zotero library, syncs to reMarkable, extracts highlights, and helps you think across papers.">
+  <meta name="description" content="An AI research assistant that lives in your terminal. Manages your Zotero library, extracts highlights, and helps you think across papers.">
   <meta property="og:title" content="Distillate — Your research assistant in the terminal">
-  <meta property="og:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
+  <meta property="og:description" content="An AI research assistant for your paper reading workflow. Zotero to structured notes — with a research alchemist to help.">
   <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Distillate — Your research assistant in the terminal">
-  <meta name="twitter:description" content="An AI research assistant for your paper reading workflow. Zotero to reMarkable to structured notes — with a research alchemist to help.">
+  <meta name="twitter:description" content="An AI research assistant for your paper reading workflow. Zotero to structured notes — with a research alchemist to help.">
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
   <script>
@@ -529,11 +529,11 @@
   </style>
 </head>
 <body>
-  <div class="banner">v0.5 &mdash; Now with an AI research assistant &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a></div>
+  <div class="banner">v0.6 &mdash; Now works without a reMarkable &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a></div>
   <div class="container">
     <h1><img src="logo.svg" alt="" width="48" height="48" style="vertical-align: -6px; margin-right: 12px;">Distillate</h1>
     <p class="tagline">A research alchemist in your terminal.</p>
-    <p class="subtitle">arXiv papers &rarr; Zotero library &rarr; reMarkable highlights &rarr; Obsidian notes.</p>
+    <p class="subtitle">Save to Zotero. Read on your reMarkable or any device. Distillate does the rest.</p>
 
     <div class="terminal">
       <div class="terminal-bar">
@@ -559,7 +559,7 @@
     </div>
 
     <div class="badges">
-      <span class="badge badge-purple">PyPI v0.5.1</span>
+      <span class="badge badge-purple">PyPI v0.6.0</span>
       <span class="badge badge-blue">Python 3.10+</span>
       <span class="badge badge-green">MIT License</span>
     </div>
@@ -568,6 +568,11 @@
       <p style="font-size: 0.9rem; color: var(--muted); margin-bottom: 10px;">Try it out:</p>
       <code>$ uv tool install distillate
 $ distillate --init</code>
+    </div>
+
+    <div class="github-cta">
+      <a href="https://github.com/rlacombe/distillate" class="star-btn">Star on GitHub</a>
+      <span>Questions or ideas? <a href="https://github.com/rlacombe/distillate/discussions">Start a discussion</a></span>
     </div>
 
     <div class="steps">
@@ -582,14 +587,14 @@ $ distillate --init</code>
 
       <div class="step">
         <span class="step-number">2</span>
-        <strong>PDF syncs to your reMarkable</strong>
-        <p>Distillate uploads the PDF to your tablet. Read and highlight the passages that matter.</p>
+        <strong>Read and highlight</strong>
+        <p>On your reMarkable tablet, or on any device with the Zotero app — iPad, Android, desktop.</p>
       </div>
 
       <div class="step">
         <span class="step-number">3</span>
         <strong>Highlights become structured notes</strong>
-        <p>Move the document to Read/ when done. Distillate extracts highlights, generates a summary, and saves a markdown note.</p>
+        <p>Just move the paper to your Read folder on reMarkable, or tag it "read" in Zotero. Distillate extracts highlights, generates a summary, and saves a markdown note.</p>
       </div>
 
       <div class="step">
@@ -620,8 +625,8 @@ $ distillate --init</code>
         </div>
         <div class="extra">
           <strong>Handwritten notes</strong>
-          <em class="extra-subtitle">Ink on PDF</em>
-          <span>Ink strokes rendered on PDFs and typed text extracted. Works on RM1, RM2, and Paper Pro.</span>
+          <em class="extra-subtitle">reMarkable</em>
+          <span>Handwritten margin notes rendered as ink on your PDFs, with typed text extracted. Works on RM1, RM2, and Paper Pro.</span>
         </div>
         <div class="extra">
           <strong>Citekey rename</strong>
@@ -642,7 +647,7 @@ $ distillate --init</code>
         </div>
         <div class="extra">
           <strong>Handwriting extraction</strong>
-          <em class="extra-subtitle">Claude Vision</em>
+          <em class="extra-subtitle">Claude Vision &middot; reMarkable</em>
           <span>Margin notes transcribed via Claude and woven into your AI summary. Your thinking becomes part of your notes.</span>
         </div>
         <div class="extra">
@@ -678,17 +683,12 @@ $ distillate --init</code>
       <p id="nl-msg" class="msg" style="display:none;"></p>
     </div>
 
-    <div class="github-cta">
-      <a href="https://github.com/rlacombe/distillate" class="star-btn">Star on GitHub</a>
-      <span>Questions or ideas? <a href="https://github.com/rlacombe/distillate/discussions">Start a discussion</a></span>
-    </div>
-
     <div class="commands">
       <h2>Commands</h2>
       <div class="command-list">
         <div class="command"><code>distillate</code><span>Launch the research assistant (default)</span></div>
         <div class="command"><code>distillate "What's in my queue?"</code><span>Ask a one-off question</span></div>
-        <div class="command"><code>distillate --sync</code><span>Sync Zotero &rarr; reMarkable &rarr; notes</span></div>
+        <div class="command"><code>distillate --sync</code><span>Sync papers and generate notes</span></div>
         <div class="command"><code>distillate --import</code><span>Import existing papers from Zotero</span></div>
         <div class="command"><code>distillate --status</code><span>Show queue health and reading stats</span></div>
         <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
@@ -703,7 +703,7 @@ $ distillate --init</code>
       <table>
         <tr><th>Component</th><th>Notes</th><th></th></tr>
         <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a></td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
-        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a></td><td>Where you read and highlight (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-purple">Required</span></td></tr>
+        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a></td><td>Read on tablet with ink &amp; handwriting (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a></td><td>Powers the agent, summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a></td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
         <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a></td><td>For weekly digest emails</td><td><span class="badge badge-blue">Optional</span></td></tr>

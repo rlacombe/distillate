@@ -84,7 +84,18 @@ OUTPUT_PATH: str = os.environ.get("OUTPUT_PATH", "").strip()
 PDF_SUBFOLDER: str = os.environ.get("PDF_SUBFOLDER", "pdf").strip()
 
 KEEP_ZOTERO_PDF: bool = os.environ.get("KEEP_ZOTERO_PDF", "true").strip().lower() in ("true", "1", "yes")
-SYNC_HIGHLIGHTS: bool = os.environ.get("SYNC_HIGHLIGHTS", "true").strip().lower() in ("true", "1", "yes")
+
+# Reading surface: "remarkable" (default) or "zotero" (any device via Zotero app)
+READING_SOURCE: str = os.environ.get("READING_SOURCE", "remarkable").strip().lower()
+
+# When using Zotero reader, default SYNC_HIGHLIGHTS to false (highlights already in Zotero)
+_sync_default = "false" if READING_SOURCE == "zotero" else "true"
+SYNC_HIGHLIGHTS: bool = os.environ.get("SYNC_HIGHLIGHTS", _sync_default).strip().lower() in ("true", "1", "yes")
+
+
+def is_zotero_reader() -> bool:
+    """True when the user reads on any device via Zotero app (no reMarkable)."""
+    return READING_SOURCE == "zotero"
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 

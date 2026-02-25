@@ -247,8 +247,8 @@ _AGENT_MODEL = None  # resolved lazily after config is loaded
 
 _MAX_TOOL_STEPS = 5
 _MAX_TOKENS = 2048
-_CONVERSATION_TRIM_THRESHOLD = 20
-_CONVERSATION_KEEP = 10
+_CONVERSATION_TRIM_THRESHOLD = 40
+_CONVERSATION_KEEP = 24
 _MAX_TOOL_RESULT_CHARS = 12000  # truncate large tool responses
 
 
@@ -291,7 +291,8 @@ def _build_system_prompt(state: State, past_sessions: list[dict] | None = None) 
     """Build a context-rich system prompt from current library state."""
     now = datetime.now(timezone.utc)
 
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     processed = state.documents_with_status("processed")
     awaiting = state.documents_with_status("awaiting_pdf")
 
@@ -323,8 +324,15 @@ def _build_system_prompt(state: State, past_sessions: list[dict] | None = None) 
         "You are Nicolas, a research alchemist \u2014 named after Nicolas "
         "Flamel, the legendary alchemist. You help a researcher distill "
         "the essence from academic papers. The user reads papers through a "
-        "Zotero \u2192 reMarkable \u2192 Obsidian workflow powered by "
-        "Distillate. You have tools to search their library, read their "
+        + (
+            "Zotero workflow powered by Distillate \u2014 they read and "
+            "highlight papers in the Zotero app (on any device), then "
+            "Distillate extracts their highlights and generates notes."
+            if config.is_zotero_reader() else
+            "Zotero \u2192 reMarkable \u2192 Obsidian workflow powered by "
+            "Distillate."
+        )
+        + " You have tools to search their library, read their "
         "highlights and notes, analyze reading patterns, and synthesize "
         "insights across papers.\n\n"
         "## Library\n"
@@ -479,7 +487,8 @@ def _term_width() -> int:
 def _print_welcome(state: State) -> None:
     """Print a compact welcome banner."""
     processed = state.documents_with_status("processed")
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     n_read = len(processed)
     n_queue = len(queue)
 
@@ -623,9 +632,9 @@ def _handle_turn(
             spinner.start()
             try:
                 if verbose:
-                    # These tools print their own progress — clear spinner
-                    # so the tool's output replaces it cleanly
-                    spinner.stop()
+                    # These tools print their own progress — freeze spinner
+                    # label so the user sees the tool name while it runs
+                    spinner.stop(keep_label=True)
                     # Color subprocess output dim magenta to distinguish
                     # from the agent's own text
                     if _is_tty():
@@ -656,10 +665,22 @@ def _handle_turn(
     # Trim conversation to prevent context overflow
     if len(conversation) > _CONVERSATION_TRIM_THRESHOLD:
         trimmed = conversation[-_CONVERSATION_KEEP:]
-        # Ensure conversation starts with a user message (not an orphaned
-        # tool_result left over from a mid-sequence trim).
-        while trimmed and trimmed[0].get("role") == "assistant":
-            trimmed.pop(0)
+        # Ensure conversation starts with a genuine user message — skip
+        # assistant messages AND orphaned tool_result messages (which have
+        # role "user" but whose tool_use was trimmed from the preceding
+        # assistant message).
+        while trimmed:
+            msg = trimmed[0]
+            if msg.get("role") == "assistant":
+                trimmed.pop(0)
+                continue
+            content = msg.get("content")
+            if (isinstance(content, list) and content
+                    and isinstance(content[0], dict)
+                    and content[0].get("type") == "tool_result"):
+                trimmed.pop(0)
+                continue
+            break
         conversation[:] = trimmed
 
 

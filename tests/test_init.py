@@ -8,6 +8,7 @@ _WIZARD_ENV_KEYS = [
     "ZOTERO_API_KEY", "ZOTERO_USER_ID", "REMARKABLE_DEVICE_TOKEN",
     "OBSIDIAN_VAULT_PATH", "OUTPUT_PATH", "PDF_SUBFOLDER",
     "KEEP_ZOTERO_PDF", "ANTHROPIC_API_KEY", "RESEND_API_KEY", "DIGEST_TO",
+    "READING_SOURCE",
 ]
 
 
@@ -45,6 +46,7 @@ class TestInitWizard:
             "test_api_key",     # API key
             "12345",            # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -80,6 +82,7 @@ class TestInitWizard:
             "key",              # API key
             "999",              # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable registration
             "",                 # Use Obsidian (default Y)
             vault_path,         # Vault path
@@ -99,6 +102,7 @@ class TestInitWizard:
             "key",              # API key
             "999",              # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             output_path,        # Plain folder path
@@ -118,6 +122,7 @@ class TestInitWizard:
             "key",                  # API key
             "999",                  # User ID
             "",                     # Skip WebDAV
+            "",                     # Reading surface (default: reMarkable)
             "n",                    # Skip reMarkable registration
             "n",                    # Don't use Obsidian
             "",                     # Skip plain folder
@@ -139,6 +144,7 @@ class TestInitWizard:
             "key",              # API key
             "999",              # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -209,6 +215,7 @@ class TestInitRerun:
             "",                 # Keep existing API key (Enter)
             "",                 # Keep existing User ID (Enter)
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -250,6 +257,7 @@ class TestInitRerun:
             "",                 # Keep existing API key
             "999",              # New User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -287,6 +295,7 @@ class TestInitRerun:
             "key",              # API key
             "999",              # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "",                 # Keep existing registration (default N)
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -325,6 +334,7 @@ class TestInitRerun:
             "key",              # API key
             "999",              # User ID
             "",                 # Skip WebDAV
+            "",                 # Reading surface (default: reMarkable)
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder

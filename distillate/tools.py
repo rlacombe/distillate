@@ -101,7 +101,7 @@ TOOL_SCHEMAS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["on_remarkable", "processed", "awaiting_pdf"],
+                    "enum": ["on_remarkable", "tracked", "processed", "awaiting_pdf"],
                     "description": "Optional status filter",
                 },
             },
@@ -145,8 +145,8 @@ TOOL_SCHEMAS = [
     {
         "name": "get_queue",
         "description": (
-            "Get the current reading queue — papers on the reMarkable tablet "
-            "waiting to be read. Shows days in queue for each paper."
+            "Get the current reading queue — papers waiting to be read. "
+            "Shows days in queue for each paper."
         ),
         "input_schema": {
             "type": "object",
@@ -206,7 +206,7 @@ TOOL_SCHEMAS = [
     {
         "name": "run_sync",
         "description": (
-            "Trigger the full Zotero → reMarkable → notes sync pipeline. "
+            "Trigger the full sync pipeline (Zotero → notes). "
             "This is a write operation — ask the user to confirm first."
         ),
         "input_schema": {
@@ -234,9 +234,8 @@ TOOL_SCHEMAS = [
     {
         "name": "promote_papers",
         "description": (
-            "Promote papers to the reMarkable tablet home screen so they're "
-            "easy to find and read next. Demotes previously promoted papers "
-            "back to Inbox (unless the user started reading them). "
+            "Promote papers to the top of the reading queue so they're "
+            "easy to find and read next. Demotes previously promoted papers. "
             "This is a write operation — ask the user to confirm first."
         ),
         "input_schema": {
@@ -275,8 +274,8 @@ TOOL_SCHEMAS = [
     {
         "name": "add_paper_to_zotero",
         "description": (
-            "Add a new paper to the user's Zotero library so it gets synced to "
-            "reMarkable on the next distillate run. Provide an arXiv ID or URL "
+            "Add a new paper to the user's Zotero library so it gets picked up "
+            "on the next distillate run. Provide an arXiv ID or URL "
             "and the PDF will be downloaded automatically during sync. "
             "arXiv URLs are auto-converted to PDF downloads. "
             "If an arXiv ID is provided or detected from the URL, metadata "
@@ -426,11 +425,14 @@ def get_paper_details(*, state, identifier: str) -> dict:
 
 def get_reading_stats(*, state, period_days: int = 30) -> dict:
     """Get reading statistics for a time period."""
+    from distillate import config as _cfg
+
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=period_days)).isoformat()
     recent = state.documents_processed_since(since)
 
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if _cfg.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     awaiting = state.documents_with_status("awaiting_pdf")
     all_processed = state.documents_with_status("processed")
 
@@ -476,8 +478,11 @@ def get_reading_stats(*, state, period_days: int = 30) -> dict:
 
 def get_queue(*, state) -> dict:
     """Get the current reading queue."""
+    from distillate import config as _cfg
+
     now = datetime.now(timezone.utc)
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if _cfg.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     promoted = set(state.promoted_papers)
 
     papers = []
@@ -541,9 +546,10 @@ def get_recent_reads(*, state, count: int = 10) -> dict:
 
 def suggest_next_reads(*, state) -> dict:
     """AI-ranked suggestions from the reading queue."""
-    from distillate import summarizer
+    from distillate import config as _cfg, summarizer
 
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if _cfg.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     if not queue:
         return {"suggestions": "Your reading queue is empty.", "queue_size": 0}
 
@@ -706,8 +712,11 @@ def reprocess_paper(*, state, identifier: str) -> dict:
 
 
 def promote_papers(*, state, identifiers: List[str]) -> dict:
-    """Promote papers to the reMarkable tablet home screen."""
+    """Promote papers to the top of the reading queue."""
+    from distillate import config as _cfg
     from distillate.state import acquire_lock, release_lock
+
+    _q_status = "tracked" if _cfg.is_zotero_reader() else "on_remarkable"
 
     # Resolve identifiers to item keys
     pick_keys = []
@@ -720,8 +729,8 @@ def promote_papers(*, state, identifiers: List[str]) -> dict:
             errors.append(f"No paper found matching '{ident}'")
             continue
         key, doc = matches[0]
-        if doc.get("status") != "on_remarkable":
-            errors.append(f"'{doc.get('title', ident)}' is not on reMarkable (status: {doc.get('status')})")
+        if doc.get("status") != _q_status:
+            errors.append(f"'{doc.get('title', ident)}' is not in the reading queue (status: {doc.get('status')})")
             continue
         pick_keys.append(key)
         resolved_titles.append(doc.get("title", ""))
@@ -906,7 +915,7 @@ def add_paper_to_zotero(
     # Auto-sync so the PDF downloads and uploads to reMarkable immediately
     sync_result = run_sync(state=state)
     if sync_result.get("success"):
-        message = f"Added '{title}' to Zotero and synced to reMarkable."
+        message = f"Added '{title}' to Zotero and synced."
     else:
         message = (
             f"Added '{title}' to Zotero. "

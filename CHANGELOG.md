@@ -1,66 +1,29 @@
 # Changelog
 
-## 0.5.2 — 2026-02-24
+## 0.6.0 — 2026-02-25
 
-### Bug Fixes
+### New Features
 
-- **WebDAV error handling**: `download_pdf_from_webdav()` now catches all HTTP errors (401, 403, 500, etc.) instead of only ConnectionError/Timeout — previously a non-404 HTTP error would propagate as an unhandled exception, leaving papers stuck as "Awaiting PDF"
-- **WebDAV diagnostics**: BadZipFile warnings now log the first 100 bytes of the response (catches HTML error pages masquerading as ZIPs), and empty-zip warnings show the actual file list
-- **WebDAV empty auth**: no longer sends empty Basic Auth header when `ZOTERO_WEBDAV_USERNAME` is not set
-- **Manual upload detection**: the awaiting-PDF retry loop now checks if a paper is already on reMarkable (e.g. manually uploaded) and updates status instead of re-downloading
-- **Visible retry output**: the awaiting-PDF retry loop now prints progress to the terminal instead of logging silently — users see which papers are retrying, succeeding, or still waiting
-
-## 0.5.1 — 2026-02-23
-
-### Bug Fixes
-
-- **WebDAV PDF downloads broken since 0.4.4**: `get_pdf_attachment()` only matched `imported_file` and `imported_url` link modes, missing WebDAV's `linked_url` attachments — papers got stuck as "Awaiting PDF" instead of downloading
-
-## 0.5.0 — 2026-02-23
-
-Interactive agent mode — distillate becomes a research assistant.
-
-### Features
-
-- **Agent REPL**: `distillate` now launches an interactive research assistant ("Nicolas") powered by Claude. Ask about your library, get paper recommendations, compare papers, add new ones — all from your terminal
-- **Natural language interface**: search papers, check reading stats, browse your queue, and trigger syncs by asking in plain English
-- **Add papers from the REPL**: give Nicolas an arXiv ID or URL and the paper is added to Zotero, enriched with metadata from HuggingFace and arXiv, ready to sync to reMarkable
-- **Cross-paper synthesis**: ask Nicolas to compare or synthesize across multiple papers — uses Claude to generate analysis from your highlights and notes
-- **HuggingFace Daily Papers**: new `get_trending_papers` tool surfaces trending research from HuggingFace, with GitHub repo links and community votes
-- **HuggingFace metadata enrichment**: papers with arXiv IDs are auto-enriched with GitHub repo URLs, star counts, and AI-generated keywords from HuggingFace
-- **Trending in emails**: digest and suggestion emails now include a "Trending on HuggingFace" section
-- **Fallback suggestion email**: when Claude API credits are depleted, the daily email still sends with queue overview, reading stats, and trending papers instead of silently skipping
-- **Promote from REPL**: `promote_papers` tool moves suggested papers to the reMarkable home screen
+- **Read on any device**: no longer requires a reMarkable tablet — read and highlight in the Zotero app on iPad, desktop, Android, or any device. Pick your reading surface during `--init` setup. reMarkable remains fully supported.
+- **Nicolas — AI research assistant**: interactive agent REPL in your terminal. Search papers, compare findings, get reading suggestions, add papers by arXiv ID — all in natural language.
+- **Trending papers**: browse today's top AI/ML papers from HuggingFace Daily Papers, with GitHub stars and AI-generated summaries.
+- **Add papers via agent**: ask Nicolas to add a paper by arXiv ID or URL — metadata auto-fetched, PDF synced on next run.
 
 ### Improvements
 
-- **Alchemy-themed UI**: thinking spinner with alchemy phrases, emoji-decorated tool labels, streaming bold text, full-screen terminal clear
-- **Streaming responses**: agent output streams token-by-token with `**bold**` markdown rendered as ANSI bold
-- **Token-efficient**: uses Haiku by default (`CLAUDE_AGENT_MODEL`), aggressive conversation trimming, tool result truncation — keeps API costs low
-- **Actionable API errors**: credit depletion, invalid key, rate limiting, and overloaded errors now show specific messages with next steps
-- **Pending summary placeholder**: papers processed without API credits show "(Summary pending — reprocess when API credits are available.)" instead of a confusing fallback
+- WebDAV fallback: catches all HTTP errors, visible retry output, manual upload detection
+- Agent: dim magenta for verbose tool output, response truncation fix
+- Email digest: trending section with top 3 papers, mobile-friendly layout
+- Init wizard: WebDAV configuration step, reading surface choice
+- Landing page: reMarkable now optional, "any device" messaging
+- Windows: `--schedule` shows Task Scheduler instructions instead of crashing
+- Lazy rmscene imports: Zotero-only users don't need rmscene/rmapi installed
 
 ### Migration from 0.4.x
 
 - **`distillate` now opens the agent REPL** — use `distillate --sync` for the previous sync-only behavior
 - **Optional extras removed** — `[ai]`, `[email]`, and `[all]` install extras are gone. `pip install distillate` (or `uv tool install distillate`) now includes everything
 - **Newsletter signup** — the init wizard (`--init`) now offers an optional email signup at the end
-
-### Bug Fixes
-
-- **S2 enrichment at add time**: papers added via the agent now get Semantic Scholar metadata (citations, venue, date) immediately — no more "unknown_" citekeys
-- **Refresh metadata tool**: agent can now properly refresh metadata for existing papers instead of incorrectly suggesting `run_sync`
-- **Single-name Zotero authors**: `create_paper()` handles single-name authors (e.g. "DeepSeek-AI") that previously caused Zotero API errors
-- **arXiv title parsing**: fixed feed-level title leak ("arXiv Query:...") by skipping non-paper titles case-insensitively
-- **Spinner cleanup**: idempotent stop, try/finally, verbose tools clear instead of freeze — no more lingering spinners
-- **Conversation log**: agent sessions persist locally for cross-session memory ("the papers you added yesterday")
-- **Auto-sync after add**: `add_paper_to_zotero` triggers a full sync so PDFs land on reMarkable immediately
-- **Collection-aware paper creation**: `create_paper()` now adds items to the user's Zotero collection when `ZOTERO_COLLECTION_KEY` is set
-- **HF enrichment complete**: `lookup_paper()` now returns title, authors, and abstract (was only returning GitHub/keyword data)
-- **Dark background detection**: fixed inverted logic in agent terminal color detection
-- **Subprocess resolution**: `run_sync` uses `sys.executable -m distillate` instead of PATH lookup
-- **Valid JSON truncation**: tool results are truncated at the dict level, producing valid JSON instead of sliced strings
-- **Conversation trimming**: ensures trimmed conversations start with a user message, not an orphaned tool result
 
 ## 0.4.4 — 2026-02-21
 

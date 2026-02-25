@@ -231,6 +231,8 @@ def _make_rm_bundle_with_text(typed_text_items=None, glyphs=None):
 class TestExtractTypedNotes:
     """extract_typed_notes() should parse Text items from .rm files."""
 
+    @patch("distillate.renderer._rmscene_loaded", True)
+    @patch("distillate.renderer.si", si)
     @patch("distillate.renderer.read_tree")
     def test_extracts_plain_text(self, mock_read_tree, tmp_path):
         from distillate.renderer import extract_typed_notes
@@ -263,6 +265,8 @@ class TestExtractTypedNotes:
         assert 0 in result
         assert "My handwritten note" in result[0]
 
+    @patch("distillate.renderer._rmscene_loaded", True)
+    @patch("distillate.renderer.si", si)
     @patch("distillate.renderer.read_tree")
     def test_no_text_returns_empty(self, mock_read_tree, tmp_path):
         from distillate.renderer import extract_typed_notes
@@ -278,6 +282,8 @@ class TestExtractTypedNotes:
         result = extract_typed_notes(zip_path)
         assert result == {}
 
+    @patch("distillate.renderer._rmscene_loaded", True)
+    @patch("distillate.renderer.si", si)
     @patch("distillate.renderer.read_tree")
     def test_heading_style(self, mock_read_tree, tmp_path):
         from distillate.renderer import extract_typed_notes
@@ -313,6 +319,9 @@ class TestExtractTypedNotes:
 class TestExtractInkStrokes:
     """extract_ink_strokes() should filter out highlighters and erasers."""
 
+    @patch("distillate.renderer._rmscene_loaded", True)
+    @patch("distillate.renderer.si", si)
+    @patch("distillate.renderer._ERASER_TOOLS", {si.Pen.ERASER, si.Pen.ERASER_AREA})
     @patch("distillate.renderer.read_tree")
     def test_extracts_writing_strokes(self, mock_read_tree, tmp_path):
         from distillate.renderer import extract_ink_strokes
@@ -365,6 +374,9 @@ class TestExtractInkStrokes:
         assert len(result[0]) == 1  # only the writing stroke
         assert result[0][0].tool == si.Pen.BALLPOINT_1
 
+    @patch("distillate.renderer._rmscene_loaded", True)
+    @patch("distillate.renderer.si", si)
+    @patch("distillate.renderer._ERASER_TOOLS", {si.Pen.ERASER, si.Pen.ERASER_AREA})
     @patch("distillate.renderer.read_tree")
     def test_no_strokes_returns_empty(self, mock_read_tree, tmp_path):
         from distillate.renderer import extract_ink_strokes
@@ -744,19 +756,23 @@ class TestPenColorMap:
     """Verify pen color mapping covers all common colors."""
 
     def test_all_basic_colors_mapped(self):
-        from distillate.renderer import _PEN_COLOR_MAP
+        from distillate.renderer import _ensure_rmscene, _PEN_COLOR_MAP
+        _ensure_rmscene()
+        from distillate.renderer import _PEN_COLOR_MAP as loaded_map
         for color in [si.PenColor.BLACK, si.PenColor.GRAY, si.PenColor.BLUE,
                       si.PenColor.RED, si.PenColor.GREEN]:
-            assert color in _PEN_COLOR_MAP
+            assert color in loaded_map
 
 
 class TestEraserFiltering:
     """Verify eraser tools are in the exclusion set."""
 
     def test_erasers_excluded(self):
-        from distillate.renderer import _ERASER_TOOLS
-        assert si.Pen.ERASER in _ERASER_TOOLS
-        assert si.Pen.ERASER_AREA in _ERASER_TOOLS
+        from distillate.renderer import _ensure_rmscene
+        _ensure_rmscene()
+        from distillate.renderer import _ERASER_TOOLS as loaded_tools
+        assert si.Pen.ERASER in loaded_tools
+        assert si.Pen.ERASER_AREA in loaded_tools
 
 
 # ---------------------------------------------------------------------------

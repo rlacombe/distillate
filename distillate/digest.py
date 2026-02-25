@@ -102,7 +102,7 @@ def _sync_tags(state: State) -> None:
             # Check raw Zotero tags for "read" before extract_metadata strips them
             raw_tags = {t["tag"] for t in item.get("data", {}).get("tags", [])}
             if (config.ZOTERO_TAG_READ in raw_tags
-                    and doc.get("status") == "on_remarkable"):
+                    and doc.get("status") in ("on_remarkable", "tracked")):
                 doc["status"] = "processed"
                 if not doc.get("processed_at"):
                     doc["processed_at"] = datetime.now(timezone.utc).isoformat()
@@ -356,7 +356,8 @@ def _queue_health_html(state: State) -> str:
     now = datetime.now(timezone.utc)
     week_ago = (now - timedelta(days=7)).isoformat()
 
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     total = len(queue)
 
     oldest_days = 0
@@ -372,7 +373,7 @@ def _queue_health_html(state: State) -> str:
     added_this_week = sum(
         1 for d in state.documents.values()
         if (d.get("uploaded_at") or "") >= week_ago
-        and d.get("status") in ("on_remarkable", "processed")
+        and d.get("status") in ("on_remarkable", "tracked", "processed")
     )
     processed_this_week = len(state.documents_processed_since(week_ago))
 
@@ -634,7 +635,8 @@ def _build_body(papers, state: State):
 
 def _compute_suggestions(state: State) -> str | None:
     """Call Claude to pick 3 papers. Returns suggestion text or None."""
-    unread = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    unread = state.documents_with_status(_q_status)
     if not unread:
         log.info("No papers in reading queue, skipping suggestion")
         return None
@@ -723,7 +725,8 @@ def send_suggestion() -> None:
     state = State()
     _sync_tags(state)
 
-    unread = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    unread = state.documents_with_status(_q_status)
     if not unread:
         log.info("No papers in reading queue, skipping suggestion")
         return

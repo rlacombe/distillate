@@ -109,12 +109,15 @@ def _compute_engagement(
 def _reprocess(args: list[str]) -> None:
     """Re-run highlight extraction + PDF rendering on processed papers."""
     from distillate import config
-    from distillate import remarkable_client
     from distillate import obsidian
     from distillate import renderer
     from distillate import summarizer
     from distillate import zotero_client
     from distillate.state import State
+
+    zotero_mode = config.is_zotero_reader()
+    if not zotero_mode:
+        from distillate import remarkable_client
 
     config.setup_logging()
 
@@ -145,29 +148,61 @@ def _reprocess(args: list[str]) -> None:
         title = doc["title"]
         rm_name = doc["remarkable_doc_name"]
         item_key = doc["zotero_item_key"]
+        att_key = doc.get("zotero_attachment_key", "")
         print(f"  Reprocessing: {title}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             zip_path = Path(tmpdir) / f"{rm_name}.zip"
             pdf_path = Path(tmpdir) / f"{rm_name}.pdf"
 
-            bundle_ok = remarkable_client.download_document_bundle_to(
-                config.RM_FOLDER_SAVED, rm_name, zip_path,
-            )
-
-            if not bundle_ok or not zip_path.exists():
-                log.warning("Could not download bundle for '%s', skipping", title)
-                continue
-
-            highlights = renderer.extract_highlights(zip_path)
-            typed_notes = renderer.extract_typed_notes(zip_path)
-            try:
-                handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
-            except Exception:
+            if zotero_mode:
+                # Zotero mode: extract highlights from Zotero annotations
+                highlights = zotero_client.get_highlight_annotations(att_key) if att_key else {}
+                typed_notes = {}
                 handwritten_notes = {}
-                log.debug("Handwritten OCR skipped", exc_info=True)
-            page_count = renderer.get_page_count(zip_path)
-            render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
+                # Download PDF for rendering
+                pdf_bytes = None
+                if att_key:
+                    try:
+                        pdf_bytes = zotero_client.download_pdf(att_key)
+                    except Exception:
+                        pdf_bytes = None
+                if pdf_bytes is None and att_key:
+                    pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+                if pdf_bytes:
+                    raw_anns = zotero_client.get_raw_annotations(att_key)
+                    render_ok = renderer.render_annotated_pdf_from_annotations(
+                        pdf_bytes, raw_anns, pdf_path,
+                    )
+                    page_count = 0
+                    try:
+                        import pymupdf
+                        doc_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                        page_count = len(doc_pdf)
+                        doc_pdf.close()
+                    except Exception:
+                        pass
+                else:
+                    log.warning("Could not download PDF for '%s', skipping", title)
+                    continue
+            else:
+                bundle_ok = remarkable_client.download_document_bundle_to(
+                    config.RM_FOLDER_SAVED, rm_name, zip_path,
+                )
+
+                if not bundle_ok or not zip_path.exists():
+                    log.warning("Could not download bundle for '%s', skipping", title)
+                    continue
+
+                highlights = renderer.extract_highlights(zip_path)
+                typed_notes = renderer.extract_typed_notes(zip_path)
+                try:
+                    handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+                except Exception:
+                    handwritten_notes = {}
+                    log.debug("Handwritten OCR skipped", exc_info=True)
+                page_count = renderer.get_page_count(zip_path)
+                render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
 
             if render_ok and pdf_path.exists():
                 annotated_bytes = pdf_path.read_bytes()
@@ -650,12 +685,19 @@ def _backfill_highlights(args: list[str]) -> None:
     from datetime import datetime, timezone
 
     from distillate import config
-    from distillate import remarkable_client
     from distillate import renderer
     from distillate import zotero_client
     from distillate.state import State
 
+    zotero_mode = config.is_zotero_reader()
+    if not zotero_mode:
+        from distillate import remarkable_client
+
     config.setup_logging()
+
+    if zotero_mode:
+        print("Backfill not needed — highlights already in Zotero.")
+        return
 
     limit = int(args[0]) if args else 0
     state = State()
@@ -777,7 +819,8 @@ def _status() -> None:
     print("  " + "\u2500" * 40)
 
     # Queue
-    queue = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    queue = state.documents_with_status(_q_status)
     oldest_days = 0
     if queue:
         oldest_uploaded = min(d.get("uploaded_at", "") for d in queue)
@@ -825,17 +868,18 @@ def _status() -> None:
             print(f"    {_dim(f'... and {len(queue) - 10} more')}")
 
     # Ready to process (in Read/ on reMarkable)
-    try:
-        from distillate import remarkable_client
-        read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
-        if read_docs:
-            print(f"  Ready:     {len(read_docs)} paper{'s' if len(read_docs) != 1 else ''} in Read/")
-            for name in read_docs[:5]:
-                print(f"    - {name}")
-            if len(read_docs) > 5:
-                print(f"    ... and {len(read_docs) - 5} more")
-    except Exception:
-        pass  # rmapi unavailable — skip
+    if not config.is_zotero_reader():
+        try:
+            from distillate import remarkable_client
+            read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
+            if read_docs:
+                print(f"  Ready:     {len(read_docs)} paper{'s' if len(read_docs) != 1 else ''} in Read/")
+                for name in read_docs[:5]:
+                    print(f"    - {name}")
+                if len(read_docs) > 5:
+                    print(f"    ... and {len(read_docs) - 5} more")
+        except Exception:
+            pass  # rmapi unavailable — skip
 
     # Promoted (show last 3)
     promoted = state.promoted_papers
@@ -930,7 +974,7 @@ def _status() -> None:
         problems.append("No output configured (set OBSIDIAN_VAULT_PATH or OUTPUT_PATH)")
     elif config.OBSIDIAN_VAULT_PATH and not Path(config.OBSIDIAN_VAULT_PATH).is_dir():
         problems.append(f"Vault path missing: {config.OBSIDIAN_VAULT_PATH}")
-    if not shutil.which("rmapi"):
+    if not config.is_zotero_reader() and not shutil.which("rmapi"):
         problems.append("rmapi not found (reMarkable sync will fail)")
     if not config.ANTHROPIC_API_KEY:
         optional.append("AI summaries (set ANTHROPIC_API_KEY)")
@@ -955,12 +999,20 @@ def _list() -> None:
     config.setup_logging()
     state = State()
 
-    groups = [
-        ("On reMarkable", "on_remarkable"),
-        ("Processing", "processing"),
-        ("Awaiting PDF", "awaiting_pdf"),
-        ("Processed", "processed"),
-    ]
+    if config.is_zotero_reader():
+        groups = [
+            ("Reading", "tracked"),
+            ("Processing", "processing"),
+            ("Awaiting PDF", "awaiting_pdf"),
+            ("Processed", "processed"),
+        ]
+    else:
+        groups = [
+            ("On reMarkable", "on_remarkable"),
+            ("Processing", "processing"),
+            ("Awaiting PDF", "awaiting_pdf"),
+            ("Processed", "processed"),
+        ]
 
     total = 0
     print()
@@ -1104,7 +1156,8 @@ def _print_digest() -> None:
     # Reading stats footer (matches email format)
     month_since = (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)).isoformat()
     month_papers = state.documents_processed_since(month_since)
-    unread = state.documents_with_status("on_remarkable")
+    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+    unread = state.documents_with_status(_q_status)
 
     def _stats_line(docs, label):
         count = len(docs)
@@ -1131,10 +1184,28 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
 
     Shared logic used by both _suggest() (manual) and _auto_promote() (sync).
     Caller must hold the lock and pass a loaded State.
+    In Zotero reader mode, only updates state (no RM folder moves).
     """
     from datetime import datetime, timezone
 
     from distillate import config
+
+    if config.is_zotero_reader():
+        # In Zotero mode, just track promoted keys in state (no RM moves)
+        promoted_keys = list(state.promoted_papers)
+        for key in pick_keys:
+            if key not in promoted_keys:
+                doc = state.get_document(key)
+                if doc and doc["status"] == "tracked":
+                    doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
+                    promoted_keys.append(key)
+                    if verbose:
+                        print(f"  Promoted: {doc['title']}")
+        state.promoted_papers = promoted_keys
+        state.pending_promotions = []
+        state.save()
+        return
+
     from distillate import remarkable_client
 
     # Demote old promoted papers back to Inbox (skip if user started reading)
@@ -1322,10 +1393,12 @@ def _suggest() -> None:
     from datetime import datetime, timedelta, timezone
 
     from distillate import config
-    from distillate import remarkable_client
     from distillate import summarizer
     from distillate.digest import fetch_pending_from_gist
     from distillate.state import State, acquire_lock, release_lock
+
+    if not config.is_zotero_reader():
+        from distillate import remarkable_client
 
     config.setup_logging()
 
@@ -1349,7 +1422,8 @@ def _suggest() -> None:
                     pick_keys = pending.get("picks", [])
                     suggestion_text = pending.get("suggestion_text", "")
                     if pick_keys and suggestion_text:
-                        unread = state.documents_with_status("on_remarkable")
+                        _q_st = "tracked" if config.is_zotero_reader() else "on_remarkable"
+                        unread = state.documents_with_status(_q_st)
                         entries = _parse_suggestions(suggestion_text)
                         if entries:
                             _print_suggestions(entries, unread, now, state=state)
@@ -1365,7 +1439,8 @@ def _suggest() -> None:
 
         # Fall back to Claude if no pending picks
         if not pick_keys:
-            unread = state.documents_with_status("on_remarkable")
+            _q_st = "tracked" if config.is_zotero_reader() else "on_remarkable"
+            unread = state.documents_with_status(_q_st)
             if not unread:
                 print("  No papers in your reading queue.")
                 return
@@ -1436,16 +1511,16 @@ def _suggest() -> None:
         if suggestions_ok:
             _demote_and_promote(state, pick_keys, verbose=True)
 
-    except remarkable_client.RmapiAuthError as e:
-        print(f"\n  {e}\n")
-        return
     except requests.exceptions.ConnectionError:
         print(
             "\n  Could not connect to the internet."
             "\n  Check your network connection and try again.\n"
         )
         return
-    except Exception:
+    except Exception as e:
+        if type(e).__name__ == "RmapiAuthError":
+            print(f"\n  {e}\n")
+            return
         log.exception("Unexpected error in suggest")
         raise
     finally:
@@ -1459,9 +1534,11 @@ def _import(args: list[str]) -> None:
     Non-interactive: distillate --import N  (imports N most recent)
     """
     from distillate import config
-    from distillate import remarkable_client
     from distillate import zotero_client
     from distillate.state import State, acquire_lock, release_lock
+
+    if not config.is_zotero_reader():
+        from distillate import remarkable_client
 
     config.setup_logging()
 
@@ -1527,10 +1604,13 @@ def _import(args: list[str]) -> None:
                     return
 
         # Ensure RM folders exist and get existing docs
-        remarkable_client.ensure_folders()
-        existing_on_rm = set(
-            remarkable_client.list_folder(config.RM_FOLDER_INBOX)
-        )
+        if not config.is_zotero_reader():
+            remarkable_client.ensure_folders()
+            existing_on_rm = set(
+                remarkable_client.list_folder(config.RM_FOLDER_INBOX)
+            )
+        else:
+            existing_on_rm = set()
 
         imported = 0
         awaiting_pdf = 0
@@ -1562,16 +1642,16 @@ def _import(args: list[str]) -> None:
         else:
             print(f"\n  Imported {imported} paper{'s' if imported != 1 else ''}.\n")
 
-    except remarkable_client.RmapiAuthError as e:
-        print(f"\n  {e}\n")
-        return
     except requests.exceptions.ConnectionError:
         print(
             "\n  Could not connect to the internet."
             "\n  Check your network connection and try again.\n"
         )
         return
-    except Exception:
+    except Exception as e:
+        if type(e).__name__ == "RmapiAuthError":
+            print(f"\n  {e}\n")
+            return
         log.exception("Unexpected error in import")
         raise
     finally:
@@ -1587,9 +1667,12 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     """
     from distillate import config
     from distillate import obsidian
-    from distillate import remarkable_client
     from distillate import semantic_scholar
     from distillate import zotero_client
+
+    zotero_mode = config.is_zotero_reader()
+    if not zotero_mode:
+        from distillate import remarkable_client
 
     item_key = paper["key"]
     meta = zotero_client.extract_metadata(paper)
@@ -1616,8 +1699,35 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     att_key = attachment["key"] if attachment else ""
     att_md5 = attachment["data"].get("md5", "") if attachment else ""
 
-    # Upload to reMarkable (skip if already there or skip_remarkable is set)
-    if skip_remarkable:
+    # Upload to reMarkable (skip in Zotero mode, or if already there)
+    if zotero_mode:
+        # Zotero reader mode: download PDF for local save but no RM upload
+        pdf_bytes = None
+        if att_key:
+            try:
+                pdf_bytes = zotero_client.download_pdf(att_key)
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    log.info("PDF not synced to Zotero cloud for '%s'", title)
+                else:
+                    raise
+        if pdf_bytes is None and att_key:
+            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+        if pdf_bytes is None:
+            paper_url = meta.get("url", "")
+            if paper_url:
+                pdf_bytes = zotero_client.download_pdf_from_url(paper_url)
+
+        if pdf_bytes is not None:
+            citekey = meta.get("citekey", "")
+            saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
+            if saved:
+                new_att = zotero_client.create_linked_attachment(
+                    item_key, saved.name, str(saved),
+                )
+                if new_att and att_key and not config.KEEP_ZOTERO_PDF:
+                    zotero_client.delete_attachment(att_key)
+    elif skip_remarkable:
         log.info("Skipping RM upload (will upload on first sync): %s", title)
     elif title in existing_on_rm:
         log.info("Already on reMarkable, skipping upload: %s", title)
@@ -1731,20 +1841,31 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     # Tag in Zotero
     zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
 
-    # Track in state (awaiting_pdf when RM was skipped — retry logic uploads later)
-    status = "awaiting_pdf" if skip_remarkable else "on_remarkable"
+    # Track in state
+    if zotero_mode:
+        status = "tracked"
+        rm_doc_name = title  # no RM name needed
+    elif skip_remarkable:
+        status = "awaiting_pdf"
+        rm_doc_name = remarkable_client.sanitize_filename(title)
+    else:
+        status = "on_remarkable"
+        rm_doc_name = remarkable_client.sanitize_filename(title)
     state.add_document(
         zotero_item_key=item_key,
         zotero_attachment_key=att_key,
         zotero_attachment_md5=att_md5,
-        remarkable_doc_name=remarkable_client.sanitize_filename(title),
+        remarkable_doc_name=rm_doc_name,
         title=title,
         authors=authors,
         status=status,
         metadata=meta,
     )
     state.save()
-    log.info("Sent to reMarkable: %s", title)
+    if zotero_mode:
+        log.info("Tracking paper: %s", title)
+    else:
+        log.info("Sent to reMarkable: %s", title)
     return True
 
 
@@ -1813,6 +1934,16 @@ def _schedule() -> None:
 
     if platform.system() == "Darwin":
         _schedule_macos()
+    elif platform.system() == "Windows":
+        print()
+        print("  Automatic scheduling on Windows uses Task Scheduler.")
+        print()
+        print("  Open Task Scheduler and create a task that runs:")
+        print(f"    distillate --sync")
+        print()
+        print("  Or from PowerShell:")
+        print('    schtasks /create /tn "Distillate" /tr "distillate --sync" /sc MINUTE /mo 15')
+        print()
     else:
         _schedule_linux()
 
@@ -2226,10 +2357,8 @@ def _init_wizard() -> None:
         print("  Distillate automates your research paper workflow:")
         print()
         print("    1. You save a paper to Zotero (browser connector)")
-        print("    2. Distillate uploads the PDF to your reMarkable")
-        print("    3. You read and highlight on the reMarkable")
-        print("    4. When done, move the document to the Read folder")
-        print("    5. Distillate extracts your highlights, creates an")
+        print("    2. You read and highlight the paper")
+        print("    3. Distillate extracts your highlights, creates an")
         print("       annotated PDF, writes a note, and archives it")
         print()
         print("  Power-user features (optional):")
@@ -2359,86 +2488,108 @@ def _init_wizard() -> None:
         print("  Keeping existing WebDAV config.")
     print()
 
-    # -- Step 2: reMarkable --
-
-    print("  " + "-" * 48)
-    print("  Step 2 of 5: reMarkable")
-    print("  " + "-" * 48)
+    # -- Reading surface choice --
+    existing_source = os.environ.get("READING_SOURCE", "").strip().lower()
+    print("  How do you read your papers?")
     print()
-    print("  Distillate uses rmapi to sync PDFs with your reMarkable")
-    print("  via the reMarkable Cloud.")
+    print("    1. reMarkable tablet")
+    print("    2. Any device (iPad, desktop, tablet — via Zotero app)")
     print()
-    print("  Important: enable 'Text recognition' in your reMarkable")
-    print("  settings for highlight extraction to work.")
-    print()
+    default_choice = "2" if existing_source == "zotero" else "1"
+    reading_choice = input(f"  Your choice [{default_choice}]: ").strip() or default_choice
+    use_zotero_reader = reading_choice == "2"
 
-    import shutil
-    already_registered = bool(os.environ.get("REMARKABLE_DEVICE_TOKEN", ""))
-
-    if already_registered:
-        print("  reMarkable already registered.")
+    if use_zotero_reader:
+        save_to_env("READING_SOURCE", "zotero")
+        save_to_env("SYNC_HIGHLIGHTS", "false")
+        print("  Read and highlight papers in the Zotero app (desktop, iPad,")
+        print("  or Android), then add the 'read' tag when done.")
         print()
-        register = input("  Re-register? [y/N] ").strip().lower()
-        if register == "y":
-            from distillate.remarkable_auth import register_interactive
-            register_interactive()
-        else:
-            print("  Keeping existing registration.")
-    elif shutil.which("rmapi"):
-        print("  rmapi found.")
-        print()
-        print("  You need to authorize this device once.")
-        print()
-        register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
-        if register != "n":
-            from distillate.remarkable_auth import register_interactive
-            register_interactive()
-        else:
-            print("  Skipped. Run 'distillate --register' later.")
     else:
-        print("  Distillate requires rmapi to sync files with your")
-        print("  reMarkable via the cloud.")
+        save_to_env("READING_SOURCE", "remarkable")
         print()
-        import platform
-        if platform.system() == "Darwin":
-            print("  Install it with Homebrew:")
-            print("    brew install rmapi")
-        else:
-            print("  Download the latest binary from:")
-            print("    https://github.com/ddvk/rmapi/releases")
+
+    # -- Step 2: reMarkable (skipped when reading on any device) --
+
+    if not use_zotero_reader:
+        print("  " + "-" * 48)
+        print("  Step 2 of 5: reMarkable")
+        print("  " + "-" * 48)
         print()
-        install_now = input("  Install rmapi now? [Y/n] ").strip().lower()
-        if install_now != "n":
-            if platform.system() == "Darwin":
-                print()
-                print("  Running: brew install rmapi")
-                print()
-                import subprocess
-                result = subprocess.run(
-                    ["brew", "install", "rmapi"],
-                    capture_output=False,
-                )
-                print()
-                if result.returncode == 0 and shutil.which("rmapi"):
-                    print("  rmapi installed successfully!")
-                    print()
-                    register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
-                    if register != "n":
-                        from distillate.remarkable_auth import register_interactive
-                        register_interactive()
-                    else:
-                        print("  Skipped. Run 'distillate --register' later.")
-                else:
-                    print("  Installation failed. You can install manually later.")
-                    print("  Run 'distillate --register' when ready.")
+        print("  Distillate uses rmapi to sync PDFs with your reMarkable")
+        print("  via the reMarkable Cloud.")
+        print()
+        print("  Important: enable 'Text recognition' in your reMarkable")
+        print("  settings for highlight extraction to work.")
+        print()
+
+        import shutil
+        already_registered = bool(os.environ.get("REMARKABLE_DEVICE_TOKEN", ""))
+
+        if already_registered:
+            print("  reMarkable already registered.")
+            print()
+            register = input("  Re-register? [y/N] ").strip().lower()
+            if register == "y":
+                from distillate.remarkable_auth import register_interactive
+                register_interactive()
             else:
-                print()
-                print("  Please install rmapi manually from the link above,")
-                print("  then run 'distillate --register' to connect.")
+                print("  Keeping existing registration.")
+        elif shutil.which("rmapi"):
+            print("  rmapi found.")
+            print()
+            print("  You need to authorize this device once.")
+            print()
+            register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
+            if register != "n":
+                from distillate.remarkable_auth import register_interactive
+                register_interactive()
+            else:
+                print("  Skipped. Run 'distillate --register' later.")
         else:
-            print("  Skipped. Install rmapi and run 'distillate --register'")
-            print("  when you're ready.")
-    print()
+            print("  Distillate requires rmapi to sync files with your")
+            print("  reMarkable via the cloud.")
+            print()
+            import platform
+            if platform.system() == "Darwin":
+                print("  Install it with Homebrew:")
+                print("    brew install rmapi")
+            else:
+                print("  Download the latest binary from:")
+                print("    https://github.com/ddvk/rmapi/releases")
+            print()
+            install_now = input("  Install rmapi now? [Y/n] ").strip().lower()
+            if install_now != "n":
+                if platform.system() == "Darwin":
+                    print()
+                    print("  Running: brew install rmapi")
+                    print()
+                    import subprocess
+                    result = subprocess.run(
+                        ["brew", "install", "rmapi"],
+                        capture_output=False,
+                    )
+                    print()
+                    if result.returncode == 0 and shutil.which("rmapi"):
+                        print("  rmapi installed successfully!")
+                        print()
+                        register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
+                        if register != "n":
+                            from distillate.remarkable_auth import register_interactive
+                            register_interactive()
+                        else:
+                            print("  Skipped. Run 'distillate --register' later.")
+                    else:
+                        print("  Installation failed. You can install manually later.")
+                        print("  Run 'distillate --register' when ready.")
+                else:
+                    print()
+                    print("  Please install rmapi manually from the link above,")
+                    print("  then run 'distillate --register' to connect.")
+            else:
+                print("  Skipped. Install rmapi and run 'distillate --register'")
+                print("  when you're ready.")
+        print()
 
     # -- Step 3: Notes & PDFs --
 
@@ -2535,14 +2686,21 @@ def _init_wizard() -> None:
     print("  Step 4 of 5: PDF Storage")
     print("  " + "-" * 48)
     print()
-    print("  After syncing a paper to your reMarkable, where should")
-    print("  the PDF be kept?")
+    if use_zotero_reader:
+        print("  After syncing a paper, where should the PDF be kept?")
+    else:
+        print("  After syncing a paper to your reMarkable, where should")
+        print("  the PDF be kept?")
     print()
     print("  Zotero gives you 300 MB of free cloud storage for PDFs.")
     print("  If you're on the free plan, that fills up fast.")
     print()
-    print("  Either way, the PDF is always on your reMarkable and")
-    print("  saved locally with your notes after you read it.")
+    if use_zotero_reader:
+        print("  Either way, the PDF is saved locally with your notes")
+        print("  after you read it.")
+    else:
+        print("  Either way, the PDF is always on your reMarkable and")
+        print("  saved locally with your notes after you read it.")
     print()
     print("    1. Keep in Zotero (uses Zotero storage)")
     print("    2. Remove from Zotero after sync (saves space)")
@@ -2721,12 +2879,15 @@ def main():
         return
 
     from distillate import zotero_client
-    from distillate import remarkable_client
     from distillate import obsidian
     from distillate import notify
     from distillate import renderer
     from distillate import summarizer
     from distillate.state import State, acquire_lock, release_lock
+
+    zotero_mode = config.is_zotero_reader()
+    if not zotero_mode:
+        from distillate import remarkable_client
 
     config.setup_logging()
 
@@ -2765,8 +2926,11 @@ def main():
         if awaiting:
             print(f"\n  Retrying {len(awaiting)} paper{'s' if len(awaiting) != 1 else ''} awaiting PDF...")
             log.info("Retrying %d papers awaiting PDF sync...", len(awaiting))
-            remarkable_client.ensure_folders()
-            on_rm = set(remarkable_client.list_folder(config.RM_FOLDER_INBOX))
+            if not zotero_mode:
+                remarkable_client.ensure_folders()
+                on_rm = set(remarkable_client.list_folder(config.RM_FOLDER_INBOX))
+            else:
+                on_rm = set()
             for doc in awaiting:
                 title = doc["title"]
                 att_key = doc["zotero_attachment_key"]
@@ -2775,7 +2939,7 @@ def main():
                 rm_name = doc.get("remarkable_doc_name", "")
                 try:
                     # Check if paper is already on reMarkable (manually uploaded)
-                    if rm_name and rm_name in on_rm or title in on_rm:
+                    if not zotero_mode and (rm_name and rm_name in on_rm or title in on_rm):
                         log.info("'%s' already on reMarkable, updating status", title)
                         zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
                         state.set_status(item_key, "on_remarkable")
@@ -2830,31 +2994,44 @@ def main():
 
                     if pdf_bytes is None:
                         log.info("No PDF available yet for '%s', will retry", title)
-                        hint = ""
-                        if not config.ZOTERO_WEBDAV_URL:
-                            hint = " (if you use WebDAV, run --init to configure it)"
-                        print(f"  Still awaiting PDF: \"{title}\"{hint}")
+                        print(f"  Still awaiting PDF: \"{title}\"")
                         continue
 
-                    remarkable_client.upload_pdf_bytes(
-                        pdf_bytes, config.RM_FOLDER_INBOX, title
-                    )
-                    citekey = meta.get("citekey", "")
-                    saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
-                    if saved:
-                        new_att = zotero_client.create_linked_attachment(
-                            item_key, saved.name, str(saved),
-                        )
-                        if new_att and att_key and not config.KEEP_ZOTERO_PDF:
-                            zotero_client.delete_attachment(att_key)
+                    if zotero_mode:
+                        # Zotero mode: save locally and transition to tracked
+                        citekey = meta.get("citekey", "")
+                        saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
+                        if saved:
+                            new_att = zotero_client.create_linked_attachment(
+                                item_key, saved.name, str(saved),
+                            )
+                            if new_att and att_key and not config.KEEP_ZOTERO_PDF:
+                                zotero_client.delete_attachment(att_key)
+                        zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
+                        state.set_status(item_key, "tracked")
+                        state.save()
+                        sent_count += 1
+                        print(f"  Tracking: \"{title}\"")
                     else:
-                        log.warning("Could not save local PDF for '%s', keeping Zotero copy", title)
-                    zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
-                    state.set_status(item_key, "on_remarkable")
-                    state.save()
-                    sent_count += 1
-                    print(f"  Sent to reMarkable: \"{title}\"")
-                    log.info("Sent to reMarkable: %s", title)
+                        remarkable_client.upload_pdf_bytes(
+                            pdf_bytes, config.RM_FOLDER_INBOX, title
+                        )
+                        citekey = meta.get("citekey", "")
+                        saved = obsidian.save_inbox_pdf(title, pdf_bytes, citekey=citekey)
+                        if saved:
+                            new_att = zotero_client.create_linked_attachment(
+                                item_key, saved.name, str(saved),
+                            )
+                            if new_att and att_key and not config.KEEP_ZOTERO_PDF:
+                                zotero_client.delete_attachment(att_key)
+                        else:
+                            log.warning("Could not save local PDF for '%s', keeping Zotero copy", title)
+                        zotero_client.add_tag(item_key, config.ZOTERO_TAG_INBOX)
+                        state.set_status(item_key, "on_remarkable")
+                        state.save()
+                        sent_count += 1
+                        print(f"  Sent to reMarkable: \"{title}\"")
+                        log.info("Sent to reMarkable: %s", title)
                 except Exception:
                     log.exception("Failed to retry '%s'", title)
                     print(f"  Failed to sync \"{title}\" — check log for details.")
@@ -2916,7 +3093,7 @@ def main():
                         print(f"  Found {len(new_papers)} new paper{'s' if len(new_papers) != 1 else ''}")
 
                     # Ensure reMarkable folders exist and get existing docs
-                    if new_papers:
+                    if new_papers and not zotero_mode:
                         remarkable_client.ensure_folders()
                         existing_on_rm = set(
                             remarkable_client.list_folder(config.RM_FOLDER_INBOX)
@@ -3002,8 +3179,8 @@ def main():
                                         key, new_pdf.name, str(new_pdf),
                                     )
 
-                        # Rename Inbox PDF for on_remarkable / awaiting_pdf papers
-                        if status in ("on_remarkable", "awaiting_pdf"):
+                        # Rename Inbox PDF for queued / awaiting papers
+                        if status in ("on_remarkable", "awaiting_pdf", "tracked"):
                             inbox = obsidian._inbox_dir()
                             if inbox:
                                 old_name = old_ck if old_ck else obsidian._sanitize_note_name(doc["title"])
@@ -3037,44 +3214,66 @@ def main():
             state.zotero_library_version = current_version
             state.save()
 
-        # -- Step 2: Poll reMarkable for read papers --
-        print("  Checking reMarkable...")
-        log.info("Step 2: Checking reMarkable for read papers...")
+        # -- Step 2: Poll for read papers --
+        if zotero_mode:
+            print("  Checking Zotero for read papers...")
+            log.info("Step 2: Checking Zotero for read papers...")
+        else:
+            print("  Checking reMarkable...")
+            log.info("Step 2: Checking reMarkable for read papers...")
 
-        read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
+        if zotero_mode:
+            # Zotero mode: check tracked papers for "read" tag
+            tracked = state.documents_with_status("tracked")
+            processing = state.documents_with_status("processing")
+            docs_to_process = list(processing)  # resume interrupted
 
-        # Resume any papers left in "processing" state from a previous crash
-        processing = state.documents_with_status("processing")
-        on_remarkable = state.documents_with_status("on_remarkable")
+            if tracked:
+                # Batch-fetch Zotero items to check tags
+                tracked_keys = [d["zotero_item_key"] for d in tracked]
+                items = zotero_client.get_items_by_keys(tracked_keys)
+                items_by_key = {item["key"]: item for item in items}
 
-        # Combine: processing docs first (resume), then newly found read docs
-        docs_to_process = []
-        for doc in processing:
-            rm_name = doc["remarkable_doc_name"]
-            if rm_name in read_docs:
-                log.info("Resuming processing for '%s'", doc["title"])
-                docs_to_process.append(doc)
-            else:
-                # Paper is no longer in Read/ — it may have been moved to
-                # Saved/ by a previous successful run whose state save failed.
-                # Skip it rather than reprocessing with empty data.
-                log.info(
-                    "Skipping '%s' (processing state but not in Read/)",
-                    doc["title"],
-                )
-                state.mark_processed(doc["zotero_item_key"])
-                state.save()
+                for doc in tracked:
+                    item = items_by_key.get(doc["zotero_item_key"])
+                    if not item:
+                        continue
+                    tags = [t["tag"] for t in item.get("data", {}).get("tags", [])]
+                    if config.ZOTERO_TAG_READ in tags:
+                        docs_to_process.append(doc)
+        else:
+            read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
 
-        for doc in on_remarkable:
-            rm_name = doc["remarkable_doc_name"]
-            if rm_name in read_docs:
-                docs_to_process.append(doc)
+            # Resume any papers left in "processing" state from a previous crash
+            processing = state.documents_with_status("processing")
+            on_remarkable = state.documents_with_status("on_remarkable")
+
+            # Combine: processing docs first (resume), then newly found read docs
+            docs_to_process = []
+            for doc in processing:
+                rm_name = doc["remarkable_doc_name"]
+                if rm_name in read_docs:
+                    log.info("Resuming processing for '%s'", doc["title"])
+                    docs_to_process.append(doc)
+                else:
+                    log.info(
+                        "Skipping '%s' (processing state but not in Read/)",
+                        doc["title"],
+                    )
+                    state.mark_processed(doc["zotero_item_key"])
+                    state.save()
+
+            for doc in on_remarkable:
+                rm_name = doc["remarkable_doc_name"]
+                if rm_name in read_docs:
+                    docs_to_process.append(doc)
 
         for doc in docs_to_process:
             rm_name = doc["remarkable_doc_name"]
+            att_key = doc.get("zotero_attachment_key", "")
 
             print(f"  Processing: \"{doc['title']}\"")
-            log.info("Found read paper: %s", rm_name)
+            log.info("Found read paper: %s", doc["title"])
             item_key = doc["zotero_item_key"]
 
             try:
@@ -3092,66 +3291,99 @@ def main():
                 handwritten_notes = None
 
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    zip_path = Path(tmpdir) / f"{rm_name}.zip"
-                    pdf_path = Path(tmpdir) / f"{rm_name}.pdf"
+                    pdf_path = Path(tmpdir) / "paper.pdf"
 
-                    # Download raw document bundle
-                    bundle_ok = remarkable_client.download_document_bundle_to(
-                        config.RM_FOLDER_READ, rm_name, zip_path,
-                    )
+                    if zotero_mode:
+                        # Zotero mode: extract highlights from Zotero annotations
+                        print("    Extracting highlights from Zotero...")
+                        highlights = zotero_client.get_highlight_annotations(att_key) if att_key else {}
+                        typed_notes = {}
+                        handwritten_notes = {}
 
-                    if bundle_ok and zip_path.exists():
-                        # Extract highlighted text
-                        print("    Extracting highlights...")
-                        highlights = renderer.extract_highlights(zip_path)
-                        typed_notes = renderer.extract_typed_notes(zip_path)
-                        try:
-                            handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
-                        except Exception:
-                            handwritten_notes = {}
-                            log.debug("Handwritten OCR skipped", exc_info=True)
-                        if highlights:
-                            hl_count = sum(len(v) for v in highlights.values())
-                            print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
-                        else:
-                            log.info("No text highlights found for '%s'", rm_name)
-                            print(
-                                f"  Warning: no highlights found for '{doc['title']}'.\n"
-                                "  To fix this:\n"
-                                "    1. Enable text recognition (Settings > General > Text recognition)\n"
-                                "    2. Use the highlighter tool, not a pen\n"
-                                f"    3. Then: distillate --reprocess \"{doc['title']}\""
-                            )
+                        # Download PDF for rendering
+                        pdf_bytes = None
+                        if att_key:
+                            try:
+                                pdf_bytes = zotero_client.download_pdf(att_key)
+                            except Exception:
+                                pdf_bytes = None
+                        if pdf_bytes is None and att_key:
+                            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
 
-                        # Get page count for engagement score
-                        stat = remarkable_client.stat_document(
-                            config.RM_FOLDER_READ, rm_name,
-                        )
-                        page_count = (stat or {}).get("page_count", 0)
-                        if not page_count:
-                            page_count = renderer.get_page_count(zip_path)
-
-                        # Render annotated PDF
-                        render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
-                    else:
                         render_ok = False
                         page_count = 0
+                        if pdf_bytes:
+                            raw_anns = zotero_client.get_raw_annotations(att_key)
+                            render_ok = renderer.render_annotated_pdf_from_annotations(
+                                pdf_bytes, raw_anns, pdf_path,
+                            )
+                            try:
+                                import pymupdf
+                                doc_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                                page_count = len(doc_pdf)
+                                doc_pdf.close()
+                            except Exception:
+                                pass
+                        bundle_ok = False
+                    else:
+                        zip_path = Path(tmpdir) / f"{rm_name}.zip"
 
-                    # Fall back to geta if render failed
-                    if not render_ok:
-                        log.info("Falling back to rmapi geta for '%s'", rm_name)
-                        render_ok = remarkable_client.download_annotated_pdf_to(
-                            config.RM_FOLDER_READ, rm_name, pdf_path,
+                        # Download raw document bundle
+                        bundle_ok = remarkable_client.download_document_bundle_to(
+                            config.RM_FOLDER_READ, rm_name, zip_path,
+                        )
+
+                        if bundle_ok and zip_path.exists():
+                            # Extract highlighted text
+                            print("    Extracting highlights...")
+                            highlights = renderer.extract_highlights(zip_path)
+                            typed_notes = renderer.extract_typed_notes(zip_path)
+                            try:
+                                handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+                            except Exception:
+                                handwritten_notes = {}
+                                log.debug("Handwritten OCR skipped", exc_info=True)
+
+                            # Get page count for engagement score
+                            stat = remarkable_client.stat_document(
+                                config.RM_FOLDER_READ, rm_name,
+                            )
+                            page_count = (stat or {}).get("page_count", 0)
+                            if not page_count:
+                                page_count = renderer.get_page_count(zip_path)
+
+                            # Render annotated PDF
+                            render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
+                        else:
+                            render_ok = False
+                            page_count = 0
+
+                        # Fall back to geta if render failed
+                        if not render_ok:
+                            log.info("Falling back to rmapi geta for '%s'", rm_name)
+                            render_ok = remarkable_client.download_annotated_pdf_to(
+                                config.RM_FOLDER_READ, rm_name, pdf_path,
+                            )
+
+                    if highlights:
+                        hl_count = sum(len(v) for v in highlights.values())
+                        print(f"    {hl_count} highlight{'s' if hl_count != 1 else ''} found")
+                    elif not zotero_mode:
+                        log.info("No text highlights found for '%s'", rm_name)
+                        print(
+                            f"  Warning: no highlights found for '{doc['title']}'.\n"
+                            "  To fix this:\n"
+                            "    1. Enable text recognition (Settings > General > Text recognition)\n"
+                            "    2. Use the highlighter tool, not a pen\n"
+                            f"    3. Then: distillate --reprocess \"{doc['title']}\""
                         )
 
                     # Extract Zotero highlight positions while zip is available
                     zotero_positions = []
-                    if config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
+                    if not zotero_mode and config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
                         zotero_positions = renderer.extract_zotero_highlights(zip_path)
 
-                    # Save annotated PDF (with highlights + ink) to vault.
-                    # We keep baked-in highlights even when SYNC_HIGHLIGHTS
-                    # is on so they're visible in Obsidian.
+                    # Save annotated PDF to vault
                     pdf_filename = None
                     saved = None
                     citekey = doc.get("metadata", {}).get("citekey", "")
@@ -3163,7 +3395,7 @@ def main():
                             log.info("Saved annotated PDF to Obsidian vault")
                     else:
                         log.warning(
-                            "Could not get annotated PDF for '%s'", rm_name,
+                            "Could not get annotated PDF for '%s'", doc["title"],
                         )
 
                     # Clean up original from Inbox folder
@@ -3286,9 +3518,10 @@ def main():
                 obsidian.append_to_reading_log(doc["title"], one_liner, citekey=citekey)
 
                 # Move to Saved on reMarkable
-                remarkable_client.move_document(
-                    rm_name, config.RM_FOLDER_READ, config.RM_FOLDER_SAVED,
-                )
+                if not zotero_mode:
+                    remarkable_client.move_document(
+                        rm_name, config.RM_FOLDER_READ, config.RM_FOLDER_SAVED,
+                    )
 
                 # Update state
                 flat_hl = [h for hl in (highlights or {}).values() for h in hl]
@@ -3301,17 +3534,18 @@ def main():
                 state.mark_processed(item_key, summary=one_liner)
                 state.save()
                 synced_count += 1
-                log.info("Processed: %s", rm_name)
+                log.info("Processed: %s", doc["title"])
 
             except Exception:
-                log.exception("Failed to process read paper '%s', skipping", rm_name)
+                log.exception("Failed to process read paper '%s', skipping", doc["title"])
                 continue
 
         # -- Auto-promote pending picks from GH Actions --
-        try:
-            _auto_promote(state)
-        except Exception:
-            log.debug("Auto-promote check failed, continuing", exc_info=True)
+        if not zotero_mode:
+            try:
+                _auto_promote(state)
+            except Exception:
+                log.debug("Auto-promote check failed, continuing", exc_info=True)
 
         state.touch_poll_timestamp()
         state.save()
@@ -3333,9 +3567,6 @@ def main():
             print("  Nothing to do.")
             log.info("Nothing to do.")
 
-    except remarkable_client.RmapiAuthError as e:
-        print(f"\n  {e}\n")
-        return
     except requests.exceptions.ConnectionError:
         print(
             "\n  Could not connect to the internet."
@@ -3359,7 +3590,11 @@ def main():
             return
         log.exception("HTTP error")
         raise
-    except Exception:
+    except Exception as e:
+        # Check for RmapiAuthError without requiring the import
+        if type(e).__name__ == "RmapiAuthError":
+            print(f"\n  {e}\n")
+            return
         log.exception("Unexpected error")
         raise
     finally:

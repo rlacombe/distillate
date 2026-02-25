@@ -647,6 +647,95 @@ def build_note_html(
     return "\n".join(parts)
 
 
+def get_highlight_annotations(attachment_key: str) -> Dict[int, List[str]]:
+    """Read user's highlight annotations from a Zotero PDF attachment.
+
+    Returns Dict mapping page numbers (1-based) to lists of highlighted text,
+    matching the format of renderer.extract_highlights() for drop-in
+    compatibility. Excludes annotations tagged 'distillate' (back-propagated).
+    """
+    import json as _json
+
+    resp = _get(
+        f"/items/{attachment_key}/children",
+        params={"itemType": "annotation"},
+    )
+    if resp.status_code != 200:
+        return {}
+
+    # Collect highlights with position for sorting
+    entries: List[tuple] = []  # (page_num, y_pos, text)
+    for ann in resp.json():
+        data = ann.get("data", {})
+        # Skip our own back-propagated annotations
+        if any(t.get("tag") == "distillate" for t in data.get("tags", [])):
+            continue
+        if data.get("annotationType") != "highlight":
+            continue
+        text = data.get("annotationText", "").strip()
+        if not text:
+            continue
+        try:
+            page_num = int(data.get("annotationPageLabel", "1"))
+        except (ValueError, TypeError):
+            page_num = 1
+        # Sort by y-position within page (top of first rect)
+        y_pos = 0.0
+        try:
+            pos = _json.loads(data.get("annotationPosition", "{}"))
+            rects = pos.get("rects", [])
+            if rects:
+                y_pos = rects[0][1]  # y0 of first rect
+        except (ValueError, TypeError, IndexError):
+            pass
+        entries.append((page_num, y_pos, text))
+
+    # Group by page, sorted by position
+    entries.sort(key=lambda e: (e[0], e[1]))
+    by_page: Dict[int, List[str]] = {}
+    for page_num, _, text in entries:
+        by_page.setdefault(page_num, []).append(text)
+    return by_page
+
+
+def get_raw_annotations(attachment_key: str) -> List[Dict[str, Any]]:
+    """Read all highlight annotations with position data for PDF rendering.
+
+    Returns raw Zotero annotation dicts (excluding distillate-tagged ones).
+    """
+    import json as _json
+
+    resp = _get(
+        f"/items/{attachment_key}/children",
+        params={"itemType": "annotation"},
+    )
+    if resp.status_code != 200:
+        return []
+
+    annotations = []
+    for ann in resp.json():
+        data = ann.get("data", {})
+        if any(t.get("tag") == "distillate" for t in data.get("tags", [])):
+            continue
+        if data.get("annotationType") != "highlight":
+            continue
+        if not data.get("annotationText", "").strip():
+            continue
+        # Parse position JSON
+        try:
+            pos = _json.loads(data.get("annotationPosition", "{}"))
+        except (ValueError, TypeError):
+            pos = {}
+        annotations.append({
+            "text": data["annotationText"].strip(),
+            "page_index": pos.get("pageIndex", 0),
+            "page_label": data.get("annotationPageLabel", "1"),
+            "rects": pos.get("rects", []),
+            "color": data.get("annotationColor", "#ffd400"),
+        })
+    return annotations
+
+
 def create_highlight_annotations(
     attachment_key: str,
     highlights: List[Dict[str, Any]],
