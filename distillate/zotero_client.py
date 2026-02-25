@@ -263,28 +263,39 @@ def download_pdf_from_webdav(attachment_key: str) -> Optional[bytes]:
     log.debug("Trying WebDAV: %s", url)
 
     try:
-        resp = requests.get(
-            url,
-            auth=(config.ZOTERO_WEBDAV_USERNAME, config.ZOTERO_WEBDAV_PASSWORD),
-            timeout=config.HTTP_TIMEOUT,
-        )
+        auth = None
+        if config.ZOTERO_WEBDAV_USERNAME:
+            auth = (config.ZOTERO_WEBDAV_USERNAME, config.ZOTERO_WEBDAV_PASSWORD)
+        resp = requests.get(url, auth=auth, timeout=config.HTTP_TIMEOUT)
         if resp.status_code == 404:
             log.debug("WebDAV 404 for %s", attachment_key)
             return None
         resp.raise_for_status()
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+    except requests.exceptions.RequestException as exc:
         log.warning("WebDAV download failed for '%s': %s", attachment_key, exc)
         return None
+
+    log.debug(
+        "WebDAV response: %d, %d bytes, type=%s",
+        resp.status_code, len(resp.content),
+        resp.headers.get("Content-Type", "unknown"),
+    )
 
     try:
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             pdf_names = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
             if not pdf_names:
-                log.warning("WebDAV zip for '%s' contains no PDF", attachment_key)
+                log.warning(
+                    "WebDAV zip for '%s' contains no PDF (files: %s)",
+                    attachment_key, zf.namelist(),
+                )
                 return None
             return zf.read(pdf_names[0])
     except zipfile.BadZipFile:
-        log.warning("WebDAV download for '%s' is not a valid zip", attachment_key)
+        log.warning(
+            "WebDAV response for '%s' is not a valid zip (%d bytes, starts: %r)",
+            attachment_key, len(resp.content), resp.content[:100],
+        )
         return None
 
 
@@ -634,6 +645,95 @@ def build_note_html(
                     for h in highlights[page_num]:
                         parts.append(f"<p>&ldquo;{h}&rdquo;</p>")
     return "\n".join(parts)
+
+
+def get_highlight_annotations(attachment_key: str) -> Dict[int, List[str]]:
+    """Read user's highlight annotations from a Zotero PDF attachment.
+
+    Returns Dict mapping page numbers (1-based) to lists of highlighted text,
+    matching the format of renderer.extract_highlights() for drop-in
+    compatibility. Excludes annotations tagged 'distillate' (back-propagated).
+    """
+    import json as _json
+
+    resp = _get(
+        f"/items/{attachment_key}/children",
+        params={"itemType": "annotation"},
+    )
+    if resp.status_code != 200:
+        return {}
+
+    # Collect highlights with position for sorting
+    entries: List[tuple] = []  # (page_num, y_pos, text)
+    for ann in resp.json():
+        data = ann.get("data", {})
+        # Skip our own back-propagated annotations
+        if any(t.get("tag") == "distillate" for t in data.get("tags", [])):
+            continue
+        if data.get("annotationType") != "highlight":
+            continue
+        text = data.get("annotationText", "").strip()
+        if not text:
+            continue
+        try:
+            page_num = int(data.get("annotationPageLabel", "1"))
+        except (ValueError, TypeError):
+            page_num = 1
+        # Sort by y-position within page (top of first rect)
+        y_pos = 0.0
+        try:
+            pos = _json.loads(data.get("annotationPosition", "{}"))
+            rects = pos.get("rects", [])
+            if rects:
+                y_pos = rects[0][1]  # y0 of first rect
+        except (ValueError, TypeError, IndexError):
+            pass
+        entries.append((page_num, y_pos, text))
+
+    # Group by page, sorted by position
+    entries.sort(key=lambda e: (e[0], e[1]))
+    by_page: Dict[int, List[str]] = {}
+    for page_num, _, text in entries:
+        by_page.setdefault(page_num, []).append(text)
+    return by_page
+
+
+def get_raw_annotations(attachment_key: str) -> List[Dict[str, Any]]:
+    """Read all highlight annotations with position data for PDF rendering.
+
+    Returns raw Zotero annotation dicts (excluding distillate-tagged ones).
+    """
+    import json as _json
+
+    resp = _get(
+        f"/items/{attachment_key}/children",
+        params={"itemType": "annotation"},
+    )
+    if resp.status_code != 200:
+        return []
+
+    annotations = []
+    for ann in resp.json():
+        data = ann.get("data", {})
+        if any(t.get("tag") == "distillate" for t in data.get("tags", [])):
+            continue
+        if data.get("annotationType") != "highlight":
+            continue
+        if not data.get("annotationText", "").strip():
+            continue
+        # Parse position JSON
+        try:
+            pos = _json.loads(data.get("annotationPosition", "{}"))
+        except (ValueError, TypeError):
+            pos = {}
+        annotations.append({
+            "text": data["annotationText"].strip(),
+            "page_index": pos.get("pageIndex", 0),
+            "page_label": data.get("annotationPageLabel", "1"),
+            "rects": pos.get("rects", []),
+            "color": data.get("annotationColor", "#ffd400"),
+        })
+    return annotations
 
 
 def create_highlight_annotations(

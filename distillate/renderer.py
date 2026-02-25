@@ -1,9 +1,13 @@
-"""Extract highlights, typed notes, and ink strokes from reMarkable document bundles.
+"""Extract highlights, typed notes, and ink strokes from document bundles.
 
-Uses rmscene to parse v6 .rm files for highlighted text (GlyphRange items),
-typed text (Text items), and handwritten ink (Line items).
+Supports two sources:
+- reMarkable bundles (.zip/.rmdoc): uses rmscene to parse v6 .rm files
+- Zotero annotations: uses Zotero API annotation positions directly
+
 Uses PyMuPDF to render annotations onto the original PDF.
 """
+
+from __future__ import annotations
 
 import io
 import json
@@ -13,12 +17,42 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from rmscene import read_tree, scene_items as si
+# rmscene is lazy-imported — only needed for reMarkable bundles.
+# Zotero-only users don't need it installed.
+_rmscene_loaded = False
+read_tree: Any = None
+si: Any = None
+
+
+def _ensure_rmscene():
+    """Lazy-load rmscene on first use."""
+    global _rmscene_loaded, read_tree, si, _ERASER_TOOLS, _PEN_COLOR_MAP
+    if _rmscene_loaded:
+        return
+    from rmscene import read_tree as _rt, scene_items as _si
+    read_tree = _rt
+    si = _si
+    _ERASER_TOOLS = {si.Pen.ERASER, si.Pen.ERASER_AREA}
+    _PEN_COLOR_MAP = {
+        si.PenColor.BLACK: (0, 0, 0),
+        si.PenColor.GRAY: (0.5, 0.5, 0.5),
+        si.PenColor.WHITE: (1, 1, 1),
+        si.PenColor.YELLOW: (0.9, 0.8, 0),
+        si.PenColor.GREEN: (0, 0.6, 0),
+        si.PenColor.PINK: (0.9, 0.2, 0.5),
+        si.PenColor.BLUE: (0, 0.2, 0.8),
+        si.PenColor.RED: (0.8, 0, 0),
+        si.PenColor.GREEN_2: (0, 0.6, 0),
+        si.PenColor.CYAN: (0, 0.6, 0.7),
+        si.PenColor.MAGENTA: (0.7, 0, 0.7),
+        si.PenColor.YELLOW_2: (0.9, 0.8, 0),
+    }
+    _rmscene_loaded = True
+    # Suppress rmscene "newer format" warning — benign, data is still extracted
+    logging.getLogger("rmscene.tagged_block_reader").setLevel(logging.ERROR)
+
 
 log = logging.getLogger(__name__)
-
-# Suppress rmscene "newer format" warning — benign, data is still extracted
-logging.getLogger("rmscene.tagged_block_reader").setLevel(logging.ERROR)
 
 # GlyphRange items on adjacent lines within this y-gap are merged
 _MAX_LINE_GAP = 100.0
@@ -93,6 +127,7 @@ def extract_highlights(zip_path: Path) -> Dict[int, List[str]]:
     Returns a dict mapping page numbers (1-based) to lists of merged
     highlight passages for that page. Empty dict if no highlights found.
     """
+    _ensure_rmscene()
     by_page: Dict[int, List[str]] = {}
 
     try:
@@ -408,6 +443,74 @@ def render_annotated_pdf(zip_path: Path, output_path: Path) -> bool:
         return False
 
 
+def render_annotated_pdf_from_annotations(
+    pdf_bytes: bytes,
+    annotations: List[Dict[str, Any]],
+    output_path: Path,
+) -> bool:
+    """Render highlight annotations onto a PDF using Zotero annotation rects.
+
+    Takes raw annotation dicts (from zotero_client.get_raw_annotations())
+    with pre-computed page_index and rects in PDF bottom-left coordinates.
+    Converts to PyMuPDF top-left coordinates and adds highlight annotations.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        log.warning("pymupdf not installed, cannot render annotated PDF")
+        return False
+
+    if not annotations:
+        log.info("No annotations to render")
+        return False
+
+    try:
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+
+        rendered = 0
+        for ann in annotations:
+            page_idx = ann.get("page_index", 0)
+            rects = ann.get("rects", [])
+            if page_idx >= len(doc) or not rects:
+                continue
+
+            page = doc[page_idx]
+            page_h = page.rect.height
+
+            # Convert rects from PDF coords (bottom-left) to PyMuPDF (top-left)
+            quads = []
+            for rect in rects:
+                if len(rect) < 4:
+                    continue
+                x0, y0_bl, x1, y1_bl = rect[0], rect[1], rect[2], rect[3]
+                # PDF bottom-left → PyMuPDF top-left: y_tl = page_h - y_bl
+                y0_tl = page_h - y1_bl  # top edge
+                y1_tl = page_h - y0_bl  # bottom edge
+                quads.append(pymupdf.Rect(x0, y0_tl, x1, y1_tl))
+
+            if not quads:
+                continue
+
+            annot = page.add_highlight_annot(quads)
+            annot.set_colors(stroke=_HIGHLIGHT_COLOR)
+            annot.set_opacity(_HIGHLIGHT_OPACITY)
+            annot.update()
+            rendered += 1
+
+        doc.save(str(output_path), garbage=3, deflate=True)
+        doc.close()
+        log.info("Rendered annotated PDF with %d highlight(s): %s",
+                 rendered, output_path)
+        return True
+
+    except Exception:
+        log.warning("Failed to render annotated PDF from annotations",
+                    exc_info=True)
+        return False
+
+
 def extract_zotero_highlights(
     zip_path: Path,
     pdf_bytes: Optional[bytes] = None,
@@ -650,6 +753,7 @@ def _extract_raw_glyphs(
     rm_data: bytes,
 ) -> List[Tuple[str, float | None, int]]:
     """Parse a .rm file and return [(text, y, color), ...] per GlyphRange."""
+    _ensure_rmscene()
     raw_glyphs: List[Tuple[str, float | None, int]] = []
     try:
         tree = read_tree(io.BytesIO(rm_data))
@@ -766,6 +870,7 @@ def extract_typed_notes(zip_path: Path) -> Dict[int, str]:
     Returns a dict mapping page index (0-based) to the typed text on that page.
     Only pages with non-empty text are included.
     """
+    _ensure_rmscene()
     from rmscene.text import TextDocument
 
     result: Dict[int, str] = {}
@@ -808,8 +913,9 @@ def extract_typed_notes(zip_path: Path) -> Dict[int, str]:
 # Ink stroke extraction and rendering
 # ---------------------------------------------------------------------------
 
-# Eraser tools to exclude from ink extraction
-_ERASER_TOOLS = {si.Pen.ERASER, si.Pen.ERASER_AREA}
+# Eraser tools and pen color map — initialized lazily by _ensure_rmscene()
+_ERASER_TOOLS: set = set()
+_PEN_COLOR_MAP: dict = {}
 
 # reMarkable page dimensions in device units (classic RM1/RM2)
 _RM_WIDTH = 1404.0
@@ -820,22 +926,6 @@ _RM_HEIGHT = 1872.0
 _RM_PRO_DPI = 227.0
 _PDF_DPI = 72.0
 
-# Map reMarkable pen colors to RGB tuples
-_PEN_COLOR_MAP = {
-    si.PenColor.BLACK: (0, 0, 0),
-    si.PenColor.GRAY: (0.5, 0.5, 0.5),
-    si.PenColor.WHITE: (1, 1, 1),
-    si.PenColor.YELLOW: (0.9, 0.8, 0),
-    si.PenColor.GREEN: (0, 0.6, 0),
-    si.PenColor.PINK: (0.9, 0.2, 0.5),
-    si.PenColor.BLUE: (0, 0.2, 0.8),
-    si.PenColor.RED: (0.8, 0, 0),
-    si.PenColor.GREEN_2: (0, 0.6, 0),
-    si.PenColor.CYAN: (0, 0.6, 0.7),
-    si.PenColor.MAGENTA: (0.7, 0, 0.7),
-    si.PenColor.YELLOW_2: (0.9, 0.8, 0),
-}
-
 
 def extract_ink_strokes(zip_path: Path) -> Dict[int, List[si.Line]]:
     """Extract handwritten ink strokes (non-highlighter, non-eraser) per page.
@@ -843,6 +933,7 @@ def extract_ink_strokes(zip_path: Path) -> Dict[int, List[si.Line]]:
     Returns a dict mapping page index (0-based) to a list of Line items.
     Only pages with ink strokes are included.
     """
+    _ensure_rmscene()
     result: Dict[int, List[si.Line]] = {}
     for page_idx, rm_data in _load_rm_pages(zip_path):
         try:

@@ -169,6 +169,57 @@ class TestConversationTrimming:
         assert _CONVERSATION_TRIM_THRESHOLD > _CONVERSATION_KEEP
         assert _CONVERSATION_KEEP >= 10
 
+    def test_skips_orphaned_tool_result_at_start(self):
+        """After trimming, orphaned tool_result messages must be dropped.
+
+        tool_result messages have role="user" but reference a tool_use_id
+        from a preceding assistant message. If that assistant message was
+        trimmed away, Claude's API rejects the orphaned tool_result.
+        """
+        from distillate.agent import (
+            _CONVERSATION_KEEP,
+            _CONVERSATION_TRIM_THRESHOLD,
+        )
+
+        # Build a conversation that triggers trimming, where the kept
+        # slice starts with an orphaned tool_result.
+        conversation = []
+        # Pad with enough messages to exceed the threshold
+        for i in range(_CONVERSATION_TRIM_THRESHOLD + 2):
+            conversation.append({"role": "user", "content": f"msg {i}"})
+            conversation.append({"role": "assistant", "content": f"reply {i}"})
+
+        # Place a tool_result message right where trimming will keep it
+        tool_result_msg = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "orphaned_id", "content": "{}"},
+            ],
+        }
+        conversation[-_CONVERSATION_KEEP] = tool_result_msg
+
+        # Simulate the trimming logic from _handle_turn
+        trimmed = conversation[-_CONVERSATION_KEEP:]
+        while trimmed:
+            msg = trimmed[0]
+            if msg.get("role") == "assistant":
+                trimmed.pop(0)
+                continue
+            content = msg.get("content")
+            if (isinstance(content, list) and content
+                    and isinstance(content[0], dict)
+                    and content[0].get("type") == "tool_result"):
+                trimmed.pop(0)
+                continue
+            break
+
+        # First message should be a genuine user message, not a tool_result
+        assert trimmed
+        first = trimmed[0]
+        assert first["role"] == "user"
+        content = first.get("content")
+        assert isinstance(content, str), f"Expected plain text, got {type(content)}"
+
 
 class TestRunChat:
     def test_exits_without_api_key(self, monkeypatch):
