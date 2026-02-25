@@ -44,6 +44,7 @@ class TestInitWizard:
         env_file = _run_wizard([
             "test_api_key",     # API key
             "12345",            # User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -78,6 +79,7 @@ class TestInitWizard:
         env_file = _run_wizard([
             "key",              # API key
             "999",              # User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable registration
             "",                 # Use Obsidian (default Y)
             vault_path,         # Vault path
@@ -96,6 +98,7 @@ class TestInitWizard:
         env_file = _run_wizard([
             "key",              # API key
             "999",              # User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             output_path,        # Plain folder path
@@ -114,6 +117,7 @@ class TestInitWizard:
         env_file = _run_wizard([
             "key",                  # API key
             "999",                  # User ID
+            "",                     # Skip WebDAV
             "n",                    # Skip reMarkable registration
             "n",                    # Don't use Obsidian
             "",                     # Skip plain folder
@@ -134,6 +138,7 @@ class TestInitWizard:
         env_file = _run_wizard([
             "key",              # API key
             "999",              # User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable registration
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -203,6 +208,7 @@ class TestInitRerun:
             "1",                # Full setup
             "",                 # Keep existing API key (Enter)
             "",                 # Keep existing User ID (Enter)
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -243,6 +249,7 @@ class TestInitRerun:
             "1",                # Full setup
             "",                 # Keep existing API key
             "999",              # New User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -279,6 +286,7 @@ class TestInitRerun:
         inputs = iter([
             "key",              # API key
             "999",              # User ID
+            "",                 # Skip WebDAV
             "",                 # Keep existing registration (default N)
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder
@@ -316,6 +324,7 @@ class TestInitRerun:
         inputs = iter([
             "key",              # API key
             "999",              # User ID
+            "",                 # Skip WebDAV
             "n",                # Skip reMarkable
             "n",                # Don't use Obsidian
             "",                 # Skip plain folder

@@ -2332,6 +2332,33 @@ def _init_wizard() -> None:
     except Exception:
         pass  # Skip collection picker if API fails
 
+    # WebDAV storage (optional)
+    existing_webdav = os.environ.get("ZOTERO_WEBDAV_URL", "").strip()
+    print("  Do you use WebDAV for Zotero file storage?")
+    print("  (Most people use Zotero's built-in cloud — press Enter to skip.)")
+    if existing_webdav:
+        print(f"  Current: {existing_webdav}")
+    print()
+    webdav_url = input(
+        "  WebDAV URL (Enter to skip): "
+    ).strip()
+    if webdav_url:
+        save_to_env("ZOTERO_WEBDAV_URL", webdav_url.rstrip("/"))
+        webdav_user = _prompt_with_default(
+            "  WebDAV username", "ZOTERO_WEBDAV_USERNAME",
+        )
+        webdav_pass = _prompt_with_default(
+            "  WebDAV password", "ZOTERO_WEBDAV_PASSWORD", sensitive=True,
+        )
+        if webdav_user:
+            save_to_env("ZOTERO_WEBDAV_USERNAME", webdav_user)
+        if webdav_pass:
+            save_to_env("ZOTERO_WEBDAV_PASSWORD", webdav_pass)
+        print("  WebDAV configured.")
+    elif existing_webdav:
+        print("  Keeping existing WebDAV config.")
+    print()
+
     # -- Step 2: reMarkable --
 
     print("  " + "-" * 48)
@@ -2803,7 +2830,10 @@ def main():
 
                     if pdf_bytes is None:
                         log.info("No PDF available yet for '%s', will retry", title)
-                        print(f"  Still awaiting PDF: \"{title}\"")
+                        hint = ""
+                        if not config.ZOTERO_WEBDAV_URL:
+                            hint = " (if you use WebDAV, run --init to configure it)"
+                        print(f"  Still awaiting PDF: \"{title}\"{hint}")
                         continue
 
                     remarkable_client.upload_pdf_bytes(
