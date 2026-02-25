@@ -269,6 +269,7 @@ def _reprocess(args: list[str]) -> None:
                 title, abstract=meta.get("abstract", ""),
                 key_learnings=learnings,
                 reader_notes=flat_notes,
+                hf_summary=meta.get("hf_summary", ""),
             )
 
             # Use original processing date, not today
@@ -532,13 +533,16 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
                 )
                 if arxiv_id:
                     hf_data = huggingface.lookup_paper(arxiv_id)
-                    if hf_data and hf_data.get("github_repo"):
-                        new_meta["github_repo"] = hf_data["github_repo"]
-                        new_meta["github_stars"] = hf_data.get("github_stars")
-                        if not any_change:
-                            print(f"  [{i}/{total}] \"{title[:50]}\"")
-                        print(f"    HF: GitHub {hf_data['github_repo']}")
-                        any_change = True
+                    if hf_data:
+                        if hf_data.get("ai_summary"):
+                            new_meta["hf_summary"] = hf_data["ai_summary"]
+                        if hf_data.get("github_repo"):
+                            new_meta["github_repo"] = hf_data["github_repo"]
+                            new_meta["github_stars"] = hf_data.get("github_stars")
+                            if not any_change:
+                                print(f"  [{i}/{total}] \"{title[:50]}\"")
+                            print(f"    HF: GitHub {hf_data['github_repo']}")
+                            any_change = True
             except Exception:
                 log.debug("HF lookup failed for '%s'", doc["title"], exc_info=True)
         else:
@@ -1831,6 +1835,8 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
             if hf_data:
                 meta.setdefault("github_repo", hf_data.get("github_repo"))
                 meta.setdefault("github_stars", hf_data.get("github_stars"))
+                if hf_data.get("ai_summary"):
+                    meta.setdefault("hf_summary", hf_data["ai_summary"])
                 if hf_data.get("github_repo"):
                     log.info("HF: GitHub %s (%s stars)",
                              hf_data["github_repo"],
@@ -3438,6 +3444,7 @@ def main():
                     abstract=meta.get("abstract", ""),
                     key_learnings=learnings,
                     reader_notes=flat_notes,
+                    hf_summary=meta.get("hf_summary", ""),
                 )
 
                 # Compute engagement score and highlight stats

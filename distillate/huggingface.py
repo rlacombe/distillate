@@ -96,6 +96,7 @@ def lookup_paper(arxiv_id: str) -> Optional[Dict[str, Any]]:
             "github_stars": data.get("githubStars"),
             "upvotes": data.get("upvotes", 0),
             "ai_keywords": data.get("ai_keywords", []),
+            "ai_summary": data.get("ai_summary", ""),
         }
     except Exception:
         log.warning("Failed to look up paper %s on HuggingFace", arxiv_id, exc_info=True)

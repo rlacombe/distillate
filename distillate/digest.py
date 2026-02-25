@@ -426,7 +426,7 @@ def _trending_html(papers: list) -> str:
     return "\n".join(lines)
 
 
-def _fetch_trending_for_email(state: State, limit: int = 5) -> list:
+def _fetch_trending_for_email(state: State, limit: int = 3) -> list:
     """Fetch trending papers, optionally filtered by user's topics."""
     try:
         from distillate import huggingface

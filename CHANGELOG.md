@@ -5,25 +5,51 @@
 ### New Features
 
 - **Read on any device**: no longer requires a reMarkable tablet — read and highlight in the Zotero app on iPad, desktop, Android, or any device. Pick your reading surface during `--init` setup. reMarkable remains fully supported.
-- **Nicolas — AI research assistant**: interactive agent REPL in your terminal. Search papers, compare findings, get reading suggestions, add papers by arXiv ID — all in natural language.
-- **Trending papers**: browse today's top AI/ML papers from HuggingFace Daily Papers, with GitHub stars and AI-generated summaries.
-- **Add papers via agent**: ask Nicolas to add a paper by arXiv ID or URL — metadata auto-fetched, PDF synced on next run.
 
 ### Improvements
 
-- WebDAV fallback: catches all HTTP errors, visible retry output, manual upload detection
 - Agent: dim magenta for verbose tool output, response truncation fix
 - Email digest: trending section with top 3 papers, mobile-friendly layout
 - Init wizard: WebDAV configuration step, reading surface choice
 - Landing page: reMarkable now optional, "any device" messaging
 - Windows: `--schedule` shows Task Scheduler instructions instead of crashing
 - Lazy rmscene imports: Zotero-only users don't need rmscene/rmapi installed
+- WebDAV fallback: catches all HTTP errors, visible retry output, manual upload detection
+
+### Migration from 0.5.x
+
+- **Newsletter signup** — the init wizard (`--init`) now offers an optional email signup at the end
+
+## 0.5.2 — 2026-02-25
+
+### Improvements
+
+- **HuggingFace summary fallback**: papers get a real one-liner even without a Claude API key, using HF's AI-generated summaries
+- **Email trending**: default limit tightened to 3 papers
+
+## 0.5.1 — 2026-02-23
+
+### Bug Fix
+
+- **WebDAV PDF downloads broken since 0.4.4**: `get_pdf_attachment()` only matched `imported_file` and `imported_url` link modes, missing WebDAV's `linked_url` attachments. Papers got stuck as "Awaiting PDF" instead of downloading.
+
+## 0.5.0 — 2026-02-24
+
+Interactive agent mode — distillate becomes a research assistant.
+
+### New Features
+
+- **Nicolas — AI research assistant**: `distillate` now launches an interactive REPL ("Nicolas") powered by Claude. Search papers, compare findings, get reading suggestions — all in natural language.
+- **Add papers from the REPL**: give an arXiv ID and it's added to Zotero, enriched with metadata, and synced on next run.
+- **HuggingFace Daily Papers**: trending research with GitHub repo links, AI summaries, and community votes.
+- **Cross-paper synthesis**: ask Nicolas to compare or synthesize across multiple papers in your library.
+- **Refresh metadata**: agent can fix metadata gaps on existing papers via Semantic Scholar.
+- **Conversation memory**: sessions persist locally for cross-session context.
 
 ### Migration from 0.4.x
 
 - **`distillate` now opens the agent REPL** — use `distillate --sync` for the previous sync-only behavior
 - **Optional extras removed** — `[ai]`, `[email]`, and `[all]` install extras are gone. `pip install distillate` (or `uv tool install distillate`) now includes everything
-- **Newsletter signup** — the init wizard (`--init`) now offers an optional email signup at the end
 
 ## 0.4.4 — 2026-02-21
 
