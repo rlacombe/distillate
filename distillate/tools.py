@@ -641,22 +641,37 @@ def synthesize_across_papers(
     }
 
 
-def run_sync(*, state) -> dict:
+def run_sync(*, state, line_callback=None) -> dict:
     """Trigger the full sync pipeline via subprocess.
 
     stdout passes through to the terminal (live progress), stderr is
-    captured for error reporting.
+    captured for error reporting.  When *line_callback* is provided,
+    stdout is captured and each line is passed to the callback instead
+    of printing to the terminal.
     """
     import subprocess
     import sys
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "distillate", "--sync"],
-            stderr=subprocess.PIPE, text=True, timeout=300,
-        )
-        if result.returncode != 0:
-            err = result.stderr.strip() or "Sync failed"
-            return {"success": False, "error": err}
+        if line_callback:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "distillate", "--sync"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            for line in proc.stdout:
+                line_callback(line.rstrip("\n"))
+            proc.wait(timeout=300)
+            if proc.returncode != 0:
+                err = proc.stderr.read().strip() or "Sync failed"
+                return {"success": False, "error": err}
+        else:
+            result = subprocess.run(
+                [sys.executable, "-m", "distillate", "--sync"],
+                stderr=subprocess.PIPE, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or "Sync failed"
+                return {"success": False, "error": err}
         return {"success": True, "output": "Sync completed."}
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Sync timed out after 5 minutes."}
@@ -664,20 +679,36 @@ def run_sync(*, state) -> dict:
         return {"success": False, "error": "Python executable not found."}
 
 
-def refresh_metadata(*, state, identifier: str = "") -> dict:
-    """Re-fetch metadata from Zotero + Semantic Scholar."""
+def refresh_metadata(*, state, identifier: str = "", line_callback=None) -> dict:
+    """Re-fetch metadata from Zotero + Semantic Scholar.
+
+    When *line_callback* is provided, stdout is captured and each line
+    is passed to the callback instead of printing to the terminal.
+    """
     import subprocess
     import sys
     cmd = [sys.executable, "-m", "distillate", "--refresh-metadata"]
     if identifier:
         cmd.append(identifier)
     try:
-        result = subprocess.run(
-            cmd, stderr=subprocess.PIPE, text=True, timeout=300,
-        )
-        if result.returncode != 0:
-            err = result.stderr.strip() or "Refresh failed"
-            return {"success": False, "error": err}
+        if line_callback:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            for line in proc.stdout:
+                line_callback(line.rstrip("\n"))
+            proc.wait(timeout=300)
+            if proc.returncode != 0:
+                err = proc.stderr.read().strip() or "Refresh failed"
+                return {"success": False, "error": err}
+        else:
+            result = subprocess.run(
+                cmd, stderr=subprocess.PIPE, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or "Refresh failed"
+                return {"success": False, "error": err}
         return {"success": True, "output": "Metadata refreshed."}
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Refresh timed out after 5 minutes."}
