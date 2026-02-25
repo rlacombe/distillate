@@ -1,10 +1,7 @@
 """Tests for Zotero reader mode (READING_SOURCE=zotero)."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -16,8 +13,6 @@ class TestZoteroReaderConfig:
 
     def test_default_is_remarkable(self, monkeypatch):
         monkeypatch.delenv("READING_SOURCE", raising=False)
-        # Re-import to pick up the env change
-        import importlib
         from distillate import config
         monkeypatch.setattr(config, "READING_SOURCE", "remarkable")
         assert not config.is_zotero_reader()
