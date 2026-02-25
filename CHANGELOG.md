@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 — 2026-02-25
+
+### Improvements
+
+- **HuggingFace summary fallback**: papers get a real one-liner even without a Claude API key, using HF's AI-generated summaries
+- **Email trending**: default limit tightened to 3 papers
+
 ## 0.5.1 — 2026-02-23
 
 ### Bug Fixes

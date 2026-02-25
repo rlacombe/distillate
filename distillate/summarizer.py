@@ -14,6 +14,7 @@ def summarize_read_paper(
     abstract: str = "",
     key_learnings: Optional[List[str]] = None,
     reader_notes: Optional[List[str]] = None,
+    hf_summary: str = "",
 ) -> Tuple[str, str]:
     """Generate summaries for a read paper.
 
@@ -26,11 +27,11 @@ def summarize_read_paper(
     the summary is personalized to reflect what the reader found notable.
     """
     if not config.ANTHROPIC_API_KEY:
-        return _fallback_read(title, abstract, key_learnings)
+        return _fallback_read(title, abstract, key_learnings, hf_summary)
 
     # Need at least an abstract or key learnings to generate a summary
     if not abstract and not key_learnings:
-        return _fallback_read(title, abstract, key_learnings)
+        return _fallback_read(title, abstract, key_learnings, hf_summary)
 
     context_parts = []
     if abstract:
@@ -86,7 +87,7 @@ def summarize_read_paper(
             one_liner += "."
         return result, one_liner
 
-    return _fallback_read(title, abstract, key_learnings)
+    return _fallback_read(title, abstract, key_learnings, hf_summary)
 
 
 def extract_insights(
@@ -269,8 +270,11 @@ _PENDING_SUMMARY = "(Summary pending — reprocess when API credits are availabl
 
 def _fallback_read(
     title: str, abstract: str, key_learnings: Optional[List[str]],
+    hf_summary: str = "",
 ) -> Tuple[str, str]:
     """Fallback summaries when Claude API is unavailable."""
+    if hf_summary:
+        return hf_summary, hf_summary
     if abstract:
         sentences = abstract.replace("\n", " ").split(". ")
         summary = ". ".join(sentences[:3]).strip()

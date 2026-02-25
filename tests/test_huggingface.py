@@ -45,6 +45,7 @@ def _make_lookup_response(arxiv_id="2501.12948"):
         "githubRepo": "https://github.com/org/repo",
         "githubStars": 5000,
         "ai_keywords": ["RL", "reasoning"],
+        "ai_summary": "A concise AI-generated summary.",
     }
 
 
@@ -181,6 +182,21 @@ class TestLookupPaper:
         assert result["github_stars"] == 5000
         assert result["upvotes"] == 441
         assert "RL" in result["ai_keywords"]
+        assert result["ai_summary"] == "A concise AI-generated summary."
+
+    @patch("distillate.huggingface.requests.get")
+    def test_returns_ai_summary_empty_when_missing(self, mock_get):
+        from distillate.huggingface import lookup_paper
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        data = _make_lookup_response()
+        del data["ai_summary"]
+        mock_resp.json.return_value = data
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        result = lookup_paper("2501.12948")
+        assert result["ai_summary"] == ""
 
     @patch("distillate.huggingface.requests.get")
     def test_returns_none_on_404(self, mock_get):
