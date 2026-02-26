@@ -607,6 +607,79 @@ def _diff_dicts(a: dict, b: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Import from ml-notebook
+# ---------------------------------------------------------------------------
+
+def import_from_mlnotebook(path: Path) -> Optional[dict]:
+    """Import a project from an existing .mlnotebook/state.json file.
+
+    Returns a project dict compatible with distillate state, or None on failure.
+    Works for projects that don't have a git repo (ml-notebook tracked them
+    independently).
+    """
+    path = Path(path).resolve()
+    state_file = path / ".mlnotebook" / "state.json"
+    if not state_file.exists():
+        log.warning("No .mlnotebook/state.json found at %s", path)
+        return None
+
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to read ml-notebook state: %s", exc)
+        return None
+
+    proj = data.get("project", {})
+    experiments = data.get("experiments", [])
+
+    # Convert experiments to distillate run format
+    runs: dict[str, dict] = {}
+    for exp in experiments:
+        run_id = exp.get("id", f"exp-{uuid.uuid4().hex[:6]}")
+        runs[run_id] = {
+            "id": run_id,
+            "name": exp.get("name", run_id),
+            "status": exp.get("status", "completed"),
+            "hypothesis": exp.get("hypothesis", ""),
+            "hyperparameters": exp.get("hyperparameters", {}),
+            "results": exp.get("results", {}),
+            "tags": exp.get("tags", []),
+            "git_commits": exp.get("git_commits", []),
+            "files_created": exp.get("files_created", []),
+            "started_at": exp.get("started_at", ""),
+            "completed_at": exp.get("completed_at", ""),
+            "duration_minutes": exp.get("duration_minutes", 0),
+            "notes": [],
+        }
+
+    # Convert goals
+    goals = []
+    for g in proj.get("goals", []):
+        goals.append({
+            "metric": g.get("metric", ""),
+            "direction": g.get("direction", "maximize"),
+            "threshold": g.get("threshold"),
+        })
+
+    project_id = slugify(proj.get("name", path.name))
+    return {
+        "id": project_id,
+        "name": proj.get("name", path.name),
+        "path": str(path),
+        "description": proj.get("description", ""),
+        "status": "tracking",
+        "tags": [],
+        "goals": goals,
+        "linked_papers": [],
+        "runs": runs,
+        "notebook_sections": ["main"],
+        "added_at": proj.get("created_at", datetime.now(timezone.utc).isoformat()),
+        "last_scanned_at": datetime.now(timezone.utc).isoformat(),
+        "last_commit_hash": "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Notebook generation
 # ---------------------------------------------------------------------------
 
@@ -798,8 +871,9 @@ def _pick_key_metric(results: dict) -> str:
     if not results:
         return "-"
     # Priority order for key metrics
-    priority = ["exact_match", "accuracy", "test_accuracy", "val_accuracy",
-                 "best_val_acc", "f1", "loss", "final_loss", "val_loss"]
+    priority = ["exact_match", "val_exact_match", "accuracy", "test_accuracy",
+                 "val_accuracy", "best_val_acc", "f1", "bleu", "rouge",
+                 "loss", "final_loss", "val_loss"]
     for key in priority:
         if key in results and isinstance(results[key], (int, float)):
             return _fmt_metric(key, results[key])
