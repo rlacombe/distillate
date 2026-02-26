@@ -1,4 +1,5 @@
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const http = require("http");
 
@@ -12,23 +13,33 @@ class PythonManager {
 
   /**
    * Find the Python executable.
-   * In development: use the system `python3` or `python`.
+   * In development: use the project .venv (uv-managed).
    * In production: use the bundled venv.
    */
   _findPython() {
-    const isDev = !process.resourcesPath || process.env.NODE_ENV === "development";
+    // Production: bundled venv inside Electron resources
+    const isDev =
+      !process.resourcesPath ||
+      process.resourcesPath.includes("node_modules");
 
-    if (isDev) {
-      // Development: look for python3 in PATH (should have distillate installed)
-      return "python3";
+    if (!isDev) {
+      const venvDir = path.join(process.resourcesPath, "python-env");
+      if (process.platform === "win32") {
+        return path.join(venvDir, "Scripts", "python.exe");
+      }
+      return path.join(venvDir, "bin", "python3");
     }
 
-    // Production: bundled venv
-    const venvDir = path.join(process.resourcesPath, "python-env");
-    if (process.platform === "win32") {
-      return path.join(venvDir, "Scripts", "python.exe");
+    // Development: find the project .venv relative to this file
+    // desktop/electron/python-manager.js → ../../.venv/bin/python3
+    const projectRoot = path.resolve(__dirname, "..", "..");
+    const venvPython = path.join(projectRoot, ".venv", "bin", "python3");
+    if (fs.existsSync(venvPython)) {
+      return venvPython;
     }
-    return path.join(venvDir, "bin", "python3");
+
+    // Fallback: hope python3 in PATH has distillate installed
+    return "python3";
   }
 
   /**
