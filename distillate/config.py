@@ -99,6 +99,10 @@ def is_zotero_reader() -> bool:
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
+# Cloud backend (optional — used by desktop app for managed AI)
+DISTILLATE_AUTH_TOKEN: str = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+DISTILLATE_API_URL: str = os.environ.get("DISTILLATE_API_URL", "").strip()
+
 RESEND_API_KEY: str = os.environ.get("RESEND_API_KEY", "").strip()
 DIGEST_FROM: str = os.environ.get("DIGEST_FROM", "onboarding@resend.dev").strip()
 DIGEST_TO: str = os.environ.get("DIGEST_TO", "").strip()
@@ -108,6 +112,10 @@ ZOTERO_WEBDAV_USERNAME: str = os.environ.get("ZOTERO_WEBDAV_USERNAME", "").strip
 ZOTERO_WEBDAV_PASSWORD: str = os.environ.get("ZOTERO_WEBDAV_PASSWORD", "").strip()
 
 STATE_GIST_ID: str = os.environ.get("STATE_GIST_ID", "").strip()
+
+# Experiments
+EXPERIMENTS_ROOT: str = os.environ.get("EXPERIMENTS_ROOT", "").strip()
+EXPERIMENTS_ENABLED: bool = os.environ.get("EXPERIMENTS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 HTTP_TIMEOUT: int = int(os.environ.get("HTTP_TIMEOUT", "30"))
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO").strip().upper()

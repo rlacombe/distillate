@@ -3,6 +3,9 @@
 Provides a conversational interface to the paper library using Claude
 with tool use. Launched via ``distillate`` (in a TTY) or
 ``distillate "question"`` for single-turn mode.
+
+Terminal rendering (spinners, ANSI) lives here.  Core conversation logic
+lives in :mod:`distillate.agent_core`.
 """
 
 import json
@@ -12,12 +15,21 @@ import random
 import sys
 import threading
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from distillate import config
+from distillate.agent_core import (
+    CONVERSATION_KEEP,
+    CONVERSATION_TRIM_THRESHOLD,
+    VERBOSE_TOOLS,
+    build_system_prompt as _build_system_prompt,  # noqa: F401 (re-export for tests)
+    create_client,
+    execute_tool as _execute_tool,  # noqa: F401 (re-export for tests)
+    stream_turn,
+    tool_label as _tool_label,
+)
 from distillate.state import State
-from distillate.tools import TOOL_SCHEMAS
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +39,10 @@ log = logging.getLogger(__name__)
 
 _CONVERSATION_LOG_PATH = config.CONFIG_DIR / "conversations.json"
 _MAX_SESSIONS = 50
-_PROMPT_SESSIONS = 3  # how many past sessions to include in system prompt
+
+# Re-export constants so existing tests that import from agent still work
+_CONVERSATION_TRIM_THRESHOLD = CONVERSATION_TRIM_THRESHOLD
+_CONVERSATION_KEEP = CONVERSATION_KEEP
 
 
 def _load_conversation_log() -> list[dict]:
@@ -45,37 +60,6 @@ def _save_conversation_log(sessions: list[dict]) -> None:
         json.dumps(trimmed, ensure_ascii=False, indent=None),
         encoding="utf-8",
     )
-
-
-def _format_past_sessions(sessions: list[dict]) -> str:
-    """Format recent sessions for inclusion in the system prompt."""
-    if not sessions:
-        return ""
-
-    now = datetime.now(timezone.utc)
-    lines = []
-    for s in sessions[-_PROMPT_SESSIONS:]:
-        queries = [m["content"] for m in s.get("messages", []) if m["role"] == "user"]
-        if not queries:
-            continue
-        # Human-readable relative date
-        try:
-            ts = datetime.fromisoformat(s["session_id"])
-            delta = (now - ts).days
-            if delta == 0:
-                when = "Today"
-            elif delta == 1:
-                when = "Yesterday"
-            else:
-                when = f"{delta} days ago"
-        except (ValueError, KeyError):
-            when = "Earlier"
-        quoted = ", ".join(f'"{q[:60]}"' for q in queries[:5])
-        lines.append(f"- {when}: {quoted}")
-
-    if not lines:
-        return ""
-    return "## Recent Conversations\n" + "\n".join(lines) + "\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -184,26 +168,6 @@ _THINKING_PHRASES = [
 _SPINNER_FRAMES = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
 
 
-_TOOL_LABELS = {
-    "search_papers": "\U0001F50D Searching the library",
-    "get_paper_details": "\U0001F4DC Unrolling the manuscript",
-    "get_reading_stats": "\U0001F4CA Tallying the ledger",
-    "get_queue": "\u2697\ufe0f Inspecting the queue",
-    "get_recent_reads": "\U0001F4DA Reviewing recent reads",
-    "suggest_next_reads": "\U0001F52E Consulting the oracle",
-    "synthesize_across_papers": "\u2728 Cross-referencing texts",
-    "run_sync": "\U0001F525 Firing up the furnace",
-    "reprocess_paper": "\U0001F9EA Re-extracting the essence",
-    "promote_papers": "\u2B50 Promoting to the shelf",
-    "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
-    "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
-}
-
-
-def _tool_label(name: str) -> str:
-    return _TOOL_LABELS.get(name, name.replace("_", " ").title())
-
-
 class _ThinkingSpinner:
     """Animated spinner shown while waiting for the first token."""
 
@@ -242,150 +206,14 @@ class _ThinkingSpinner:
             self._stop.wait(0.1)
 
 
-# Use the configured agent model (Haiku by default — fast + cheap for REPL)
-_AGENT_MODEL = None  # resolved lazily after config is loaded
-
-_MAX_TOOL_STEPS = 5
-_MAX_TOKENS = 2048
-_CONVERSATION_TRIM_THRESHOLD = 40
-_CONVERSATION_KEEP = 24
-_MAX_TOOL_RESULT_CHARS = 12000  # truncate large tool responses
-
-
-def _get_model() -> str:
-    global _AGENT_MODEL
-    if _AGENT_MODEL is None:
-        _AGENT_MODEL = config.CLAUDE_AGENT_MODEL
-    return _AGENT_MODEL
-
-
-def _truncate_result(result: dict, max_chars: int) -> dict:
-    """Truncate a tool result dict so its JSON stays under max_chars.
-
-    Walks top-level string values and list values, shortening them
-    until the serialized size fits. Produces valid JSON unlike naive slicing.
-    """
-    import json as _json
-    if len(_json.dumps(result)) <= max_chars:
-        return result
-
-    out = dict(result)
-    # First pass: truncate long string values
-    for key, val in out.items():
-        if isinstance(val, str) and len(val) > 500:
-            out[key] = val[:500] + "... (truncated)"
-        elif isinstance(val, list) and len(val) > 10:
-            out[key] = val[:10] + ["... (truncated)"]
-    # Second pass: if still too large, drop the biggest fields
-    while len(_json.dumps(out)) > max_chars and out:
-        biggest = max(out, key=lambda k: len(_json.dumps(out[k])))
-        out[biggest] = "(truncated)"
-    return out
-
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-
-def _build_system_prompt(state: State, past_sessions: list[dict] | None = None) -> str:
-    """Build a context-rich system prompt from current library state."""
-    now = datetime.now(timezone.utc)
-
-    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
-    queue = state.documents_with_status(_q_status)
-    processed = state.documents_with_status("processed")
-    awaiting = state.documents_with_status("awaiting_pdf")
-
-    week_ago = (now - timedelta(days=7)).isoformat()
-    recent = state.documents_processed_since(week_ago)
-
-    # Recent reads (last 5)
-    recent_lines = []
-    for doc in list(reversed(recent))[:5]:
-        eng = doc.get("engagement", 0)
-        hl = doc.get("highlight_count", 0)
-        recent_lines.append(
-            f"- {doc.get('title', '?')} ({eng}% engaged, {hl} highlights)"
-        )
-
-    # Top tags from last 30 days
-    month_ago = (now - timedelta(days=30)).isoformat()
-    month_papers = state.documents_processed_since(month_ago)
-    tag_counts: dict[str, int] = {}
-    for doc in month_papers:
-        for tag in doc.get("metadata", {}).get("tags", []):
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-    top_tags = sorted(tag_counts, key=tag_counts.get, reverse=True)[:8]
-
-    recent_section = "\n".join(recent_lines) if recent_lines else "(none this week)"
-    tags_section = ", ".join(top_tags) if top_tags else "(not enough data yet)"
-
-    return (
-        "You are Nicolas, a research alchemist \u2014 named after Nicolas "
-        "Flamel, the legendary alchemist. You help a researcher distill "
-        "the essence from academic papers. The user reads papers through a "
-        + (
-            "Zotero workflow powered by Distillate \u2014 they read and "
-            "highlight papers in the Zotero app (on any device), then "
-            "Distillate extracts their highlights and generates notes."
-            if config.is_zotero_reader() else
-            "Zotero \u2192 reMarkable \u2192 Obsidian workflow powered by "
-            "Distillate."
-        )
-        + " You have tools to search their library, read their "
-        "highlights and notes, analyze reading patterns, and synthesize "
-        "insights across papers.\n\n"
-        "## Library\n"
-        f"- {len(processed)} papers read, {len(queue)} in queue"
-        f", {len(awaiting)} awaiting PDF\n"
-        f"- This week: {len(recent)} papers read\n\n"
-        "## Recent Reads\n"
-        f"{recent_section}\n\n"
-        "## Research Interests\n"
-        f"{tags_section}\n\n"
-        f"{_format_past_sessions(past_sessions or [])}"
-        "## Personality\n"
-        "You're warm, witty, and genuinely curious about the user's research. "
-        "Think of yourself as a fellow scholar who happens to live in an "
-        "alchemist's workshop \u2014 you might say a paper's findings are "
-        "\"pure gold\" or that you'll \"distill the key insights.\" Keep the "
-        "alchemy flavor light and natural, not forced. Show enthusiasm when "
-        "a paper is interesting. Be opinionated \u2014 if a result is "
-        "surprising or a method is clever, say so.\n\n"
-        "## Guidelines\n"
-        "- Look up papers with tools before answering \u2014 don't guess "
-        "from memory. When the user asks about recent papers, their queue, "
-        "or what they added recently, call get_queue \u2014 it's sorted "
-        "newest-first with upload timestamps.\n"
-        "- Show paper [index] numbers for easy reference.\n"
-        "- **Bold paper titles** with markdown **title** for readability.\n"
-        "- You may sprinkle one or two chemistry/alchemy emojis "
-        "(\u2697\ufe0f \U0001F9EA \U0001F52C \u2728 \U0001F4DC) inline in a response "
-        "\u2014 but NEVER start a message with an emoji. Keep them subtle.\n"
-        "- If the user says they already added papers to Zotero and need PDFs "
-        "loaded, call run_sync \u2014 it picks up new Zotero items and "
-        "downloads their PDFs. Use add_paper_to_zotero only when the paper "
-        "isn't in Zotero yet.\n"
-        "- add_paper_to_zotero works with just an arXiv ID or URL \u2014 it "
-        "auto-fetches the title, authors, and abstract. Don't ask the user "
-        "for metadata you can look up.\n"
-        "- Confirm with the user before write operations (sync, reprocess, "
-        "promote).\n"
-        "- Keep responses concise \u2014 this is a terminal REPL.\n"
-        "- End with a statement, not a question. Don't ask \"Want to know more?\" "
-        "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
-        "will ask if they want more.\n"
-        "- When asked to compare or synthesize, use synthesize_across_papers.\n"
-    )
-
-
 # ---------------------------------------------------------------------------
 # REPL
 # ---------------------------------------------------------------------------
 
 def run_chat(initial_args: Optional[List[str]] = None) -> None:
     """Entry point for interactive chat mode."""
-    if not config.ANTHROPIC_API_KEY:
+    client = create_client()
+    if client is None:
         print(
             "\n  Agent mode requires an Anthropic API key.\n"
             "  Set ANTHROPIC_API_KEY in your .env file or run "
@@ -394,17 +222,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         )
         sys.exit(1)
 
-    try:
-        import anthropic
-    except ImportError:
-        print(
-            "\n  Agent mode requires the 'anthropic' package.\n"
-            "  Install it with: pip install distillate\n"
-        )
-        sys.exit(1)
-
     state = State()
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     conversation: list[dict] = []
 
     # Load conversation history for cross-session memory
@@ -417,9 +235,9 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
     # Single-turn mode: answer one question and exit
     if initial_args:
         query = " ".join(initial_args)
-        _handle_turn(
+        _render_turn(
             client, state, conversation, query,
-            stream=False, past_sessions=all_sessions,
+            past_sessions=all_sessions, stream=False,
         )
         return
 
@@ -452,9 +270,9 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             state.reload()
             continue
 
-        _handle_turn(
+        _render_turn(
             client, state, conversation, user_input,
-            stream=True, past_sessions=all_sessions,
+            past_sessions=all_sessions, stream=True,
         )
 
         # Log this exchange
@@ -493,7 +311,6 @@ def _print_welcome(state: State) -> None:
     n_queue = len(queue)
 
     w = min(_term_width(), 64)
-    # "─── ⚗️  Nicolas " = 17 visible chars (emoji is 2 wide)
     dashes = _dim("\u2500\u2500\u2500")
     header_prefix = f"  {dashes} \u2697\ufe0f  {_bold('Nicolas')} "
     header_tail = _dim("\u2500" * max(0, w - 19))
@@ -544,205 +361,110 @@ def _print_help() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Turn handling with multi-step tool use
+# Turn rendering — consumes events from agent_core.stream_turn
 # ---------------------------------------------------------------------------
 
-def _handle_turn(
+def _render_turn(
     client,
     state: State,
     conversation: list[dict],
     user_input: str,
-    stream: bool = True,
     past_sessions: list[dict] | None = None,
+    stream: bool = True,
 ) -> None:
-    """Handle one user turn, including multi-step tool use."""
-    conversation.append({"role": "user", "content": user_input})
+    """Handle one user turn by consuming agent_core events."""
+    fmt = _StreamFormatter()
+    spinner = _ThinkingSpinner()
+    first_token = True
+    has_text = False
 
-    # Refresh state from disk (picks up changes from concurrent sync)
-    state.reload()
-
-    system_prompt = _build_system_prompt(state, past_sessions=past_sessions)
-    tools = TOOL_SCHEMAS
-
-    # One blank line after the prompt — all spinners reuse this line
+    # Blank line before response
     if stream:
         print()
 
-    for _step in range(_MAX_TOOL_STEPS):
-        try:
-            if stream:
-                response = _stream_response(
-                    client, system_prompt, conversation, tools,
-                )
-            else:
-                response = client.messages.create(
-                    model=_get_model(),
-                    max_tokens=_MAX_TOKENS,
-                    system=system_prompt,
-                    messages=conversation,
-                    tools=tools,
-                )
-                # Print text blocks for single-turn mode
-                fmt = _StreamFormatter()
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        print(fmt.feed(block.text), end="")
-                print(fmt.flush())
-        except KeyboardInterrupt:
-            print("\n  (interrupted)")
-            return
-        except Exception as exc:
-            log.exception("Agent API call failed")
-            msg = str(exc)
-            if "credit balance is too low" in msg:
-                print("\n  Anthropic API credits depleted.")
-                print("  Add credits at https://console.anthropic.com/settings/billing")
-            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
-                print("\n  Invalid Anthropic API key. Run /init to update it.")
-            elif "overloaded" in msg:
-                print("\n  Anthropic API is overloaded. Try again in a moment.")
-            elif "rate_limit" in msg:
-                print("\n  Rate limited. Wait a moment and try again.")
-            else:
-                print("\n  Something went wrong. Try again.")
-            return
+    spinner.start()
 
-        # Append assistant response to conversation
-        conversation.append({"role": "assistant", "content": response.content})
+    try:
+        for event in stream_turn(
+            client, state, conversation, user_input,
+            past_sessions=past_sessions,
+        ):
+            etype = event["type"]
 
-        # Check for tool use
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        if not tool_uses:
-            break  # Pure text response, done
+            if etype == "text_delta":
+                if first_token:
+                    spinner.stop()
+                    first_token = False
+                    has_text = True
+                if stream:
+                    print(fmt.feed(event["text"]), end="", flush=True)
+                else:
+                    print(fmt.feed(event["text"]), end="")
 
-        # If text was streamed before tool use, add a blank line so the
-        # tool spinner doesn't sit right against the previous text.
-        has_text = any(
-            hasattr(b, "text") for b in response.content if b.type == "text"
-        )
-        if stream and has_text:
-            print()
+            elif etype == "tool_start":
+                # Stop the thinking spinner before tool execution
+                if first_token:
+                    spinner.stop()
+                    first_token = False
+                else:
+                    spinner.stop()
 
-        # Execute tools with spinner
-        _VERBOSE_TOOLS = {"run_sync", "reprocess_paper", "promote_papers", "add_paper_to_zotero", "refresh_metadata"}
-        tool_results = []
-        for tool_use in tool_uses:
-            spinner = _ThinkingSpinner(_tool_label(tool_use.name))
-            verbose = tool_use.name in _VERBOSE_TOOLS
-            spinner.start()
-            try:
-                if verbose:
-                    # These tools print their own progress — freeze spinner
-                    # label so the user sees the tool name while it runs
+                # If text was streamed before this tool, add spacing
+                if has_text:
+                    print(fmt.flush(), end="")
+                    print()  # newline after streamed text
+                    print()  # blank line before tool spinner
+
+                # Start a tool-specific spinner
+                spinner = _ThinkingSpinner(_tool_label(event["name"]))
+
+                if event.get("verbose"):
+                    # Verbose tools print their own progress —
+                    # show the label, then let stdout pass through
+                    spinner.start()
                     spinner.stop(keep_label=True)
-                    # Color subprocess output dim magenta to distinguish
-                    # from the agent's own text
                     if _is_tty():
                         _orig_write = sys.stdout.write
                         sys.stdout.write = lambda s, _w=_orig_write: (
                             _w(f"\033[2;35m{s}{_RESET}") if s.strip() else _w(s)
                         )
-                    try:
-                        result = _execute_tool(tool_use.name, tool_use.input, state)
-                    finally:
-                        if _is_tty():
-                            sys.stdout.write = _orig_write
-                        print()  # blank line after verbose output
                 else:
-                    result = _execute_tool(tool_use.name, tool_use.input, state)
-            finally:
-                spinner.stop()  # idempotent — clears line if not already stopped
-            result_json = json.dumps(result)
-            if len(result_json) > _MAX_TOOL_RESULT_CHARS:
-                result_json = json.dumps(_truncate_result(result, _MAX_TOOL_RESULT_CHARS))
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool_use.id,
-                "content": result_json,
-            })
-        conversation.append({"role": "user", "content": tool_results})
+                    spinner.start()
 
-    # Trim conversation to prevent context overflow
-    if len(conversation) > _CONVERSATION_TRIM_THRESHOLD:
-        trimmed = conversation[-_CONVERSATION_KEEP:]
-        # Ensure conversation starts with a genuine user message — skip
-        # assistant messages AND orphaned tool_result messages (which have
-        # role "user" but whose tool_use was trimmed from the preceding
-        # assistant message).
-        while trimmed:
-            msg = trimmed[0]
-            if msg.get("role") == "assistant":
-                trimmed.pop(0)
-                continue
-            content = msg.get("content")
-            if (isinstance(content, list) and content
-                    and isinstance(content[0], dict)
-                    and content[0].get("type") == "tool_result"):
-                trimmed.pop(0)
-                continue
-            break
-        conversation[:] = trimmed
+            elif etype == "tool_done":
+                if event.get("name") in VERBOSE_TOOLS and _is_tty():
+                    # Restore stdout after verbose tool
+                    sys.stdout.write = sys.__stdout__.write
+                    print()  # blank line after verbose output
+                spinner.stop()
+                has_text = False
 
+                # Start a new thinking spinner for the next API call
+                spinner = _ThinkingSpinner()
+                spinner.start()
+                first_token = True
 
-def _stream_response(client, system_prompt, conversation, tools):
-    """Stream response text to terminal, return complete response."""
-    fmt = _StreamFormatter()
-    spinner = _ThinkingSpinner()
-    spinner.start()
-    first_token = True
+            elif etype == "turn_end":
+                spinner.stop()
+                if has_text:
+                    print(fmt.flush(), end="")
+                    print()  # final newline
 
-    with client.messages.stream(
-        model=_get_model(),
-        max_tokens=_MAX_TOKENS,
-        system=system_prompt,
-        messages=conversation,
-        tools=tools,
-    ) as stream:
-        for event in stream:
-            if hasattr(event, "type") and event.type == "content_block_delta":
-                if hasattr(event.delta, "text"):
-                    if first_token:
-                        spinner.stop()
-                        first_token = False
-                    print(fmt.feed(event.delta.text), end="", flush=True)
-        if first_token:
-            spinner.stop()  # tool-only response, no text
-        else:
-            print(fmt.flush(), end="")
-            print()  # newline after streamed text
-        return stream.get_final_message()
+            elif etype == "error":
+                spinner.stop()
+                cat = event.get("category", "unknown")
+                if cat == "credits_depleted":
+                    print("\n  Anthropic API credits depleted.")
+                    print("  Add credits at https://console.anthropic.com/settings/billing")
+                elif cat == "invalid_key":
+                    print("\n  Invalid Anthropic API key. Run /init to update it.")
+                elif cat == "overloaded":
+                    print("\n  Anthropic API is overloaded. Try again in a moment.")
+                elif cat == "rate_limited":
+                    print("\n  Rate limited. Wait a moment and try again.")
+                else:
+                    print("\n  Something went wrong. Try again.")
 
-
-# ---------------------------------------------------------------------------
-# Tool dispatch
-# ---------------------------------------------------------------------------
-
-def _execute_tool(name: str, input_data: dict, state: State) -> dict:
-    """Execute a tool and return the result dict."""
-    from distillate import tools
-
-    dispatch = {
-        "search_papers": tools.search_papers,
-        "get_paper_details": tools.get_paper_details,
-        "get_reading_stats": tools.get_reading_stats,
-        "get_queue": tools.get_queue,
-        "get_recent_reads": tools.get_recent_reads,
-        "suggest_next_reads": tools.suggest_next_reads,
-        "synthesize_across_papers": tools.synthesize_across_papers,
-        "run_sync": tools.run_sync,
-        "refresh_metadata": tools.refresh_metadata,
-        "reprocess_paper": tools.reprocess_paper,
-        "promote_papers": tools.promote_papers,
-        "get_trending_papers": tools.get_trending_papers,
-        "add_paper_to_zotero": tools.add_paper_to_zotero,
-    }
-
-    fn = dispatch.get(name)
-    if not fn:
-        return {"error": f"Unknown tool: {name}"}
-
-    try:
-        return fn(state=state, **input_data)
-    except Exception as e:
-        log.exception("Tool '%s' failed", name)
-        return {"error": str(e)}
+    except KeyboardInterrupt:
+        spinner.stop()
+        print("\n  (interrupted)")

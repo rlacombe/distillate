@@ -1,8 +1,8 @@
 """Persistent state management for Distillate.
 
 Tracks Zotero library version, document mappings between Zotero and reMarkable,
-and processing status. State is stored as JSON and written atomically to prevent
-corruption if the script is interrupted mid-write.
+processing status, and ML experiment projects. State is stored as JSON and
+written atomically to prevent corruption if the script is interrupted mid-write.
 """
 
 import copy
@@ -29,6 +29,7 @@ _DEFAULT_STATE = {
     "last_poll_timestamp": None,
     "documents": {},
     "promoted_papers": [],
+    "projects": {},
 }
 
 
@@ -93,6 +94,16 @@ class State:
         self._data["last_poll_timestamp"] = (
             datetime.now(timezone.utc).isoformat()
         )
+
+    # -- Cloud sync watermark --
+
+    @property
+    def last_cloud_sync_at(self) -> Optional[str]:
+        return self._data.get("last_cloud_sync_at")
+
+    @last_cloud_sync_at.setter
+    def last_cloud_sync_at(self, ts: str) -> None:
+        self._data["last_cloud_sync_at"] = ts
 
     # -- Document tracking --
 
@@ -217,6 +228,108 @@ class State:
             for doc in self._data["documents"].values()
             if doc["status"] == status
         ]
+
+    # -- Project tracking (experiments) --
+
+    @property
+    def projects(self) -> Dict[str, Any]:
+        return self._data.setdefault("projects", {})
+
+    def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        return self.projects.get(project_id)
+
+    def has_project(self, project_id: str) -> bool:
+        return project_id in self.projects
+
+    def project_index_of(self, project_id: str) -> int:
+        """Return the 1-based index of a project (insertion order)."""
+        for i, key in enumerate(self.projects, 1):
+            if key == project_id:
+                return i
+        return 0
+
+    def find_project(self, query: str) -> Optional[Dict[str, Any]]:
+        """Find a project by id, 1-based index, or name substring."""
+        if not query:
+            return None
+        # Try index number
+        try:
+            idx = int(query)
+            keys = list(self.projects.keys())
+            if 1 <= idx <= len(keys):
+                return self.projects[keys[idx - 1]]
+        except ValueError:
+            pass
+        # Try exact id
+        if query in self.projects:
+            return self.projects[query]
+        # Try name substring (case-insensitive)
+        query_lower = query.lower()
+        for proj in self.projects.values():
+            if query_lower in proj.get("name", "").lower():
+                return proj
+            if query_lower in proj.get("id", "").lower():
+                return proj
+        return None
+
+    def add_project(
+        self,
+        project_id: str,
+        name: str,
+        path: str,
+        description: str = "",
+        status: str = "tracking",
+        tags: Optional[List[str]] = None,
+        goals: Optional[List[Dict[str, Any]]] = None,
+        notebook_sections: Optional[List[str]] = None,
+    ) -> None:
+        self.projects[project_id] = {
+            "id": project_id,
+            "name": name,
+            "path": path,
+            "description": description,
+            "status": status,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "last_scanned_at": None,
+            "last_commit_hash": "",
+            "tags": tags or [],
+            "linked_papers": [],
+            "goals": goals or [],
+            "runs": {},
+            "notebook_sections": notebook_sections or ["main"],
+        }
+
+    def update_project(self, project_id: str, **kwargs: Any) -> None:
+        proj = self.projects.get(project_id)
+        if proj:
+            for key, val in kwargs.items():
+                proj[key] = val
+
+    def remove_project(self, project_id: str) -> bool:
+        if project_id not in self.projects:
+            return False
+        del self.projects[project_id]
+        return True
+
+    def get_run(self, project_id: str, run_id: str) -> Optional[Dict[str, Any]]:
+        proj = self.projects.get(project_id)
+        if not proj:
+            return None
+        return proj.get("runs", {}).get(run_id)
+
+    def add_run(self, project_id: str, run_id: str, run_data: Dict[str, Any]) -> None:
+        proj = self.projects.get(project_id)
+        if proj:
+            proj.setdefault("runs", {})[run_id] = run_data
+
+    def update_run(self, project_id: str, run_id: str, **kwargs: Any) -> None:
+        proj = self.projects.get(project_id)
+        if not proj:
+            return
+        run = proj.get("runs", {}).get(run_id)
+        if run:
+            for key, val in kwargs.items():
+                run[key] = val
 
     # -- Promoted papers --
 
