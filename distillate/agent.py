@@ -24,6 +24,7 @@ from distillate.agent_core import (
     CONVERSATION_TRIM_THRESHOLD,
     VERBOSE_TOOLS,
     build_system_prompt as _build_system_prompt,  # noqa: F401 (re-export for tests)
+    create_client,
     execute_tool as _execute_tool,  # noqa: F401 (re-export for tests)
     stream_turn,
     tool_label as _tool_label,
@@ -211,7 +212,8 @@ class _ThinkingSpinner:
 
 def run_chat(initial_args: Optional[List[str]] = None) -> None:
     """Entry point for interactive chat mode."""
-    if not config.ANTHROPIC_API_KEY:
+    client = create_client()
+    if client is None:
         print(
             "\n  Agent mode requires an Anthropic API key.\n"
             "  Set ANTHROPIC_API_KEY in your .env file or run "
@@ -220,17 +222,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         )
         sys.exit(1)
 
-    try:
-        import anthropic
-    except ImportError:
-        print(
-            "\n  Agent mode requires the 'anthropic' package.\n"
-            "  Install it with: pip install distillate\n"
-        )
-        sys.exit(1)
-
     state = State()
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     conversation: list[dict] = []
 
     # Load conversation history for cross-session memory

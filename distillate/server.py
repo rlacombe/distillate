@@ -18,7 +18,6 @@ import sys
 
 from concurrent.futures import ThreadPoolExecutor
 
-from distillate import config
 from distillate.agent_core import stream_turn
 from distillate.state import State
 
@@ -51,27 +50,17 @@ def _create_app():
         await websocket.accept()
         loop = asyncio.get_event_loop()
 
-        try:
-            import anthropic
-        except ImportError:
-            await websocket.send_json({
-                "type": "error",
-                "message": "anthropic package not installed",
-                "category": "missing_package",
-            })
-            await websocket.close()
-            return
+        from distillate.agent_core import create_client
 
-        if not config.ANTHROPIC_API_KEY:
+        client = create_client()
+        if client is None:
             await websocket.send_json({
                 "type": "error",
-                "message": "ANTHROPIC_API_KEY not configured",
+                "message": "No API credentials configured",
                 "category": "invalid_key",
             })
             await websocket.close()
             return
-
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
         try:
             while True:

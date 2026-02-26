@@ -66,6 +66,29 @@ def get_model() -> str:
     return _AGENT_MODEL
 
 
+def create_client():
+    """Create an Anthropic client based on available credentials.
+
+    Returns ``None`` when no credentials are configured.
+
+    * ``DISTILLATE_AUTH_TOKEN`` + ``DISTILLATE_API_URL`` → cloud proxy
+    * ``ANTHROPIC_API_KEY`` → direct Anthropic (CLI power users)
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return None
+
+    if config.DISTILLATE_AUTH_TOKEN and config.DISTILLATE_API_URL:
+        return anthropic.Anthropic(
+            api_key=config.DISTILLATE_AUTH_TOKEN,
+            base_url=config.DISTILLATE_API_URL,
+        )
+    if config.ANTHROPIC_API_KEY:
+        return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
