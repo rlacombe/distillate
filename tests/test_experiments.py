@@ -516,10 +516,13 @@ class TestRetroactiveScan:
         assert "d_model" in run["hyperparameters"]
         assert run["hyperparameters"]["d_model"] == 64
 
-    def test_scan_non_git_dir(self, tmp_path):
+    def test_scan_non_git_dir_succeeds(self, tmp_path):
         from distillate.experiments import scan_project
         result = scan_project(tmp_path)
-        assert "error" in result
+        assert "error" not in result
+        assert len(result["runs"]) == 0
+        assert result["has_git"] is False
+        assert result["head_hash"] == ""
 
     def test_scan_empty_repo(self, tmp_path):
         from distillate.experiments import scan_project
@@ -547,182 +550,155 @@ class TestRetroactiveScan:
 
 
 # ---------------------------------------------------------------------------
-# ml-notebook import tests
+# Non-git scanning tests
 # ---------------------------------------------------------------------------
 
 
-class TestImportFromMLNotebook:
-    def _make_mlnotebook(self, tmp_path, data):
-        """Write .mlnotebook/state.json in tmp_path."""
-        mlnb_dir = tmp_path / ".mlnotebook"
-        mlnb_dir.mkdir()
-        (mlnb_dir / "state.json").write_text(json.dumps(data))
+class TestScanWithoutGit:
+    def test_scan_discovers_runs_without_git(self, tmp_path):
+        """Scan a plain directory (no .git) with ML artifacts."""
+        from distillate.experiments import scan_project
 
-    def test_import_basic(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
+        proj = tmp_path / "my-project"
+        results_dir = proj / "experiment"
+        results_dir.mkdir(parents=True)
 
-        self._make_mlnotebook(tmp_path, {
-            "project": {
-                "name": "Tiny Gene Code",
-                "description": "DNA codon prediction",
-                "created_at": "2026-01-15T10:00:00Z",
-                "goals": [
-                    {"metric": "exact_match", "direction": "maximize", "threshold": 0.99},
-                ],
-            },
-            "experiments": [
-                {
-                    "id": "exp-001",
-                    "name": "baseline-transformer",
-                    "status": "completed",
-                    "hypothesis": "Small transformer can learn codon table",
-                    "hyperparameters": {"d_model": 64, "n_heads": 4},
-                    "results": {"val_exact_match": 1.0, "final_loss": 0.001},
-                    "tags": ["transformer"],
-                    "started_at": "2026-01-15T10:00:00Z",
-                    "completed_at": "2026-01-15T10:30:00Z",
-                    "duration_minutes": 30,
-                },
-                {
-                    "id": "exp-002",
-                    "name": "mlp-baseline",
-                    "status": "completed",
-                    "hyperparameters": {"hidden_dim": 128},
-                    "results": {"val_exact_match": 0.85},
-                },
-            ],
-        })
-
-        result = import_from_mlnotebook(tmp_path)
-        assert result is not None
-        assert result["id"] == "tiny-gene-code"
-        assert result["name"] == "Tiny Gene Code"
-        assert result["description"] == "DNA codon prediction"
-        assert result["status"] == "tracking"
-        assert len(result["runs"]) == 2
-        assert result["runs"]["exp-001"]["name"] == "baseline-transformer"
-        assert result["runs"]["exp-001"]["results"]["val_exact_match"] == 1.0
-        assert result["runs"]["exp-002"]["hyperparameters"]["hidden_dim"] == 128
-        assert len(result["goals"]) == 1
-        assert result["goals"][0]["metric"] == "exact_match"
-        assert result["added_at"] == "2026-01-15T10:00:00Z"
-
-    def test_import_missing_state_file(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
-
-        result = import_from_mlnotebook(tmp_path)
-        assert result is None
-
-    def test_import_malformed_json(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
-
-        mlnb_dir = tmp_path / ".mlnotebook"
-        mlnb_dir.mkdir()
-        (mlnb_dir / "state.json").write_text("not valid json {{{")
-
-        result = import_from_mlnotebook(tmp_path)
-        assert result is None
-
-    def test_import_empty_experiments(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
-
-        self._make_mlnotebook(tmp_path, {
-            "project": {"name": "Empty Project"},
-            "experiments": [],
-        })
-
-        result = import_from_mlnotebook(tmp_path)
-        assert result is not None
-        assert result["name"] == "Empty Project"
-        assert len(result["runs"]) == 0
-
-    def test_import_no_project_key(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
-
-        self._make_mlnotebook(tmp_path, {
-            "experiments": [{"id": "exp-1", "name": "solo"}],
-        })
-
-        result = import_from_mlnotebook(tmp_path)
-        assert result is not None
-        # Falls back to directory name
-        assert result["name"] == tmp_path.name
-        assert len(result["runs"]) == 1
-
-    def test_import_preserves_git_commits(self, tmp_path):
-        from distillate.experiments import import_from_mlnotebook
-
-        self._make_mlnotebook(tmp_path, {
-            "project": {"name": "With Commits"},
-            "experiments": [{
-                "id": "exp-1",
-                "name": "run-1",
-                "git_commits": ["abc123", "def456"],
-                "files_created": ["model.pt", "results.json"],
-            }],
-        })
-
-        result = import_from_mlnotebook(tmp_path)
-        run = result["runs"]["exp-1"]
-        assert run["git_commits"] == ["abc123", "def456"]
-        assert run["files_created"] == ["model.pt", "results.json"]
-
-
-class TestImportProjectTool:
-    def test_import_tool_success(self, tmp_path, monkeypatch):
-        from distillate.experiment_tools import import_project_tool
-        from distillate.state import State
-
-        # Create ml-notebook state
-        mlnb_dir = tmp_path / "my-project" / ".mlnotebook"
-        mlnb_dir.mkdir(parents=True)
-        (mlnb_dir / "state.json").write_text(json.dumps({
-            "project": {"name": "My Project"},
-            "experiments": [
-                {"id": "exp-1", "name": "run-1", "results": {"acc": 0.9}},
+        # Create a training log
+        (results_dir / "train_v1.json").write_text(json.dumps({
+            "config": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "total_time": 3600,
+            "best_val_acc": 0.85,
+            "epochs": [
+                {"epoch": 1, "loss": 1.0, "val_acc": 0.5},
+                {"epoch": 10, "loss": 0.2, "val_acc": 0.85},
             ],
         }))
 
-        # Set up state
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
-        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
-        state = State()
+        # Create a result file with matching tag
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "exact_match": 0.85, "total_params": 28416,
+        }))
 
-        result = import_project_tool(state=state, path=str(tmp_path / "my-project"))
-        assert result["success"] is True
-        assert result["name"] == "My Project"
-        assert result["runs_imported"] == 1
-        assert state.has_project("my-project")
+        result = scan_project(proj)
+        assert "error" not in result
+        assert result["has_git"] is False
+        assert result["head_hash"] == ""
+        assert len(result["runs"]) >= 1
 
-    def test_import_tool_missing_dir(self, tmp_path, monkeypatch):
-        from distillate.experiment_tools import import_project_tool
-        from distillate.state import State
+        run = list(result["runs"].values())[0]
+        assert run["status"] == "completed"
+        assert "d_model" in run["hyperparameters"]
+        assert run["git_commits"] == []
+        # Timestamps from file mtime
+        assert run["started_at"] != ""
+        assert run["completed_at"] != ""
 
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
-        state = State()
+    def test_distillate_dir_created(self, tmp_path):
+        """Scanning creates .distillate/scan_state.json."""
+        from distillate.experiments import scan_project
 
-        result = import_project_tool(state=state, path=str(tmp_path / "nonexistent"))
-        assert result["success"] is False
-        assert "not found" in result["error"]
+        proj = tmp_path / "my-project"
+        proj.mkdir()
+        # Put a result file so there's something to scan
+        (proj / "results.json").write_text(json.dumps({
+            "accuracy": 0.95, "loss": 0.1,
+        }))
 
-    def test_import_tool_no_mlnotebook(self, tmp_path, monkeypatch):
-        from distillate.experiment_tools import import_project_tool
-        from distillate.state import State
+        scan_project(proj)
+        scan_state = proj / ".distillate" / "scan_state.json"
+        assert scan_state.exists()
+        data = json.loads(scan_state.read_text())
+        assert "last_scanned_at" in data
+        assert "file_manifest" in data
 
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
-        state = State()
+    def test_scan_with_git_enriches_commits(self, tmp_path):
+        """Scan a git repo — runs get git_commits attached."""
+        from distillate.experiments import scan_project
 
-        result = import_project_tool(state=state, path=str(empty_dir))
-        assert result["success"] is False
-        assert "mlnotebook" in result["error"].lower()
+        repo = tmp_path / "git-project"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test"],
+            capture_output=True,
+        )
+
+        # Initial commit (diff-tree needs a parent to list files)
+        (repo / "README.md").write_text("# Test")
+        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "init"],
+            capture_output=True,
+        )
+
+        # Second commit with ML artifact
+        results_dir = repo / "experiment"
+        results_dir.mkdir()
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "accuracy": 0.9, "loss": 0.1,
+        }))
+        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "Add results"],
+            capture_output=True,
+        )
+
+        result = scan_project(repo)
+        assert result["has_git"] is True
+        assert result["head_hash"] != ""
+        run = list(result["runs"].values())[0]
+        assert len(run["git_commits"]) >= 1
+
+    def test_update_project_detects_changes(self, tmp_path):
+        """update_project re-scans when files change."""
+        from distillate.experiments import scan_project, update_project
+
+        proj = tmp_path / "my-project"
+        results_dir = proj / "experiment"
+        results_dir.mkdir(parents=True)
+
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "accuracy": 0.9, "loss": 0.1,
+        }))
+
+        # Initial scan
+        result = scan_project(proj)
+        project = {
+            "name": "My Project",
+            "path": str(proj),
+            "runs": result["runs"],
+            "last_scanned_at": "",
+        }
+
+        # No changes → returns False
+        assert update_project(project, state=None) is False
+
+        # Add a new artifact
+        import time
+        time.sleep(0.05)  # ensure different mtime
+        (results_dir / "results_v2.json").write_text(json.dumps({
+            "accuracy": 0.95, "loss": 0.05,
+        }))
+
+        # Now it should detect the change
+        assert update_project(project, state=None) is True
+
+    def test_detect_ml_repos_without_git(self, tmp_path):
+        """detect_ml_repos finds non-git directories with ML files."""
+        from distillate.experiments import detect_ml_repos
+
+        # Create a non-git ML project
+        proj = tmp_path / "ml-project"
+        proj.mkdir()
+        (proj / "train.py").write_text("import torch\nmodel = torch.nn.Linear(10, 10)")
+        (proj / "config.yaml").write_text("lr: 0.001")
+
+        repos = detect_ml_repos(tmp_path)
+        assert proj in repos
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +801,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 6
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 5
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -837,7 +813,7 @@ class TestExperimentToolSchemas:
         names = {s["name"] for s in EXPERIMENT_TOOL_SCHEMAS}
         assert names == {
             "list_projects", "get_project_details", "compare_runs",
-            "scan_project", "get_experiment_notebook", "import_project",
+            "scan_project", "get_experiment_notebook",
         }
 
 

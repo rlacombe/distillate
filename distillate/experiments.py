@@ -1,10 +1,8 @@
 """ML experiment tracking for Distillate.
 
-Discovers ML projects in git repos, reconstructs experiment history from
-artifacts (training logs, configs, checkpoints, results), and generates
-rich markdown lab notebooks.
-
-Ported and adapted from rlacombe/ml-notebook.
+Discovers ML projects, reconstructs experiment history from artifacts
+(training logs, configs, checkpoints, results), and generates rich
+markdown lab notebooks.  Works with or without git.
 """
 
 import json
@@ -21,7 +19,7 @@ log = logging.getLogger(__name__)
 
 # Directories to skip when walking repos
 _SKIP_DIRS = {
-    "__pycache__", ".git", ".mlnotebook", "node_modules",
+    "__pycache__", ".git", ".distillate", "node_modules",
     "venv", "env", ".venv", ".tox", ".mypy_cache", ".pytest_cache",
     "dist", "build", "egg-info",
 }
@@ -56,8 +54,8 @@ _LOWER_BETTER_KEYWORDS = (
 def detect_ml_repos(root: Path, max_depth: int = 2) -> list[Path]:
     """Walk subdirectories of root and return paths that look like ML projects.
 
-    A directory qualifies if it has a .git folder and contains ML-like
-    artifacts (training scripts, configs, checkpoints, wandb, etc.)
+    A directory qualifies if it contains ML-like artifacts (training scripts,
+    configs, checkpoints, wandb, etc.).  Git is not required.
     """
     root = Path(root).resolve()
     if not root.is_dir():
@@ -71,11 +69,10 @@ def detect_ml_repos(root: Path, max_depth: int = 2) -> list[Path]:
         if path.name in _SKIP_DIRS or path.name.startswith("."):
             return
 
-        git_dir = path / ".git"
-        if git_dir.exists():
-            if _is_ml_repo(path):
-                repos.append(path)
-            return  # don't recurse into nested git repos
+        # Don't check root itself — only its subdirectories
+        if depth > 0 and _is_ml_repo(path):
+            repos.append(path)
+            return  # don't recurse into nested ML projects
 
         try:
             for child in sorted(path.iterdir()):
@@ -89,7 +86,7 @@ def detect_ml_repos(root: Path, max_depth: int = 2) -> list[Path]:
 
 
 def _is_ml_repo(path: Path) -> bool:
-    """Check if a git repo contains ML-like artifacts."""
+    """Check if a directory contains ML-like artifacts."""
     for root, dirs, files in os.walk(path):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
         for fname in files:
@@ -278,24 +275,27 @@ def _git_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def scan_project(path: Path) -> dict:
-    """Retroactively scan a git repo and reconstruct experiment runs.
+    """Scan a directory and reconstruct experiment runs from artifacts.
 
-    Returns a dict with project metadata and discovered runs.
+    Works with or without git.  Returns a dict with project metadata
+    and discovered runs.
     """
     path = Path(path).resolve()
-    if not (path / ".git").exists():
-        return {"error": f"Not a git repo: {path}"}
+    if not path.is_dir():
+        return {"error": f"Not a directory: {path}"}
 
     # Collect JSON files
     classified: list[dict] = []
-    for root, dirs, files in os.walk(path):
+    file_mtimes: dict[str, float] = {}
+    for root_dir, dirs, files in os.walk(path):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
         for fname in files:
             if not fname.endswith(".json"):
                 continue
-            full = os.path.join(root, fname)
+            full = os.path.join(root_dir, fname)
             rel = os.path.relpath(full, path)
             try:
+                mtime = os.path.getmtime(full)
                 with open(full, encoding="utf-8") as f:
                     data = json.load(f)
             except (json.JSONDecodeError, OSError):
@@ -306,6 +306,7 @@ def scan_project(path: Path) -> dict:
             if file_type == "other":
                 continue
             tag = _extract_model_tag(fname)
+            file_mtimes[rel] = mtime
             classified.append({
                 "path": rel,
                 "type": file_type,
@@ -460,66 +461,127 @@ def scan_project(path: Path) -> dict:
             "notes": [],
         }
 
-    # Attach git commits to runs
-    commits = _git_log(path)
-    for commit in commits:
-        changed = _git_changed_files(path, commit["hash"])
-        for run in runs.values():
-            if any(f in changed for f in run["files_created"]):
-                run["git_commits"].append(commit["hash"])
-                if not run["completed_at"]:
-                    run["completed_at"] = commit["date"]
-                if not run["started_at"]:
-                    run["started_at"] = commit["date"]
+    # Assign timestamps from file mtimes
+    for run in runs.values():
+        mtimes = [file_mtimes[f] for f in run["files_created"] if f in file_mtimes]
+        if mtimes:
+            earliest = datetime.fromtimestamp(min(mtimes), tz=timezone.utc)
+            latest = datetime.fromtimestamp(max(mtimes), tz=timezone.utc)
+            if not run["started_at"]:
+                run["started_at"] = earliest.isoformat()
+            if not run["completed_at"]:
+                run["completed_at"] = latest.isoformat()
 
-    # Derive project name from repo directory
+    # Opportunistic git enrichment
+    has_git = (path / ".git").exists()
+    commits: list[dict] = []
+    if has_git:
+        commits = _git_log(path)
+        for commit in commits:
+            changed = _git_changed_files(path, commit["hash"])
+            for run in runs.values():
+                if any(f in changed for f in run["files_created"]):
+                    run["git_commits"].append(commit["hash"])
+
+    # Derive project name from directory
     project_name = path.name.replace("-", " ").replace("_", " ").title()
+
+    # Save scan state for incremental updates
+    _save_scan_state(path, file_mtimes)
 
     return {
         "name": project_name,
         "path": str(path),
         "runs": runs,
-        "head_hash": _git_head_hash(path),
+        "has_git": has_git,
+        "head_hash": _git_head_hash(path) if has_git else "",
         "total_commits": len(commits),
         "artifact_files": len(classified),
     }
 
 
 # ---------------------------------------------------------------------------
-# Incremental update (medium tier)
+# Scan state (.distillate/scan_state.json)
 # ---------------------------------------------------------------------------
 
-def update_project_from_git(project: dict, state: Any) -> bool:
-    """Check for new commits since last scan and detect new runs.
+def _load_scan_state(path: Path) -> dict:
+    """Load the file manifest from .distillate/scan_state.json."""
+    state_file = path / ".distillate" / "scan_state.json"
+    if not state_file.exists():
+        return {}
+    try:
+        return json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
-    Returns True if the project was updated.
+
+def _save_scan_state(path: Path, file_mtimes: dict[str, float]) -> None:
+    """Save the file manifest to .distillate/scan_state.json."""
+    distillate_dir = path / ".distillate"
+    distillate_dir.mkdir(exist_ok=True)
+    state = {
+        "last_scanned_at": datetime.now(timezone.utc).isoformat(),
+        "file_manifest": {
+            rel: {"mtime": mtime, "size": _safe_size(path / rel)}
+            for rel, mtime in file_mtimes.items()
+        },
+    }
+    (distillate_dir / "scan_state.json").write_text(
+        json.dumps(state, indent=2), encoding="utf-8"
+    )
+
+
+def _safe_size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
+
+
+def _has_changed_files(path: Path) -> bool:
+    """Check if any artifact files changed since the last scan."""
+    prev = _load_scan_state(path)
+    manifest = prev.get("file_manifest", {})
+    if not manifest:
+        return True  # no previous scan → needs a full scan
+
+    for root_dir, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for fname in files:
+            if not fname.endswith(".json"):
+                continue
+            full = os.path.join(root_dir, fname)
+            rel = os.path.relpath(full, path)
+            try:
+                mtime = os.path.getmtime(full)
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            entry = manifest.get(rel)
+            if entry is None:
+                return True  # new file
+            if mtime != entry.get("mtime") or size != entry.get("size"):
+                return True  # changed file
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Incremental update
+# ---------------------------------------------------------------------------
+
+def update_project(project: dict, state: Any) -> bool:
+    """Check for changed artifact files and re-scan if needed.
+
+    Works with or without git.  Uses .distillate/scan_state.json to
+    detect changes.  Returns True if the project was updated.
     """
     path = Path(project["path"])
     if not path.is_dir():
         log.warning("Project path not found: %s", path)
         return False
 
-    last_hash = project.get("last_commit_hash", "")
-    if not last_hash:
-        return False  # needs a full scan first
-
-    new_commits = _git_log(path, since_hash=last_hash)
-    if not new_commits:
+    if not _has_changed_files(path):
         return False
-
-    # Check if any new commits touch ML artifact files
-    ml_files_changed = []
-    for commit in new_commits:
-        changed = _git_changed_files(path, commit["hash"])
-        for f in changed:
-            if f.endswith(".json") or f.endswith(".log") or f.endswith(".csv"):
-                ml_files_changed.append(f)
-
-    if not ml_files_changed:
-        # Update the hash even if no ML files changed
-        project["last_commit_hash"] = _git_head_hash(path)
-        project["last_scanned_at"] = datetime.now(timezone.utc).isoformat()
-        return True
 
     # Re-scan to pick up new experiments
     scan_result = scan_project(path)
@@ -534,7 +596,7 @@ def update_project_from_git(project: dict, state: Any) -> bool:
             project.setdefault("runs", {})[run_id] = run_data
             new_count += 1
 
-    project["last_commit_hash"] = scan_result["head_hash"]
+    project["last_commit_hash"] = scan_result.get("head_hash", "")
     project["last_scanned_at"] = datetime.now(timezone.utc).isoformat()
 
     if new_count:
@@ -604,79 +666,6 @@ def _diff_dicts(a: dict, b: dict) -> list[dict]:
                     entry["pct_change"] = (b[key] - a[key]) / abs(a[key]) * 100
             diffs.append(entry)
     return diffs
-
-
-# ---------------------------------------------------------------------------
-# Import from ml-notebook
-# ---------------------------------------------------------------------------
-
-def import_from_mlnotebook(path: Path) -> Optional[dict]:
-    """Import a project from an existing .mlnotebook/state.json file.
-
-    Returns a project dict compatible with distillate state, or None on failure.
-    Works for projects that don't have a git repo (ml-notebook tracked them
-    independently).
-    """
-    path = Path(path).resolve()
-    state_file = path / ".mlnotebook" / "state.json"
-    if not state_file.exists():
-        log.warning("No .mlnotebook/state.json found at %s", path)
-        return None
-
-    try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("Failed to read ml-notebook state: %s", exc)
-        return None
-
-    proj = data.get("project", {})
-    experiments = data.get("experiments", [])
-
-    # Convert experiments to distillate run format
-    runs: dict[str, dict] = {}
-    for exp in experiments:
-        run_id = exp.get("id", f"exp-{uuid.uuid4().hex[:6]}")
-        runs[run_id] = {
-            "id": run_id,
-            "name": exp.get("name", run_id),
-            "status": exp.get("status", "completed"),
-            "hypothesis": exp.get("hypothesis", ""),
-            "hyperparameters": exp.get("hyperparameters", {}),
-            "results": exp.get("results", {}),
-            "tags": exp.get("tags", []),
-            "git_commits": exp.get("git_commits", []),
-            "files_created": exp.get("files_created", []),
-            "started_at": exp.get("started_at", ""),
-            "completed_at": exp.get("completed_at", ""),
-            "duration_minutes": exp.get("duration_minutes", 0),
-            "notes": [],
-        }
-
-    # Convert goals
-    goals = []
-    for g in proj.get("goals", []):
-        goals.append({
-            "metric": g.get("metric", ""),
-            "direction": g.get("direction", "maximize"),
-            "threshold": g.get("threshold"),
-        })
-
-    project_id = slugify(proj.get("name", path.name))
-    return {
-        "id": project_id,
-        "name": proj.get("name", path.name),
-        "path": str(path),
-        "description": proj.get("description", ""),
-        "status": "tracking",
-        "tags": [],
-        "goals": goals,
-        "linked_papers": [],
-        "runs": runs,
-        "notebook_sections": ["main"],
-        "added_at": proj.get("created_at", datetime.now(timezone.utc).isoformat()),
-        "last_scanned_at": datetime.now(timezone.utc).isoformat(),
-        "last_commit_hash": "",
-    }
 
 
 # ---------------------------------------------------------------------------

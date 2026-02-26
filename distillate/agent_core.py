@@ -29,7 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project", "import_project",
+    "scan_project",
 })
 
 TOOL_LABELS = {
@@ -50,7 +50,6 @@ TOOL_LABELS = {
     "compare_runs": "\u2696\ufe0f Weighing the results",
     "scan_project": "\U0001F50D Scanning for experiments",
     "get_experiment_notebook": "\U0001F4D3 Opening the lab notebook",
-    "import_project": "\U0001F4E5 Importing from ml-notebook",
 }
 
 
@@ -210,9 +209,9 @@ def build_system_prompt(
         "highlights and notes, analyze reading patterns, and synthesize "
         "insights across papers."
         + (
-            " You can also track their ML experiments — scanning git repos "
-            "for training runs, comparing experiments, and generating lab "
-            "notebooks."
+            " You can also track their ML experiments — scanning project "
+            "directories for training runs, comparing experiments, and "
+            "generating lab notebooks."
             if config.EXPERIMENTS_ENABLED else ""
         )
         + "\n\n"
@@ -261,7 +260,7 @@ def build_system_prompt(
         + (
             "- When asked about experiments or projects, use the experiment "
             "tools (list_projects, get_project_details, compare_runs).\n"
-            "- Use scan_project to track a new git repo as an ML project.\n"
+            "- Use scan_project to track a new directory as an ML project.\n"
             "- Use compare_runs to show what changed between experiments.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )
@@ -318,7 +317,6 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "compare_runs": et.compare_runs,
             "scan_project": et.scan_project_tool,
             "get_experiment_notebook": et.get_experiment_notebook,
-            "import_project": et.import_project_tool,
         })
 
     fn = dispatch.get(name)
