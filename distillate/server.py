@@ -17,6 +17,7 @@ import logging
 import sys
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from distillate.agent_core import stream_turn
 from distillate.state import State
@@ -36,8 +37,6 @@ def _create_app():
 
     # Shared state
     _state = State()
-    _conversation: list[dict] = []
-    _all_sessions: list[dict] = []
 
     @app.get("/status")
     async def status():
@@ -74,6 +73,10 @@ def _create_app():
             await websocket.close()
             return
 
+        # Per-connection conversation state
+        conversation: list[dict] = []
+        all_sessions: list[dict] = _load_sessions()
+
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -81,6 +84,13 @@ def _create_app():
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
                     msg = {"text": raw}
+
+                # Handle new conversation request
+                if msg.get("type") == "new_conversation":
+                    if conversation:
+                        _save_session(all_sessions, conversation)
+                    conversation = []
+                    continue
 
                 user_input = msg.get("text", "").strip()
                 if not user_input:
@@ -92,8 +102,8 @@ def _create_app():
                 def _run_turn():
                     try:
                         for event in stream_turn(
-                            client, _state, _conversation, user_input,
-                            past_sessions=_all_sessions,
+                            client, _state, conversation, user_input,
+                            past_sessions=all_sessions,
                         ):
                             loop.call_soon_threadsafe(queue.put_nowait, event)
                     except Exception as exc:
@@ -118,10 +128,64 @@ def _create_app():
 
         except WebSocketDisconnect:
             log.info("WebSocket client disconnected")
+            if conversation:
+                _save_session(all_sessions, conversation)
         except Exception:
             log.exception("WebSocket error")
+            if conversation:
+                _save_session(all_sessions, conversation)
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Conversation persistence — reuses the CLI's conversations.json format
+# ---------------------------------------------------------------------------
+
+_MAX_SESSIONS = 50
+
+
+def _conversations_path():
+    """Return the path to the shared conversations log."""
+    from distillate import config
+    return config.CONFIG_DIR / "conversations.json"
+
+
+def _load_sessions() -> list[dict]:
+    """Load past sessions from the shared conversation log."""
+    try:
+        return json.loads(_conversations_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_session(all_sessions: list[dict], conversation: list[dict]) -> None:
+    """Append a session to the conversation log."""
+    # Build a summary from the first user message
+    first_user = ""
+    for msg in conversation:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                first_user = content[:120]
+            break
+
+    session = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "summary": first_user,
+        "turns": len(conversation),
+    }
+    all_sessions.append(session)
+
+    # Trim and save
+    trimmed = all_sessions[-_MAX_SESSIONS:]
+    try:
+        _conversations_path().write_text(
+            json.dumps(trimmed, ensure_ascii=False, indent=None),
+            encoding="utf-8",
+        )
+    except OSError:
+        log.warning("Could not save conversation log")
 
 
 def main():

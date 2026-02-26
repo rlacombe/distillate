@@ -16,6 +16,7 @@
     "electron-builder": "^25.0.0"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "marked": "^15.0.0"
   },
   "build": {
@@ -34,22 +35,30 @@
       {
         "from": "../.venv-desktop",
         "to": "python-env",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "resources/icon.icns",
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "win": {
       "icon": "resources/icon.ico",
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "protocols": [
       {
         "name": "Nicolas Auth",
-        "schemes": ["nicolas"]
+        "schemes": [
+          "nicolas"
+        ]
       }
     ]
   }

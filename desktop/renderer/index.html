@@ -4,13 +4,40 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; connect-src ws://127.0.0.1:*; style-src 'self' 'unsafe-inline';">
+        content="default-src 'self'; connect-src ws://127.0.0.1:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline';">
   <title>Nicolas</title>
+  <link rel="stylesheet" href="../node_modules/highlight.js/styles/tokyo-night-dark.min.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="titlebar">
     <span class="titlebar-text">Nicolas</span>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-group">
+          <label for="setting-api-key">Anthropic API Key</label>
+          <input type="password" id="setting-api-key" placeholder="sk-ant-..." autocomplete="off">
+          <p class="setting-hint">Required. Get one at <a href="#" id="console-link">console.anthropic.com</a></p>
+        </div>
+        <div class="setting-group">
+          <label for="setting-auth-token">Distillate Cloud Token</label>
+          <input type="password" id="setting-auth-token" placeholder="Optional" autocomplete="off">
+          <p class="setting-hint">For cloud sync. Leave blank to skip.</p>
+        </div>
+        <div class="setting-actions">
+          <button id="settings-save" class="btn-primary">Save</button>
+          <span id="settings-status" class="setting-status"></span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="chat-container">

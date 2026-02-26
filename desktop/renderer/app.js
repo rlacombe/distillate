@@ -21,6 +21,22 @@ if (typeof marked !== "undefined") {
     breaks: true,
     gfm: true,
   });
+
+  // Custom renderer for syntax highlighting (hljs exposed via preload)
+  const renderer = new marked.Renderer();
+  renderer.code = function ({ text, lang }) {
+    if (window.hljs && lang && window.hljs.getLanguage(lang)) {
+      const highlighted = window.hljs.highlight(text, { language: lang }).value;
+      return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    }
+    if (window.hljs) {
+      const auto = window.hljs.highlightAuto(text).value;
+      return `<pre><code class="hljs">${auto}</code></pre>`;
+    }
+    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<pre><code>${escaped}</code></pre>`;
+  };
+  marked.use({ renderer });
 }
 
 /* ───── Connection ───── */
@@ -213,6 +229,28 @@ function scrollToBottom(force = false) {
   }
 }
 
+/* ───── New conversation ───── */
+
+function clearConversation() {
+  // Reset UI
+  messagesEl.innerHTML = "";
+  welcomeEl.classList.remove("hidden");
+  currentAssistantEl = null;
+  currentText = "";
+  isStreaming = false;
+  turnHadMutation = false;
+  inputEl.disabled = false;
+  sendBtn.disabled = false;
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  inputEl.focus();
+
+  // Tell server to start fresh
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "new_conversation" }));
+  }
+}
+
 /* ───── Cloud sync ───── */
 
 function triggerCloudSync() {
@@ -267,6 +305,74 @@ document.querySelectorAll(".suggestion").forEach((btn) => {
   });
 });
 
+/* ───── Settings modal ───── */
+
+const settingsOverlay = document.getElementById("settings-overlay");
+const settingsClose = document.getElementById("settings-close");
+const settingsSave = document.getElementById("settings-save");
+const settingsStatus = document.getElementById("settings-status");
+const settingApiKey = document.getElementById("setting-api-key");
+const settingAuthToken = document.getElementById("setting-auth-token");
+const consoleLink = document.getElementById("console-link");
+
+function openSettings() {
+  settingsStatus.textContent = "";
+  // Load current values
+  if (window.nicolas && window.nicolas.getSettings) {
+    window.nicolas.getSettings().then((s) => {
+      settingApiKey.value = s.apiKey || "";
+      settingAuthToken.value = s.authToken || "";
+    });
+  }
+  settingsOverlay.classList.remove("hidden");
+  settingApiKey.focus();
+}
+
+function closeSettings() {
+  settingsOverlay.classList.add("hidden");
+  inputEl.focus();
+}
+
+if (settingsClose) {
+  settingsClose.addEventListener("click", closeSettings);
+}
+
+if (settingsOverlay) {
+  settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) closeSettings();
+  });
+}
+
+if (settingsSave) {
+  settingsSave.addEventListener("click", () => {
+    if (window.nicolas && window.nicolas.saveSettings) {
+      window.nicolas.saveSettings({
+        apiKey: settingApiKey.value.trim(),
+        authToken: settingAuthToken.value.trim(),
+      }).then(() => {
+        settingsStatus.textContent = "Saved! Restart to apply.";
+        settingsStatus.className = "setting-status success";
+      });
+    }
+  });
+}
+
+if (consoleLink) {
+  consoleLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (window.nicolas && window.nicolas.openExternal) {
+      window.nicolas.openExternal("https://console.anthropic.com/settings/keys");
+    }
+  });
+}
+
+// Esc to close settings
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
+    closeSettings();
+  }
+});
+
 /* ───── Electron bridge ───── */
 
 if (window.nicolas) {
@@ -283,6 +389,14 @@ if (window.nicolas) {
   window.nicolas.onDeepLink((url) => {
     console.log("Deep link received:", url);
     // TODO: handle nicolas://auth?token=XXX
+  });
+
+  window.nicolas.onNewConversation(() => {
+    clearConversation();
+  });
+
+  window.nicolas.onOpenSettings(() => {
+    openSettings();
   });
 } else {
   // Running in a regular browser (development)
