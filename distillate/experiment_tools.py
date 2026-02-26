@@ -143,6 +143,26 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project"],
         },
     },
+    {
+        "name": "import_project",
+        "description": (
+            "Import an ML project from a directory that has an existing "
+            ".mlnotebook/state.json file. Use when the user mentions "
+            "ml-notebook, importing a project, or when scan_project "
+            "fails because the directory isn't a git repo. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the project directory",
+                },
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 
@@ -328,6 +348,73 @@ def get_experiment_notebook(*, state, project: str, section: str = "main") -> di
         "project": proj.get("name", ""),
         "section": section,
         "notebook": notebook_md,
+    }
+
+
+def import_project_tool(*, state, path: str) -> dict:
+    """Import a project from .mlnotebook/state.json."""
+    from pathlib import Path as _Path
+
+    from distillate.experiments import generate_notebook, import_from_mlnotebook
+    from distillate.obsidian import write_experiment_notebook
+
+    project_path = _Path(path).expanduser().resolve()
+    if not project_path.is_dir():
+        return {"success": False, "error": f"Directory not found: {path}"}
+
+    result = import_from_mlnotebook(project_path)
+    if result is None:
+        return {
+            "success": False,
+            "error": f"No .mlnotebook/state.json found at {path}",
+        }
+
+    project_id = result["id"]
+    runs = result.get("runs", {})
+
+    if state.has_project(project_id):
+        # Merge new runs into existing project
+        existing = state.get_project(project_id)
+        existing_ids = set(existing.get("runs", {}).keys())
+        new_runs = 0
+        for run_id, run_data in runs.items():
+            if run_id not in existing_ids:
+                state.add_run(project_id, run_id, run_data)
+                new_runs += 1
+        if result.get("goals"):
+            state.update_project(project_id, goals=result["goals"])
+        state.save()
+        message = f"Updated '{result['name']}': imported {new_runs} new run(s)."
+    else:
+        state.add_project(
+            project_id=project_id,
+            name=result["name"],
+            path=str(project_path),
+            description=result.get("description", ""),
+        )
+        for run_id, run_data in runs.items():
+            state.add_run(project_id, run_id, run_data)
+        if result.get("goals"):
+            state.update_project(project_id, goals=result["goals"])
+        state.save()
+        message = (
+            f"Imported '{result['name']}' with "
+            f"{len(runs)} experiment run(s) from ml-notebook."
+        )
+
+    # Generate and write notebook
+    proj = state.get_project(project_id)
+    if proj:
+        notebook_md = generate_notebook(proj)
+        write_experiment_notebook(proj, notebook_md)
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "name": result["name"],
+        "runs_imported": len(runs),
+        "goals": len(result.get("goals", [])),
+        "message": message,
     }
 
 

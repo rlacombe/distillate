@@ -547,6 +547,185 @@ class TestRetroactiveScan:
 
 
 # ---------------------------------------------------------------------------
+# ml-notebook import tests
+# ---------------------------------------------------------------------------
+
+
+class TestImportFromMLNotebook:
+    def _make_mlnotebook(self, tmp_path, data):
+        """Write .mlnotebook/state.json in tmp_path."""
+        mlnb_dir = tmp_path / ".mlnotebook"
+        mlnb_dir.mkdir()
+        (mlnb_dir / "state.json").write_text(json.dumps(data))
+
+    def test_import_basic(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        self._make_mlnotebook(tmp_path, {
+            "project": {
+                "name": "Tiny Gene Code",
+                "description": "DNA codon prediction",
+                "created_at": "2026-01-15T10:00:00Z",
+                "goals": [
+                    {"metric": "exact_match", "direction": "maximize", "threshold": 0.99},
+                ],
+            },
+            "experiments": [
+                {
+                    "id": "exp-001",
+                    "name": "baseline-transformer",
+                    "status": "completed",
+                    "hypothesis": "Small transformer can learn codon table",
+                    "hyperparameters": {"d_model": 64, "n_heads": 4},
+                    "results": {"val_exact_match": 1.0, "final_loss": 0.001},
+                    "tags": ["transformer"],
+                    "started_at": "2026-01-15T10:00:00Z",
+                    "completed_at": "2026-01-15T10:30:00Z",
+                    "duration_minutes": 30,
+                },
+                {
+                    "id": "exp-002",
+                    "name": "mlp-baseline",
+                    "status": "completed",
+                    "hyperparameters": {"hidden_dim": 128},
+                    "results": {"val_exact_match": 0.85},
+                },
+            ],
+        })
+
+        result = import_from_mlnotebook(tmp_path)
+        assert result is not None
+        assert result["id"] == "tiny-gene-code"
+        assert result["name"] == "Tiny Gene Code"
+        assert result["description"] == "DNA codon prediction"
+        assert result["status"] == "tracking"
+        assert len(result["runs"]) == 2
+        assert result["runs"]["exp-001"]["name"] == "baseline-transformer"
+        assert result["runs"]["exp-001"]["results"]["val_exact_match"] == 1.0
+        assert result["runs"]["exp-002"]["hyperparameters"]["hidden_dim"] == 128
+        assert len(result["goals"]) == 1
+        assert result["goals"][0]["metric"] == "exact_match"
+        assert result["added_at"] == "2026-01-15T10:00:00Z"
+
+    def test_import_missing_state_file(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        result = import_from_mlnotebook(tmp_path)
+        assert result is None
+
+    def test_import_malformed_json(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        mlnb_dir = tmp_path / ".mlnotebook"
+        mlnb_dir.mkdir()
+        (mlnb_dir / "state.json").write_text("not valid json {{{")
+
+        result = import_from_mlnotebook(tmp_path)
+        assert result is None
+
+    def test_import_empty_experiments(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        self._make_mlnotebook(tmp_path, {
+            "project": {"name": "Empty Project"},
+            "experiments": [],
+        })
+
+        result = import_from_mlnotebook(tmp_path)
+        assert result is not None
+        assert result["name"] == "Empty Project"
+        assert len(result["runs"]) == 0
+
+    def test_import_no_project_key(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        self._make_mlnotebook(tmp_path, {
+            "experiments": [{"id": "exp-1", "name": "solo"}],
+        })
+
+        result = import_from_mlnotebook(tmp_path)
+        assert result is not None
+        # Falls back to directory name
+        assert result["name"] == tmp_path.name
+        assert len(result["runs"]) == 1
+
+    def test_import_preserves_git_commits(self, tmp_path):
+        from distillate.experiments import import_from_mlnotebook
+
+        self._make_mlnotebook(tmp_path, {
+            "project": {"name": "With Commits"},
+            "experiments": [{
+                "id": "exp-1",
+                "name": "run-1",
+                "git_commits": ["abc123", "def456"],
+                "files_created": ["model.pt", "results.json"],
+            }],
+        })
+
+        result = import_from_mlnotebook(tmp_path)
+        run = result["runs"]["exp-1"]
+        assert run["git_commits"] == ["abc123", "def456"]
+        assert run["files_created"] == ["model.pt", "results.json"]
+
+
+class TestImportProjectTool:
+    def test_import_tool_success(self, tmp_path, monkeypatch):
+        from distillate.experiment_tools import import_project_tool
+        from distillate.state import State
+
+        # Create ml-notebook state
+        mlnb_dir = tmp_path / "my-project" / ".mlnotebook"
+        mlnb_dir.mkdir(parents=True)
+        (mlnb_dir / "state.json").write_text(json.dumps({
+            "project": {"name": "My Project"},
+            "experiments": [
+                {"id": "exp-1", "name": "run-1", "results": {"acc": 0.9}},
+            ],
+        }))
+
+        # Set up state
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        state = State()
+
+        result = import_project_tool(state=state, path=str(tmp_path / "my-project"))
+        assert result["success"] is True
+        assert result["name"] == "My Project"
+        assert result["runs_imported"] == 1
+        assert state.has_project("my-project")
+
+    def test_import_tool_missing_dir(self, tmp_path, monkeypatch):
+        from distillate.experiment_tools import import_project_tool
+        from distillate.state import State
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
+        state = State()
+
+        result = import_project_tool(state=state, path=str(tmp_path / "nonexistent"))
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    def test_import_tool_no_mlnotebook(self, tmp_path, monkeypatch):
+        from distillate.experiment_tools import import_project_tool
+        from distillate.state import State
+
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setenv("DISTILLATE_CONFIG_DIR", str(state_dir))
+        state = State()
+
+        result = import_project_tool(state=state, path=str(empty_dir))
+        assert result["success"] is False
+        assert "mlnotebook" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
 # Slugify tests
 # ---------------------------------------------------------------------------
 
@@ -646,7 +825,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 5
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 6
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -658,7 +837,7 @@ class TestExperimentToolSchemas:
         names = {s["name"] for s in EXPERIMENT_TOOL_SCHEMAS}
         assert names == {
             "list_projects", "get_project_details", "compare_runs",
-            "scan_project", "get_experiment_notebook",
+            "scan_project", "get_experiment_notebook", "import_project",
         }
 
 

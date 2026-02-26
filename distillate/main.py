@@ -842,6 +842,59 @@ def _scan_projects() -> None:
         print("  No changes detected.")
 
 
+def _import_project(path_arg: str) -> None:
+    """Import a project from .mlnotebook/state.json."""
+    from pathlib import Path
+
+    from distillate import config
+    from distillate.state import State
+
+    config.setup_logging()
+
+    if not config.EXPERIMENTS_ENABLED:
+        print("Experiments not enabled. Set EXPERIMENTS_ENABLED=true in your .env")
+        return
+
+    project_path = Path(path_arg).expanduser().resolve()
+    if not project_path.is_dir():
+        print(f"Directory not found: {project_path}")
+        return
+
+    from distillate.experiments import generate_notebook, import_from_mlnotebook
+    from distillate.obsidian import write_experiment_notebook
+
+    result = import_from_mlnotebook(project_path)
+    if result is None:
+        print(f"No .mlnotebook/state.json found at {project_path}")
+        return
+
+    state = State()
+    project_id = result["id"]
+    runs = result.get("runs", {})
+
+    state.add_project(
+        project_id=project_id,
+        name=result["name"],
+        path=str(project_path),
+        description=result.get("description", ""),
+    )
+    for run_id, run_data in runs.items():
+        state.add_run(project_id, run_id, run_data)
+    if result.get("goals"):
+        state.update_project(project_id, goals=result["goals"])
+    state.save()
+
+    print(f"  Imported '{result['name']}' with {len(runs)} experiment run(s).")
+
+    # Generate notebook
+    proj = state.get_project(project_id)
+    if proj:
+        notebook_md = generate_notebook(proj)
+        wrote = write_experiment_notebook(proj, notebook_md)
+        if wrote:
+            print(f"  Lab notebook written to {wrote}")
+
+
 def _status() -> None:
     """Print a quick status overview to the terminal."""
     from datetime import datetime, timedelta, timezone
@@ -2259,6 +2312,55 @@ def _init_step6_experiments(save_to_env) -> None:
                     print(f"\n  Tracking {len(repos)} project(s).")
             else:
                 print("  No ML projects found in that folder.")
+
+            # Also discover .mlnotebook projects (non-git)
+            from distillate.experiments import (
+                generate_notebook as _gen_nb,
+                import_from_mlnotebook,
+            )
+            from distillate.obsidian import (
+                write_experiment_notebook as _write_nb,
+            )
+            repo_set = set(repos) if repos else set()
+            mlnb_dirs = [
+                d.parent for d in root_path.rglob(".mlnotebook/state.json")
+                if d.parent not in repo_set
+            ]
+            if mlnb_dirs:
+                print(f"\n  Found {len(mlnb_dirs)} ml-notebook project(s):")
+                for d in mlnb_dirs[:10]:
+                    print(f"    - {d.name} ({d})")
+                print()
+                import_now = input("  Import them? [Y/n] ").strip().lower()
+                if import_now not in ("n", "no"):
+                    try:
+                        state  # noqa: F821 — may already exist from git scan above
+                    except NameError:
+                        from distillate.state import State
+                        state = State()
+                    for mlnb_path in mlnb_dirs:
+                        print(f"    Importing {mlnb_path.name}...")
+                        result = import_from_mlnotebook(mlnb_path)
+                        if result:
+                            pid = result["id"]
+                            runs = result.get("runs", {})
+                            state.add_project(
+                                project_id=pid,
+                                name=result["name"],
+                                path=str(mlnb_path),
+                                description=result.get("description", ""),
+                            )
+                            for run_id, run_data in runs.items():
+                                state.add_run(pid, run_id, run_data)
+                            if result.get("goals"):
+                                state.update_project(pid, goals=result["goals"])
+                            print(f"      {len(runs)} experiment(s) imported")
+                            proj = state.get_project(pid)
+                            if proj:
+                                nb = _gen_nb(proj)
+                                _write_nb(proj, nb)
+                    state.save()
+                    print(f"\n  Imported {len(mlnb_dirs)} ml-notebook project(s).")
         else:
             print(f"  Directory not found: {root_path}")
     else:
@@ -2893,6 +2995,7 @@ Advanced:
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
   --scan-projects         Scan tracked ML projects for new experiments
+  --import-project PATH   Import a project from .mlnotebook/state.json
 
 Options:
   -h, --help              Show this help
@@ -2905,7 +3008,7 @@ _KNOWN_FLAGS = {
     "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
-    "--scan-projects",
+    "--scan-projects", "--import-project",
 }
 
 
@@ -3000,6 +3103,14 @@ def main():
 
     if "--scan-projects" in sys.argv:
         _scan_projects()
+        return
+
+    if "--import-project" in sys.argv:
+        idx = sys.argv.index("--import-project")
+        if idx + 1 >= len(sys.argv):
+            print("Usage: distillate --import-project PATH")
+            sys.exit(1)
+        _import_project(sys.argv[idx + 1])
         return
 
     # Catch unknown flags before falling through

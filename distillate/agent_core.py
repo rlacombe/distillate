@@ -29,7 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project",
+    "scan_project", "import_project",
 })
 
 TOOL_LABELS = {
@@ -50,6 +50,7 @@ TOOL_LABELS = {
     "compare_runs": "\u2696\ufe0f Weighing the results",
     "scan_project": "\U0001F50D Scanning for experiments",
     "get_experiment_notebook": "\U0001F4D3 Opening the lab notebook",
+    "import_project": "\U0001F4E5 Importing from ml-notebook",
 }
 
 
@@ -317,6 +318,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "compare_runs": et.compare_runs,
             "scan_project": et.scan_project_tool,
             "get_experiment_notebook": et.get_experiment_notebook,
+            "import_project": et.import_project_tool,
         })
 
     fn = dispatch.get(name)
