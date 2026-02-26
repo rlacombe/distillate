@@ -113,7 +113,7 @@ function addUserMessage(text) {
   el.className = "message user";
   el.textContent = text;
   messagesEl.appendChild(el);
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 function startAssistantMessage() {
@@ -200,9 +200,17 @@ function addErrorMessage(text) {
   scrollToBottom();
 }
 
-function scrollToBottom() {
+function isNearBottom() {
   const container = document.getElementById("chat-container");
-  container.scrollTop = container.scrollHeight;
+  const threshold = 80; // px from bottom
+  return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+}
+
+function scrollToBottom(force = false) {
+  const container = document.getElementById("chat-container");
+  if (force || isNearBottom()) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 /* ───── Cloud sync ───── */
