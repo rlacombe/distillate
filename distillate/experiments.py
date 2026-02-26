@@ -483,6 +483,12 @@ def scan_project(path: Path) -> dict:
                 if any(f in changed for f in run["files_created"]):
                     run["git_commits"].append(commit["hash"])
 
+    # Extract runs from Claude Code conversation logs
+    claude_runs = extract_runs_from_claude_logs(path)
+    for run in claude_runs:
+        if not _is_duplicate_run(runs, run):
+            runs[run["id"]] = run
+
     # Derive project name from directory
     project_name = path.name.replace("-", " ").replace("_", " ").title()
 
@@ -498,6 +504,262 @@ def scan_project(path: Path) -> dict:
         "total_commits": len(commits),
         "artifact_files": len(classified),
     }
+
+
+# ---------------------------------------------------------------------------
+# Claude Code log extraction
+# ---------------------------------------------------------------------------
+
+# Training script indicators in bash commands
+_TRAIN_SCRIPT_PATTERNS = re.compile(
+    r"python[3]?\s+\S*(?:train|run_exp|experiment|finetune|sweep)\S*\.py",
+    re.IGNORECASE,
+)
+
+# Key=value pairs on the command line (e.g. d_model=8 lr=0.003)
+_CMD_KV_RE = re.compile(
+    r"(?<![/\w])(\w+)\s*=\s*([\d.eE+-]+|[Tt]rue|[Ff]alse)"
+)
+
+# Known hyperparameter names (for filtering noise from key=value extraction)
+_KNOWN_HYPERPARAMS = {
+    "d_model", "n_heads", "d_ff", "n_layers", "epochs", "lr",
+    "learning_rate", "batch_size", "dropout", "warmup_steps",
+    "weight_decay", "eval_every", "hidden_dim", "num_layers",
+    "num_heads", "embed_dim", "max_len", "val_split", "seed",
+    "gradient_clip", "accumulation_steps", "num_epochs", "steps",
+}
+
+# Metric patterns in training stdout
+_METRIC_RE = re.compile(
+    r"(?:^|[|\s,])\s*"
+    r"(accuracy|loss|exact_match|val_loss|val_accuracy|test_accuracy|"
+    r"train_loss|train_accuracy|val_exact_match|f1|precision|recall|"
+    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss)"
+    r"\s*[=:]\s*([\d.]+)%?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Config JSON block in stdout (e.g. "Config: { ... }")
+_CONFIG_BLOCK_RE = re.compile(
+    r"Config:\s*(\{[^}]+\})", re.DOTALL,
+)
+
+
+def _find_claude_log_dir(project_path: Path) -> Optional[Path]:
+    """Find the Claude Code log directory for a project path."""
+    claude_dir = Path.home() / ".claude" / "projects"
+    if not claude_dir.is_dir():
+        return None
+    encoded = str(project_path).replace("/", "-")
+    log_dir = claude_dir / encoded
+    if log_dir.is_dir():
+        return log_dir
+    return None
+
+
+def _parse_training_command(command: str) -> Optional[dict]:
+    """Parse a bash command and extract hyperparameters if it's a training run.
+
+    Returns {"script": "train.py", "hyperparameters": {...}} or None.
+    """
+    if not _TRAIN_SCRIPT_PATTERNS.search(command):
+        return None
+
+    # Extract the script name
+    m = re.search(r"(\S+\.py)", command)
+    script = m.group(1) if m else "unknown"
+
+    # Extract key=value pairs
+    hyperparams: dict[str, Any] = {}
+    for key, val in _CMD_KV_RE.findall(command):
+        key_lower = key.lower()
+        # Only keep known hyperparameter names or numeric-valued keys
+        if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
+            hyperparams[key] = _coerce_value(val)
+        elif re.match(r"^[\d.eE+-]+$", val):
+            # Keep any numeric key=value — likely a hyperparameter
+            hyperparams[key] = _coerce_value(val)
+
+    return {"script": script, "hyperparameters": hyperparams}
+
+
+def _coerce_value(val: str) -> Any:
+    """Coerce a string value to int, float, or bool."""
+    if val.lower() == "true":
+        return True
+    if val.lower() == "false":
+        return False
+    try:
+        f = float(val)
+        return int(f) if f == int(f) and "." not in val and "e" not in val.lower() else f
+    except ValueError:
+        return val
+
+
+def _extract_metrics_from_output(text: str) -> dict:
+    """Extract metric values from training stdout text."""
+    metrics: dict[str, float] = {}
+    # Find all metric=value patterns; keep the LAST occurrence (final value)
+    for match in _METRIC_RE.finditer(text):
+        name = match.group(1).lower()
+        try:
+            metrics[name] = float(match.group(2))
+        except ValueError:
+            pass
+    return metrics
+
+
+def _parse_config_block(text: str) -> dict:
+    """Extract hyperparameters from a 'Config: {...}' JSON block in stdout."""
+    m = _CONFIG_BLOCK_RE.search(text)
+    if not m:
+        return {}
+    try:
+        config = json.loads(m.group(1))
+        if isinstance(config, dict):
+            return {k: v for k, v in config.items()
+                    if isinstance(v, (int, float, str, bool))}
+    except json.JSONDecodeError:
+        pass
+    return {}
+
+
+def _is_duplicate_run(existing_runs: dict, candidate: dict) -> bool:
+    """Check if a candidate run duplicates any existing run by hyperparameters."""
+    cand_hp = candidate.get("hyperparameters", {})
+    if not cand_hp:
+        return False
+    cand_key = _hyperparam_fingerprint(cand_hp)
+    for run in existing_runs.values():
+        existing_hp = run.get("hyperparameters", {})
+        if existing_hp and _hyperparam_fingerprint(existing_hp) == cand_key:
+            return True
+    return False
+
+
+def _hyperparam_fingerprint(hp: dict) -> str:
+    """Create a comparable fingerprint from hyperparameters."""
+    # Normalize: sort keys, round floats
+    items = []
+    for k in sorted(hp.keys()):
+        v = hp[k]
+        if isinstance(v, float):
+            v = round(v, 8)
+        items.append(f"{k}={v}")
+    return "|".join(items)
+
+
+def extract_runs_from_claude_logs(project_path: Path) -> list[dict]:
+    """Extract experiment runs from Claude Code conversation logs.
+
+    Parses ~/.claude/projects/<encoded-path>/*.jsonl files for bash
+    training commands and their stdout output.  Returns a list of
+    run dicts compatible with scan_project().
+    """
+    log_dir = _find_claude_log_dir(project_path)
+    if not log_dir:
+        return []
+
+    runs: list[dict] = []
+    for jsonl_file in sorted(log_dir.glob("*.jsonl")):
+        try:
+            session_runs = _parse_claude_session(jsonl_file)
+            runs.extend(session_runs)
+        except Exception:
+            log.debug("Failed to parse Claude session %s", jsonl_file, exc_info=True)
+            continue
+
+    return runs
+
+
+def _parse_claude_session(jsonl_path: Path) -> list[dict]:
+    """Parse a single Claude Code JSONL session file for training runs."""
+    messages: list[dict] = []
+    try:
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+
+    # Walk messages looking for (Bash tool_use, tool_result) pairs
+    runs: list[dict] = []
+    pending_commands: dict[str, dict] = {}  # tool_use_id -> {command, timestamp, parsed}
+
+    for msg in messages:
+        msg_type = msg.get("type")
+        timestamp = msg.get("timestamp", "")
+        content = msg.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+
+        if msg_type == "assistant":
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    command = block.get("input", {}).get("command", "")
+                    parsed = _parse_training_command(command)
+                    if parsed:
+                        tool_id = block.get("id", "")
+                        pending_commands[tool_id] = {
+                            "command": command,
+                            "timestamp": timestamp,
+                            "parsed": parsed,
+                        }
+
+        elif msg_type == "user":
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    tool_id = block.get("tool_use_id", "")
+                    if tool_id in pending_commands:
+                        pending = pending_commands.pop(tool_id)
+                        output = block.get("content", "")
+                        if not isinstance(output, str):
+                            continue
+
+                        # Extract metrics and config from output
+                        metrics = _extract_metrics_from_output(output)
+                        config_hp = _parse_config_block(output)
+
+                        # Merge hyperparameters: command-line overrides config block
+                        hp = {**config_hp, **pending["parsed"]["hyperparameters"]}
+
+                        # Build name from model tag or script
+                        name = _tag_from_config(hp)
+                        if not name:
+                            name = Path(pending["parsed"]["script"]).stem
+
+                        run_id = f"claude-{uuid.uuid4().hex[:6]}"
+                        runs.append({
+                            "id": run_id,
+                            "name": name,
+                            "status": "completed",
+                            "hypothesis": "",
+                            "hyperparameters": hp,
+                            "results": metrics,
+                            "tags": [name] if name else [],
+                            "git_commits": [],
+                            "files_created": [],
+                            "started_at": pending["timestamp"],
+                            "completed_at": timestamp,
+                            "duration_minutes": 0,
+                            "notes": [],
+                            "source": "claude_logs",
+                            "session_file": jsonl_path.name,
+                            "command": pending["command"],
+                        })
+
+    return runs
 
 
 # ---------------------------------------------------------------------------
