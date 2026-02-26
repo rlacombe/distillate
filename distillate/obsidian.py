@@ -1102,3 +1102,59 @@ def _extract_year(date_str: str) -> str:
 def _escape_yaml(s: str) -> str:
     """Escape a string for use in YAML double-quoted context."""
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+# ---------------------------------------------------------------------------
+# Experiment notebook writing
+# ---------------------------------------------------------------------------
+
+def _projects_dir() -> Optional[Path]:
+    """Return the Projects subdirectory in the papers folder, or None."""
+    d = _papers_dir()
+    if d is None:
+        return None
+    pd = d / "Projects"
+    pd.mkdir(parents=True, exist_ok=True)
+    return pd
+
+
+def write_experiment_notebook(
+    project: dict,
+    content: str,
+    section: str = "main",
+) -> Optional[Path]:
+    """Write (or re-generate) a markdown lab notebook for a project.
+
+    Uses the same marker pattern as paper notes for safe re-generation.
+    Returns the path to the written file, or None if output is unconfigured.
+    """
+    pd = _projects_dir()
+    if pd is None:
+        return None
+
+    project_id = project.get("id", "untitled")
+    if section == "main":
+        filename = f"{project_id}.md"
+    else:
+        filename = f"{project_id}-{section}.md"
+
+    note_path = pd / filename
+
+    if note_path.exists():
+        existing = note_path.read_text(encoding="utf-8")
+        if MARKER_START in existing and MARKER_END in existing:
+            # Replace between markers, preserve user content outside
+            before = existing[: existing.index(MARKER_START)]
+            after = existing[existing.index(MARKER_END) + len(MARKER_END) :]
+            note_path.write_text(
+                before + MARKER_START + "\n" + content + "\n" + MARKER_END + after,
+                encoding="utf-8",
+            )
+            return note_path
+
+    # Fresh write
+    note_path.write_text(
+        MARKER_START + "\n" + content + "\n" + MARKER_END + "\n",
+        encoding="utf-8",
+    )
+    return note_path

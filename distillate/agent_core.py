@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from distillate import config
 from distillate.state import State
-from distillate.tools import TOOL_SCHEMAS
+from distillate.tools import TOOL_SCHEMAS as _PAPER_TOOL_SCHEMAS
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
+    "scan_project",
 })
 
 TOOL_LABELS = {
@@ -44,7 +45,24 @@ TOOL_LABELS = {
     "promote_papers": "\u2B50 Promoting to the shelf",
     "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
     "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
+    "list_projects": "\U0001F9EA Surveying the laboratory",
+    "get_project_details": "\U0001F52C Examining the experiment",
+    "compare_runs": "\u2696\ufe0f Weighing the results",
+    "scan_project": "\U0001F50D Scanning for experiments",
+    "get_experiment_notebook": "\U0001F4D3 Opening the lab notebook",
 }
+
+
+def _build_tool_schemas() -> list[dict]:
+    """Combine paper + experiment tool schemas."""
+    schemas = list(_PAPER_TOOL_SCHEMAS)
+    if config.EXPERIMENTS_ENABLED:
+        from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
+        schemas.extend(EXPERIMENT_TOOL_SCHEMAS)
+    return schemas
+
+
+TOOL_SCHEMAS = _build_tool_schemas()
 
 
 def tool_label(name: str) -> str:
@@ -124,6 +142,24 @@ def format_past_sessions(sessions: list[dict]) -> str:
     return "## Recent Conversations\n" + "\n".join(lines) + "\n\n"
 
 
+def _experiments_section(state: State) -> str:
+    """Build the experiments section of the system prompt."""
+    if not config.EXPERIMENTS_ENABLED:
+        return ""
+    projects = state.projects
+    if not projects:
+        return ""
+    lines = ["## Experiments"]
+    for proj in projects.values():
+        runs = proj.get("runs", {})
+        completed = sum(1 for r in runs.values() if r.get("status") == "completed")
+        lines.append(
+            f"- {proj.get('name', '?')}: {len(runs)} runs "
+            f"({completed} completed)"
+        )
+    return "\n".join(lines) + "\n\n"
+
+
 def build_system_prompt(
     state: State, past_sessions: list[dict] | None = None,
 ) -> str:
@@ -171,7 +207,14 @@ def build_system_prompt(
         )
         + " You have tools to search their library, read their "
         "highlights and notes, analyze reading patterns, and synthesize "
-        "insights across papers.\n\n"
+        "insights across papers."
+        + (
+            " You can also track their ML experiments — scanning git repos "
+            "for training runs, comparing experiments, and generating lab "
+            "notebooks."
+            if config.EXPERIMENTS_ENABLED else ""
+        )
+        + "\n\n"
         "## Library\n"
         f"- {len(processed)} papers read, {len(queue)} in queue"
         f", {len(awaiting)} awaiting PDF\n"
@@ -180,6 +223,7 @@ def build_system_prompt(
         f"{recent_section}\n\n"
         "## Research Interests\n"
         f"{tags_section}\n\n"
+        f"{_experiments_section(state)}"
         f"{format_past_sessions(past_sessions or [])}"
         "## Personality\n"
         "You're warm, witty, and genuinely curious about the user's research. "
@@ -213,6 +257,13 @@ def build_system_prompt(
         "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
         "will ask if they want more.\n"
         "- When asked to compare or synthesize, use synthesize_across_papers.\n"
+        + (
+            "- When asked about experiments or projects, use the experiment "
+            "tools (list_projects, get_project_details, compare_runs).\n"
+            "- Use scan_project to track a new git repo as an ML project.\n"
+            "- Use compare_runs to show what changed between experiments.\n"
+            if config.EXPERIMENTS_ENABLED else ""
+        )
     )
 
 
@@ -256,6 +307,17 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
         "get_trending_papers": tools.get_trending_papers,
         "add_paper_to_zotero": tools.add_paper_to_zotero,
     }
+
+    # Add experiment tools if enabled
+    if config.EXPERIMENTS_ENABLED:
+        from distillate import experiment_tools as et
+        dispatch.update({
+            "list_projects": et.list_projects,
+            "get_project_details": et.get_project_details,
+            "compare_runs": et.compare_runs,
+            "scan_project": et.scan_project_tool,
+            "get_experiment_notebook": et.get_experiment_notebook,
+        })
 
     fn = dispatch.get(name)
     if not fn:
@@ -326,7 +388,7 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
     state.reload()
 
     system_prompt = build_system_prompt(state, past_sessions=past_sessions)
-    tools = TOOL_SCHEMAS
+    tools = _build_tool_schemas()
 
     for _step in range(MAX_TOOL_STEPS):
         # --- API call (streaming) ---
