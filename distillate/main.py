@@ -801,6 +801,47 @@ def _sync_state() -> None:
     log.info("Synced state.json to gist %s", gist_id)
 
 
+def _scan_projects() -> None:
+    """Scan all tracked ML projects for new experiments."""
+    from pathlib import Path
+
+    from distillate import config
+    from distillate.state import State
+
+    config.setup_logging()
+    state = State()
+
+    if not config.EXPERIMENTS_ENABLED:
+        print("Experiments not enabled. Set EXPERIMENTS_ENABLED=true in your .env")
+        return
+
+    projects = state.projects
+    if not projects:
+        print("No projects tracked yet. Use the agent to scan a project:")
+        print('  distillate "scan project at ~/Code/Research/my-project"')
+        return
+
+    from distillate.experiments import (
+        generate_notebook,
+        update_project_from_git,
+    )
+    from distillate.obsidian import write_experiment_notebook
+
+    updated = 0
+    for proj_id, proj in projects.items():
+        print(f"  Scanning {proj.get('name', proj_id)}...")
+        if update_project_from_git(proj, state):
+            notebook_md = generate_notebook(proj)
+            write_experiment_notebook(proj, notebook_md)
+            updated += 1
+
+    if updated:
+        state.save()
+        print(f"  Updated {updated} project(s).")
+    else:
+        print("  No changes detected.")
+
+
 def _status() -> None:
     """Print a quick status overview to the terminal."""
     from datetime import datetime, timedelta, timezone
@@ -2143,6 +2184,89 @@ def _init_newsletter() -> None:
         print("  Couldn't reach the server, but no worries.")
 
 
+def _init_step6_experiments(save_to_env) -> None:
+    """Step 6: Optional experiment tracking."""
+    print("  " + "-" * 48)
+    print("  Step 6: Experiment Tracking (optional)")
+    print("  " + "-" * 48)
+    print()
+    print("  Track ML experiments alongside your papers.")
+    print("  Distillate can auto-discover experiments in your git repos")
+    print("  and generate rich lab notebooks with run timelines and diffs.")
+    print()
+
+    enable = input("  Enable experiment tracking? [y/N] ").strip().lower()
+    if enable not in ("y", "yes"):
+        print("  Skipped. You can enable later with EXPERIMENTS_ENABLED=true")
+        print()
+        return
+
+    save_to_env("EXPERIMENTS_ENABLED", "true")
+
+    root = input("  Research folder root (e.g. ~/Code/Research): ").strip()
+    if root:
+        from pathlib import Path
+        root_path = Path(root).expanduser().resolve()
+        if root_path.is_dir():
+            save_to_env("EXPERIMENTS_ROOT", str(root_path))
+            print(f"  Set EXPERIMENTS_ROOT={root_path}")
+
+            # Auto-discover ML repos
+            from distillate.experiments import detect_ml_repos
+            repos = detect_ml_repos(root_path)
+            if repos:
+                print(f"\n  Found {len(repos)} ML project(s):")
+                for r in repos[:10]:
+                    print(f"    - {r.name} ({r})")
+                print()
+                scan_now = input("  Scan them now? [Y/n] ").strip().lower()
+                if scan_now not in ("n", "no"):
+                    from distillate.experiments import (
+                        generate_notebook,
+                        scan_project,
+                        slugify,
+                    )
+                    from distillate.obsidian import write_experiment_notebook
+                    from distillate.state import State
+                    state = State()
+                    for repo_path in repos:
+                        print(f"    Scanning {repo_path.name}...")
+                        result = scan_project(repo_path)
+                        if "error" not in result:
+                            pid = slugify(result["name"])
+                            state.add_project(
+                                project_id=pid,
+                                name=result["name"],
+                                path=str(repo_path),
+                            )
+                            for run_id, run_data in result.get("runs", {}).items():
+                                state.add_run(pid, run_id, run_data)
+                            state.update_project(
+                                pid,
+                                last_scanned_at=__import__("datetime").datetime.now(
+                                    __import__("datetime").timezone.utc
+                                ).isoformat(),
+                                last_commit_hash=result.get("head_hash", ""),
+                            )
+                            runs = result.get("runs", {})
+                            print(f"      {len(runs)} run(s) discovered")
+                            # Generate notebook
+                            proj = state.get_project(pid)
+                            if proj:
+                                nb = generate_notebook(proj)
+                                write_experiment_notebook(proj, nb)
+                    state.save()
+                    print(f"\n  Tracking {len(repos)} project(s).")
+            else:
+                print("  No ML projects found in that folder.")
+        else:
+            print(f"  Directory not found: {root_path}")
+    else:
+        print("  Skipped root folder. You can set EXPERIMENTS_ROOT later.")
+
+    print()
+
+
 def _init_done(env_path) -> None:
     """Print post-setup instructions, offer import of existing papers, and automated syncing."""
     print()
@@ -2728,6 +2852,10 @@ def _init_wizard() -> None:
 
     _init_step5(save_to_env)
 
+    # -- Step 6: Experiments (optional) --
+
+    _init_step6_experiments(save_to_env)
+
     # -- Done --
 
     _init_done(ENV_PATH)
@@ -2764,6 +2892,7 @@ Advanced:
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
+  --scan-projects         Scan tracked ML projects for new experiments
 
 Options:
   -h, --help              Show this help
@@ -2776,6 +2905,7 @@ _KNOWN_FLAGS = {
     "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
+    "--scan-projects",
 }
 
 
@@ -2861,7 +2991,15 @@ def main():
         return
 
     if "--sync-state" in sys.argv:
-        _sync_state()
+        from distillate.cloud_sync import cloud_sync_available, sync_state as cloud_sync
+        if cloud_sync_available():
+            cloud_sync(State())
+        else:
+            _sync_state()
+        return
+
+    if "--scan-projects" in sys.argv:
+        _scan_projects()
         return
 
     # Catch unknown flags before falling through
@@ -2906,6 +3044,12 @@ def main():
         state = State()
         sent_count = 0
         synced_count = 0
+
+        # Pull cloud state before starting (picks up papers from other devices)
+        from distillate.cloud_sync import cloud_sync_available, push_state
+        if cloud_sync_available():
+            from distillate.cloud_sync import pull_state
+            pull_state(state)
 
         # Migrate legacy Obsidian files on every run
         obsidian.ensure_dataview_note()   # removes Papers List.md
@@ -3567,12 +3711,32 @@ def main():
             print(f"  Done: {', '.join(parts)}")
             log.info("Done: %d sent, %d synced", sent_count, synced_count)
             notify.notify_summary(sent_count, synced_count)
-            # Push updated state to Gist so GH Actions emails have fresh data
-            if config.STATE_GIST_ID:
+            # Push state to cloud or Gist
+            if cloud_sync_available():
+                push_state(state)
+            elif config.STATE_GIST_ID:
                 _sync_state()
         else:
             print("  Nothing to do.")
             log.info("Nothing to do.")
+
+        # Scan tracked experiment projects for new commits
+        if config.EXPERIMENTS_ENABLED and state.projects:
+            from distillate.experiments import (
+                generate_notebook,
+                update_project_from_git,
+            )
+            from distillate.obsidian import write_experiment_notebook
+
+            exp_updated = 0
+            for proj in state.projects.values():
+                if update_project_from_git(proj, state):
+                    notebook_md = generate_notebook(proj)
+                    write_experiment_notebook(proj, notebook_md)
+                    exp_updated += 1
+            if exp_updated:
+                state.save()
+                print(f"  Updated {exp_updated} experiment project(s).")
 
     except requests.exceptions.ConnectionError:
         print(
