@@ -47,9 +47,9 @@ app.on("ready", async () => {
   }
 });
 
-app.on("window-all-closed", () => {
+app.on("window-all-closed", async () => {
   if (pythonManager) {
-    pythonManager.stop();
+    await pythonManager.stop();
   }
   app.quit();
 });
