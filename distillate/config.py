@@ -113,6 +113,10 @@ ZOTERO_WEBDAV_PASSWORD: str = os.environ.get("ZOTERO_WEBDAV_PASSWORD", "").strip
 
 STATE_GIST_ID: str = os.environ.get("STATE_GIST_ID", "").strip()
 
+# Experiments
+EXPERIMENTS_ROOT: str = os.environ.get("EXPERIMENTS_ROOT", "").strip()
+EXPERIMENTS_ENABLED: bool = os.environ.get("EXPERIMENTS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
 HTTP_TIMEOUT: int = int(os.environ.get("HTTP_TIMEOUT", "30"))
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 CLAUDE_FAST_MODEL: str = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001").strip()
