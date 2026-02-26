@@ -159,15 +159,17 @@ def _is_training_history(data: dict) -> bool:
 
 
 def _is_result_file(data: dict) -> bool:
-    """Flat dict with metric-like keys."""
-    if "steps" in data or "epochs" in data:
+    """Flat dict with metric-like keys (possibly alongside metadata)."""
+    # Reject list-valued epochs/steps (that's a training log/history)
+    if isinstance(data.get("steps"), list) or isinstance(data.get("epochs"), list):
         return False
-    result_keys = {"exact_match", "accuracy", "correct", "total", "f1",
-                   "precision", "recall", "bleu", "rouge", "auc"}
-    if result_keys & set(data.keys()):
+    metric_keywords = {"accuracy", "loss", "f1", "precision", "recall",
+                       "bleu", "rouge", "auc", "mrr", "exact_match",
+                       "correct", "total", "perplexity", "mse", "rmse"}
+    keys_lower = {k.lower() for k in data.keys()}
+    if any(any(kw in k for kw in metric_keywords) for k in keys_lower):
         return True
-    metric_keywords = {"recall", "mrr", "accuracy", "loss", "f1", "precision",
-                       "bleu", "rouge", "auc"}
+    # Check nested dicts too
     for v in data.values():
         if isinstance(v, dict):
             nested = {k.lower() for k in v.keys()}
@@ -406,6 +408,52 @@ def scan_project(path: Path) -> dict:
             "tags": [tag] if tag else [],
             "git_commits": [],
             "files_created": [hf["path"]],
+            "started_at": "",
+            "completed_at": "",
+            "duration_minutes": 0,
+            "notes": [],
+        }
+
+    # Build runs from standalone result files (not yet covered by a training log)
+    used_result_paths = {f for r in runs.values() for f in r["files_created"]}
+    for rf in result_files:
+        if rf["path"] in used_result_paths:
+            continue
+        tag = rf["tag"]
+        # Skip if already covered by a run with the same tag
+        if tag and any(tag in r.get("tags", []) for r in runs.values()):
+            continue
+
+        metrics: dict[str, Any] = {}
+        for k, v in rf["data"].items():
+            if isinstance(v, (int, float)):
+                metrics[k] = v
+
+        # Try to pair with a config file by matching tag
+        hyperparams: dict[str, Any] = {}
+        config_path = None
+        for cf in config_files:
+            if cf["tag"] and cf["tag"] == tag:
+                hyperparams = {k: v for k, v in cf["data"].items()
+                               if isinstance(v, (int, float, str, bool))}
+                config_path = cf["path"]
+                break
+
+        run_id = f"exp-{uuid.uuid4().hex[:6]}"
+        name = tag if tag else Path(rf["path"]).stem
+        files = [rf["path"]]
+        if config_path:
+            files.append(config_path)
+        runs[run_id] = {
+            "id": run_id,
+            "name": name,
+            "status": "completed",
+            "hypothesis": "",
+            "hyperparameters": hyperparams,
+            "results": metrics,
+            "tags": [tag] if tag else [],
+            "git_commits": [],
+            "files_created": files,
             "started_at": "",
             "completed_at": "",
             "duration_minutes": 0,
