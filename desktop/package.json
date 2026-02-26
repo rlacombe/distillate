@@ -1,0 +1,56 @@
+{
+  "name": "nicolas",
+  "version": "0.1.0",
+  "description": "Nicolas — your research alchemist",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "author": "Romain Lacombe",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "marked": "^15.0.0"
+  },
+  "build": {
+    "appId": "dev.distillate.nicolas",
+    "productName": "Nicolas",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "resources/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../.venv-desktop",
+        "to": "python-env",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "resources/icon.icns",
+      "target": ["dmg"]
+    },
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": ["nsis"]
+    },
+    "protocols": [
+      {
+        "name": "Nicolas Auth",
+        "schemes": ["nicolas"]
+      }
+    ]
+  }
+}

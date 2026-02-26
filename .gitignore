@@ -16,3 +16,4 @@ build/
 .venv/
 .ruff_cache/
 .pytest_cache/
+.venv-desktop/

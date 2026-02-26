@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src ws://127.0.0.1:*; style-src 'self' 'unsafe-inline';">
+  <title>Nicolas</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="titlebar">
+    <span class="titlebar-text">Nicolas</span>
+  </div>
+
+  <div id="chat-container">
+    <div id="welcome">
+      <div class="welcome-icon">⚗️</div>
+      <h1>Nicolas</h1>
+      <p class="subtitle">Your research alchemist</p>
+      <div class="suggestions">
+        <button class="suggestion" data-text="What's in my queue?">What's in my queue?</button>
+        <button class="suggestion" data-text="Summarize my last read">Summarize my last read</button>
+        <button class="suggestion" data-text="What's trending in AI?">What's trending in AI?</button>
+      </div>
+    </div>
+
+    <div id="messages"></div>
+  </div>
+
+  <div id="input-area">
+    <div id="status-bar">
+      <span id="status-dot" class="dot disconnected"></span>
+      <span id="status-text">Connecting...</span>
+    </div>
+    <form id="input-form">
+      <textarea id="input" placeholder="Ask Nicolas anything..." rows="1"
+                autofocus autocomplete="off"></textarea>
+      <button type="submit" id="send-btn" title="Send">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </form>
+  </div>
+
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
