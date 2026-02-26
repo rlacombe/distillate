@@ -516,10 +516,13 @@ class TestRetroactiveScan:
         assert "d_model" in run["hyperparameters"]
         assert run["hyperparameters"]["d_model"] == 64
 
-    def test_scan_non_git_dir(self, tmp_path):
+    def test_scan_non_git_dir_succeeds(self, tmp_path):
         from distillate.experiments import scan_project
         result = scan_project(tmp_path)
-        assert "error" in result
+        assert "error" not in result
+        assert len(result["runs"]) == 0
+        assert result["has_git"] is False
+        assert result["head_hash"] == ""
 
     def test_scan_empty_repo(self, tmp_path):
         from distillate.experiments import scan_project
@@ -544,6 +547,158 @@ class TestRetroactiveScan:
         result = scan_project(repo)
         assert "error" not in result
         assert len(result["runs"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Non-git scanning tests
+# ---------------------------------------------------------------------------
+
+
+class TestScanWithoutGit:
+    def test_scan_discovers_runs_without_git(self, tmp_path):
+        """Scan a plain directory (no .git) with ML artifacts."""
+        from distillate.experiments import scan_project
+
+        proj = tmp_path / "my-project"
+        results_dir = proj / "experiment"
+        results_dir.mkdir(parents=True)
+
+        # Create a training log
+        (results_dir / "train_v1.json").write_text(json.dumps({
+            "config": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "total_time": 3600,
+            "best_val_acc": 0.85,
+            "epochs": [
+                {"epoch": 1, "loss": 1.0, "val_acc": 0.5},
+                {"epoch": 10, "loss": 0.2, "val_acc": 0.85},
+            ],
+        }))
+
+        # Create a result file with matching tag
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "exact_match": 0.85, "total_params": 28416,
+        }))
+
+        result = scan_project(proj)
+        assert "error" not in result
+        assert result["has_git"] is False
+        assert result["head_hash"] == ""
+        assert len(result["runs"]) >= 1
+
+        run = list(result["runs"].values())[0]
+        assert run["status"] == "completed"
+        assert "d_model" in run["hyperparameters"]
+        assert run["git_commits"] == []
+        # Timestamps from file mtime
+        assert run["started_at"] != ""
+        assert run["completed_at"] != ""
+
+    def test_distillate_dir_created(self, tmp_path):
+        """Scanning creates .distillate/scan_state.json."""
+        from distillate.experiments import scan_project
+
+        proj = tmp_path / "my-project"
+        proj.mkdir()
+        # Put a result file so there's something to scan
+        (proj / "results.json").write_text(json.dumps({
+            "accuracy": 0.95, "loss": 0.1,
+        }))
+
+        scan_project(proj)
+        scan_state = proj / ".distillate" / "scan_state.json"
+        assert scan_state.exists()
+        data = json.loads(scan_state.read_text())
+        assert "last_scanned_at" in data
+        assert "file_manifest" in data
+
+    def test_scan_with_git_enriches_commits(self, tmp_path):
+        """Scan a git repo — runs get git_commits attached."""
+        from distillate.experiments import scan_project
+
+        repo = tmp_path / "git-project"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test"],
+            capture_output=True,
+        )
+
+        # Initial commit (diff-tree needs a parent to list files)
+        (repo / "README.md").write_text("# Test")
+        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "init"],
+            capture_output=True,
+        )
+
+        # Second commit with ML artifact
+        results_dir = repo / "experiment"
+        results_dir.mkdir()
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "accuracy": 0.9, "loss": 0.1,
+        }))
+        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "Add results"],
+            capture_output=True,
+        )
+
+        result = scan_project(repo)
+        assert result["has_git"] is True
+        assert result["head_hash"] != ""
+        run = list(result["runs"].values())[0]
+        assert len(run["git_commits"]) >= 1
+
+    def test_update_project_detects_changes(self, tmp_path):
+        """update_project re-scans when files change."""
+        from distillate.experiments import scan_project, update_project
+
+        proj = tmp_path / "my-project"
+        results_dir = proj / "experiment"
+        results_dir.mkdir(parents=True)
+
+        (results_dir / "results_v1.json").write_text(json.dumps({
+            "accuracy": 0.9, "loss": 0.1,
+        }))
+
+        # Initial scan
+        result = scan_project(proj)
+        project = {
+            "name": "My Project",
+            "path": str(proj),
+            "runs": result["runs"],
+            "last_scanned_at": "",
+        }
+
+        # No changes → returns False
+        assert update_project(project, state=None) is False
+
+        # Add a new artifact
+        import time
+        time.sleep(0.05)  # ensure different mtime
+        (results_dir / "results_v2.json").write_text(json.dumps({
+            "accuracy": 0.95, "loss": 0.05,
+        }))
+
+        # Now it should detect the change
+        assert update_project(project, state=None) is True
+
+    def test_detect_ml_repos_without_git(self, tmp_path):
+        """detect_ml_repos finds non-git directories with ML files."""
+        from distillate.experiments import detect_ml_repos
+
+        # Create a non-git ML project
+        proj = tmp_path / "ml-project"
+        proj.mkdir()
+        (proj / "train.py").write_text("import torch\nmodel = torch.nn.Linear(10, 10)")
+        (proj / "config.yaml").write_text("lr: 0.001")
+
+        repos = detect_ml_repos(tmp_path)
+        assert proj in repos
 
 
 # ---------------------------------------------------------------------------

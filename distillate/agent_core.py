@@ -209,9 +209,9 @@ def build_system_prompt(
         "highlights and notes, analyze reading patterns, and synthesize "
         "insights across papers."
         + (
-            " You can also track their ML experiments — scanning git repos "
-            "for training runs, comparing experiments, and generating lab "
-            "notebooks."
+            " You can also track their ML experiments — scanning project "
+            "directories for training runs, comparing experiments, and "
+            "generating lab notebooks."
             if config.EXPERIMENTS_ENABLED else ""
         )
         + "\n\n"
@@ -260,7 +260,7 @@ def build_system_prompt(
         + (
             "- When asked about experiments or projects, use the experiment "
             "tools (list_projects, get_project_details, compare_runs).\n"
-            "- Use scan_project to track a new git repo as an ML project.\n"
+            "- Use scan_project to track a new directory as an ML project.\n"
             "- Use compare_runs to show what changed between experiments.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )

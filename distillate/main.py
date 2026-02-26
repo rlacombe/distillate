@@ -823,14 +823,14 @@ def _scan_projects() -> None:
 
     from distillate.experiments import (
         generate_notebook,
-        update_project_from_git,
+        update_project,
     )
     from distillate.obsidian import write_experiment_notebook
 
     updated = 0
     for proj_id, proj in projects.items():
         print(f"  Scanning {proj.get('name', proj_id)}...")
-        if update_project_from_git(proj, state):
+        if update_project(proj, state):
             notebook_md = generate_notebook(proj)
             write_experiment_notebook(proj, notebook_md)
             updated += 1
@@ -2191,7 +2191,7 @@ def _init_step6_experiments(save_to_env) -> None:
     print("  " + "-" * 48)
     print()
     print("  Track ML experiments alongside your papers.")
-    print("  Distillate can auto-discover experiments in your git repos")
+    print("  Distillate can auto-discover experiments in your project directories")
     print("  and generate rich lab notebooks with run timelines and diffs.")
     print()
 
@@ -3724,13 +3724,13 @@ def main():
         if config.EXPERIMENTS_ENABLED and state.projects:
             from distillate.experiments import (
                 generate_notebook,
-                update_project_from_git,
+                update_project,
             )
             from distillate.obsidian import write_experiment_notebook
 
             exp_updated = 0
             for proj in state.projects.values():
-                if update_project_from_git(proj, state):
+                if update_project(proj, state):
                     notebook_md = generate_notebook(proj)
                     write_experiment_notebook(proj, notebook_md)
                     exp_updated += 1

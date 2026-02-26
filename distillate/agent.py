@@ -318,8 +318,8 @@ def _print_welcome(state: State) -> None:
 
     print()
     print(header_prefix + header_tail)
-    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue")
-    print(f"  {_dim('Your research alchemist. Type /help or /quit.')}")
+    print(f"  {_dim('Your research alchemist.')}")
+    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 {_dim('Type /help or /quit.')}")
     print(footer)
 
     # Contextual suggestions

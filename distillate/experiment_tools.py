@@ -104,10 +104,11 @@ EXPERIMENT_TOOL_SCHEMAS = [
     {
         "name": "scan_project",
         "description": (
-            "Scan a git repository to discover ML experiments. Finds training "
+            "Scan a directory to discover ML experiments. Finds training "
             "logs, configs, checkpoints, and results, then reconstructs "
-            "experiment runs. Use when the user wants to track a new project "
-            "or rescan an existing one. "
+            "experiment runs. Works with any directory (git optional). "
+            "Use when the user wants to track a new project or rescan "
+            "an existing one. "
             "This is a write operation — ask the user to confirm first."
         ),
         "input_schema": {
@@ -115,7 +116,7 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to the git repository",
+                    "description": "Absolute path to the project directory",
                 },
             },
             "required": ["path"],
@@ -246,8 +247,6 @@ def scan_project_tool(*, state, path: str) -> dict:
     repo_path = _Path(path).expanduser().resolve()
     if not repo_path.is_dir():
         return {"success": False, "error": f"Directory not found: {path}"}
-    if not (repo_path / ".git").exists():
-        return {"success": False, "error": f"Not a git repository: {path}"}
 
     result = scan_project(repo_path)
     if "error" in result:

@@ -5,6 +5,7 @@ let serverPort = null;
 let isStreaming = false;
 let currentAssistantEl = null;
 let currentText = "";
+let turnHadMutation = false;
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -20,6 +21,22 @@ if (typeof marked !== "undefined") {
     breaks: true,
     gfm: true,
   });
+
+  // Custom renderer for syntax highlighting (hljs exposed via preload)
+  const renderer = new marked.Renderer();
+  renderer.code = function ({ text, lang }) {
+    if (window.hljs && lang && window.hljs.getLanguage(lang)) {
+      const highlighted = window.hljs.highlight(text, { language: lang }).value;
+      return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    }
+    if (window.hljs) {
+      const auto = window.hljs.highlightAuto(text).value;
+      return `<pre><code class="hljs">${auto}</code></pre>`;
+    }
+    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<pre><code>${escaped}</code></pre>`;
+  };
+  marked.use({ renderer });
 }
 
 /* ───── Connection ───── */
@@ -34,6 +51,12 @@ function connect(port) {
     inputEl.disabled = false;
     sendBtn.disabled = false;
     inputEl.focus();
+
+    // Fetch stats for welcome screen
+    fetchWelcomeStats();
+
+    // Pull latest state from cloud on connect
+    triggerCloudSync();
   };
 
   ws.onclose = () => {
@@ -70,16 +93,35 @@ function handleEvent(event) {
       break;
 
     case "tool_start":
+      // Close current text block so the indicator appears between text sections
+      if (currentAssistantEl) {
+        currentAssistantEl.classList.remove("streaming-cursor");
+        renderAssistantMessage();
+        currentAssistantEl = null;
+        currentText = "";
+      }
       addToolIndicator(event.name, false);
       scrollToBottom();
       break;
 
-    case "tool_done":
+    case "tool_done": {
+      const mutatingTools = [
+        "run_sync", "add_paper_to_zotero", "reprocess_paper",
+        "promote_papers", "refresh_metadata", "scan_project",
+      ];
+      if (mutatingTools.includes(event.name)) {
+        turnHadMutation = true;
+      }
       markToolDone(event.tool_use_id || event.name);
       break;
+    }
 
     case "turn_end":
       finishStreaming();
+      if (turnHadMutation) {
+        triggerCloudSync();
+        turnHadMutation = false;
+      }
       break;
 
     case "error":
@@ -97,7 +139,7 @@ function addUserMessage(text) {
   el.className = "message user";
   el.textContent = text;
   messagesEl.appendChild(el);
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 function startAssistantMessage() {
@@ -184,9 +226,74 @@ function addErrorMessage(text) {
   scrollToBottom();
 }
 
-function scrollToBottom() {
+function isNearBottom() {
   const container = document.getElementById("chat-container");
-  container.scrollTop = container.scrollHeight;
+  const threshold = 80; // px from bottom
+  return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+}
+
+function scrollToBottom(force = false) {
+  const container = document.getElementById("chat-container");
+  if (force || isNearBottom()) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+/* ───── New conversation ───── */
+
+function clearConversation() {
+  // Reset UI
+  messagesEl.innerHTML = "";
+  welcomeEl.classList.remove("hidden");
+  currentAssistantEl = null;
+  currentText = "";
+  isStreaming = false;
+  turnHadMutation = false;
+  inputEl.disabled = false;
+  sendBtn.disabled = false;
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  inputEl.focus();
+
+  // Refresh stats
+  fetchWelcomeStats();
+
+  // Tell server to start fresh
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "new_conversation" }));
+  }
+}
+
+/* ───── Welcome stats ───── */
+
+const welcomeStatsEl = document.getElementById("welcome-stats");
+
+function fetchWelcomeStats() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/status`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data.ok || !welcomeStatsEl) return;
+      const parts = [];
+      if (data.papers_read != null) parts.push(`${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`);
+      if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+      if (parts.length) {
+        welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
+      }
+    })
+    .catch(() => {}); // Silently ignore if unavailable
+}
+
+/* ───── Cloud sync ───── */
+
+function triggerCloudSync() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.ok) console.log("[sync] Cloud sync complete");
+    })
+    .catch(() => {}); // Silently ignore if sync unavailable
 }
 
 /* ───── Input handling ───── */
@@ -231,6 +338,74 @@ document.querySelectorAll(".suggestion").forEach((btn) => {
   });
 });
 
+/* ───── Settings modal ───── */
+
+const settingsOverlay = document.getElementById("settings-overlay");
+const settingsClose = document.getElementById("settings-close");
+const settingsSave = document.getElementById("settings-save");
+const settingsStatus = document.getElementById("settings-status");
+const settingApiKey = document.getElementById("setting-api-key");
+const settingAuthToken = document.getElementById("setting-auth-token");
+const consoleLink = document.getElementById("console-link");
+
+function openSettings() {
+  settingsStatus.textContent = "";
+  // Load current values
+  if (window.nicolas && window.nicolas.getSettings) {
+    window.nicolas.getSettings().then((s) => {
+      settingApiKey.value = s.apiKey || "";
+      settingAuthToken.value = s.authToken || "";
+    });
+  }
+  settingsOverlay.classList.remove("hidden");
+  settingApiKey.focus();
+}
+
+function closeSettings() {
+  settingsOverlay.classList.add("hidden");
+  inputEl.focus();
+}
+
+if (settingsClose) {
+  settingsClose.addEventListener("click", closeSettings);
+}
+
+if (settingsOverlay) {
+  settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) closeSettings();
+  });
+}
+
+if (settingsSave) {
+  settingsSave.addEventListener("click", () => {
+    if (window.nicolas && window.nicolas.saveSettings) {
+      window.nicolas.saveSettings({
+        apiKey: settingApiKey.value.trim(),
+        authToken: settingAuthToken.value.trim(),
+      }).then(() => {
+        settingsStatus.textContent = "Saved! Restart to apply.";
+        settingsStatus.className = "setting-status success";
+      });
+    }
+  });
+}
+
+if (consoleLink) {
+  consoleLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (window.nicolas && window.nicolas.openExternal) {
+      window.nicolas.openExternal("https://console.anthropic.com/settings/keys");
+    }
+  });
+}
+
+// Esc to close settings
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
+    closeSettings();
+  }
+});
+
 /* ───── Electron bridge ───── */
 
 if (window.nicolas) {
@@ -247,6 +422,14 @@ if (window.nicolas) {
   window.nicolas.onDeepLink((url) => {
     console.log("Deep link received:", url);
     // TODO: handle nicolas://auth?token=XXX
+  });
+
+  window.nicolas.onNewConversation(() => {
+    clearConversation();
+  });
+
+  window.nicolas.onOpenSettings(() => {
+    openSettings();
   });
 } else {
   // Running in a regular browser (development)
