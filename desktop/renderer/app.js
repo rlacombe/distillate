@@ -5,6 +5,7 @@ let serverPort = null;
 let isStreaming = false;
 let currentAssistantEl = null;
 let currentText = "";
+let turnHadMutation = false;
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -34,6 +35,9 @@ function connect(port) {
     inputEl.disabled = false;
     sendBtn.disabled = false;
     inputEl.focus();
+
+    // Pull latest state from cloud on connect
+    triggerCloudSync();
   };
 
   ws.onclose = () => {
@@ -74,12 +78,24 @@ function handleEvent(event) {
       scrollToBottom();
       break;
 
-    case "tool_done":
+    case "tool_done": {
+      const mutatingTools = [
+        "run_sync", "add_paper_to_zotero", "reprocess_paper",
+        "promote_papers", "refresh_metadata", "scan_project",
+      ];
+      if (mutatingTools.includes(event.name)) {
+        turnHadMutation = true;
+      }
       markToolDone(event.tool_use_id || event.name);
       break;
+    }
 
     case "turn_end":
       finishStreaming();
+      if (turnHadMutation) {
+        triggerCloudSync();
+        turnHadMutation = false;
+      }
       break;
 
     case "error":
@@ -187,6 +203,18 @@ function addErrorMessage(text) {
 function scrollToBottom() {
   const container = document.getElementById("chat-container");
   container.scrollTop = container.scrollHeight;
+}
+
+/* ───── Cloud sync ───── */
+
+function triggerCloudSync() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.ok) console.log("[sync] Cloud sync complete");
+    })
+    .catch(() => {}); // Silently ignore if sync unavailable
 }
 
 /* ───── Input handling ───── */

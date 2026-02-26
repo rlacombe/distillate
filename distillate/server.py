@@ -45,6 +45,18 @@ def _create_app():
         ver = version("distillate")
         return JSONResponse({"ok": True, "version": ver})
 
+    @app.post("/sync")
+    async def sync_to_cloud():
+        from distillate.cloud_sync import cloud_sync_available, sync_state
+        if not cloud_sync_available():
+            return JSONResponse(
+                {"ok": False, "reason": "no_credentials"}, status_code=501,
+            )
+        _state.reload()
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(_executor, sync_state, _state)
+        return JSONResponse({"ok": ok})
+
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):
         await websocket.accept()
