@@ -52,6 +52,9 @@ function connect(port) {
     sendBtn.disabled = false;
     inputEl.focus();
 
+    // Fetch stats for welcome screen
+    fetchWelcomeStats();
+
     // Pull latest state from cloud on connect
     triggerCloudSync();
   };
@@ -90,6 +93,13 @@ function handleEvent(event) {
       break;
 
     case "tool_start":
+      // Close current text block so the indicator appears between text sections
+      if (currentAssistantEl) {
+        currentAssistantEl.classList.remove("streaming-cursor");
+        renderAssistantMessage();
+        currentAssistantEl = null;
+        currentText = "";
+      }
       addToolIndicator(event.name, false);
       scrollToBottom();
       break;
@@ -245,10 +255,33 @@ function clearConversation() {
   inputEl.style.height = "auto";
   inputEl.focus();
 
+  // Refresh stats
+  fetchWelcomeStats();
+
   // Tell server to start fresh
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "new_conversation" }));
   }
+}
+
+/* ───── Welcome stats ───── */
+
+const welcomeStatsEl = document.getElementById("welcome-stats");
+
+function fetchWelcomeStats() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/status`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data.ok || !welcomeStatsEl) return;
+      const parts = [];
+      if (data.papers_read != null) parts.push(`${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`);
+      if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+      if (parts.length) {
+        welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
+      }
+    })
+    .catch(() => {}); // Silently ignore if unavailable
 }
 
 /* ───── Cloud sync ───── */

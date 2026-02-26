@@ -1,7 +1,7 @@
 {
-  "name": "nicolas",
+  "name": "distillate",
   "version": "0.1.0",
-  "description": "Nicolas — your research alchemist",
+  "description": "Distillate — a research alchemist on your desktop",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -20,8 +20,8 @@
     "marked": "^15.0.0"
   },
   "build": {
-    "appId": "dev.distillate.nicolas",
-    "productName": "Nicolas",
+    "appId": "dev.distillate.app",
+    "productName": "Distillate",
     "directories": {
       "output": "dist"
     },
@@ -55,9 +55,9 @@
     },
     "protocols": [
       {
-        "name": "Nicolas Auth",
+        "name": "Distillate Auth",
         "schemes": [
-          "nicolas"
+          "distillate"
         ]
       }
     ]

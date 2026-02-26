@@ -33,6 +33,9 @@ def _create_app():
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
     from fastapi.responses import JSONResponse
 
+    from distillate import config
+    config.ensure_loaded()
+
     app = FastAPI(title="Nicolas", docs_url=None, redoc_url=None)
 
     # Shared state
@@ -42,7 +45,17 @@ def _create_app():
     async def status():
         from importlib.metadata import version
         ver = version("distillate")
-        return JSONResponse({"ok": True, "version": ver})
+        _state.reload()
+        processed = _state.documents_with_status("processed")
+        from distillate import config
+        q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+        queue = _state.documents_with_status(q_status)
+        return JSONResponse({
+            "ok": True,
+            "version": ver,
+            "papers_read": len(processed),
+            "papers_queued": len(queue),
+        })
 
     @app.post("/sync")
     async def sync_to_cloud():
