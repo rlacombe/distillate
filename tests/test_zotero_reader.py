@@ -268,6 +268,7 @@ class TestInitWizardZoteroReader:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -310,6 +311,7 @@ class TestInitWizardZoteroReader:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()

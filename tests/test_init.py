@@ -55,6 +55,7 @@ class TestInitWizard:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -91,6 +92,7 @@ class TestInitWizard:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -111,6 +113,7 @@ class TestInitWizard:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -132,6 +135,7 @@ class TestInitWizard:
             "re_test456",           # Resend key
             "user@example.com",     # Email
             "",                     # Skip newsletter
+            "n",                    # Skip experiments
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -153,6 +157,7 @@ class TestInitWizard:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ], tmp_path, monkeypatch)
 
         text = env_file.read_text()
@@ -178,6 +183,7 @@ class TestInitRerun:
             "sk-ant-new123",        # Anthropic key
             "",                     # Skip Resend
             "",                     # Skip newsletter
+            "n",                    # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -224,6 +230,7 @@ class TestInitRerun:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -266,6 +273,7 @@ class TestInitRerun:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -304,6 +312,7 @@ class TestInitRerun:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -343,6 +352,7 @@ class TestInitRerun:
             "",                 # Skip Anthropic
             "",                 # Skip Resend
             "",                 # Skip newsletter
+            "n",                # Skip experiments
         ])
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
