@@ -788,8 +788,8 @@ class TestMetricFormatting:
 
     def test_pick_key_metric(self):
         from distillate.experiments import _pick_key_metric
-        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "95.0%"
-        assert _pick_key_metric({"loss": 0.1}) == "0.1000"
+        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "accuracy=95.0%"
+        assert _pick_key_metric({"loss": 0.1}) == "loss=0.1000"
         assert _pick_key_metric({}) == "-"
 
 
@@ -1143,3 +1143,291 @@ class TestClaudeLogExtraction:
         assert _coerce_value("True") is True
         assert _coerce_value("false") is False
         assert _coerce_value("1e-4") == 1e-4
+
+
+# ---------------------------------------------------------------------------
+# LLM enrichment tests
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_RUNS = {
+    "exp-001": {
+        "id": "exp-001",
+        "name": "d8_h1",
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": {"d_model": 8, "n_heads": 1, "lr": 0.01},
+        "results": {"accuracy": 0.65, "loss": 2.1},
+        "tags": ["d8_h1"],
+        "git_commits": [],
+        "files_created": [],
+        "started_at": "2026-01-15T10:00:00Z",
+        "completed_at": "2026-01-15T10:30:00Z",
+        "duration_minutes": 30,
+        "notes": [],
+    },
+    "exp-002": {
+        "id": "exp-002",
+        "name": "d16_h2",
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": {"d_model": 16, "n_heads": 2, "lr": 0.005},
+        "results": {"accuracy": 0.92, "loss": 0.4},
+        "tags": ["d16_h2"],
+        "git_commits": [],
+        "files_created": [],
+        "started_at": "2026-01-15T11:00:00Z",
+        "completed_at": "2026-01-15T11:45:00Z",
+        "duration_minutes": 45,
+        "notes": [],
+    },
+}
+
+_SAMPLE_ENRICHMENT = {
+    "runs": {
+        "exp-001": {
+            "name": "Baseline Small Transformer",
+            "hypothesis": "A minimal transformer should learn basic patterns.",
+            "approach": "Start with the smallest viable model to establish a baseline.",
+            "analysis": "65% accuracy shows the model learns some patterns but lacks capacity.",
+            "next_steps": "Double the model dimensions to test if capacity is the bottleneck.",
+        },
+        "exp-002": {
+            "name": "Scaled-Up Model",
+            "hypothesis": "Doubling dimensions should improve accuracy if capacity was the issue.",
+            "approach": "Increased d_model from 8 to 16, added a second attention head.",
+            "analysis": "92% accuracy confirms capacity was the main bottleneck. Loss dropped 5x.",
+            "next_steps": "Try reducing learning rate further or adding regularization.",
+        },
+    },
+    "project": {
+        "key_breakthrough": "Scaling from d_model=8 to d_model=16 jumped accuracy from 65% to 92%.",
+        "lessons_learned": [
+            "Model capacity was the primary bottleneck, not training procedure.",
+            "Halving the learning rate alongside scaling helped stability.",
+        ],
+    },
+}
+
+
+class TestLLMEnrichment:
+    """Tests for LLM-based experiment enrichment."""
+
+    def test_runs_fingerprint_stable(self):
+        from distillate.experiments import _runs_fingerprint
+
+        fp1 = _runs_fingerprint(_SAMPLE_RUNS)
+        fp2 = _runs_fingerprint(_SAMPLE_RUNS)
+        assert fp1 == fp2
+
+    def test_runs_fingerprint_changes(self):
+        from distillate.experiments import _runs_fingerprint
+
+        fp1 = _runs_fingerprint(_SAMPLE_RUNS)
+        modified = json.loads(json.dumps(_SAMPLE_RUNS))
+        modified["exp-001"]["results"]["accuracy"] = 0.70
+        fp2 = _runs_fingerprint(modified)
+        assert fp1 != fp2
+
+    def test_enrichment_cache_round_trip(self, tmp_path):
+        from distillate.experiments import (
+            _load_enrichment_cache,
+            _save_enrichment_cache,
+        )
+
+        _save_enrichment_cache(tmp_path, {
+            "fingerprint": "abc123",
+            "enrichment": _SAMPLE_ENRICHMENT,
+        })
+        loaded = _load_enrichment_cache(tmp_path)
+        assert loaded["fingerprint"] == "abc123"
+        assert loaded["enrichment"]["project"]["key_breakthrough"].startswith("Scaling")
+
+    def test_enrichment_cache_missing(self, tmp_path):
+        from distillate.experiments import _load_enrichment_cache
+
+        assert _load_enrichment_cache(tmp_path) == {}
+
+    def test_build_enrichment_prompt(self):
+        from distillate.experiments import _build_enrichment_prompt
+
+        prompt = _build_enrichment_prompt(_SAMPLE_RUNS, "Test Project")
+        assert "Test Project" in prompt
+        assert "d_model=8" in prompt
+        assert "d_model=16" in prompt
+        assert "accuracy" in prompt
+        assert "exp-001" in prompt
+        assert "exp-002" in prompt
+        assert "(first experiment)" in prompt  # first run has no diff
+
+    def test_notebook_with_enrichment(self):
+        from distillate.experiments import generate_notebook
+
+        project = {
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "runs": _SAMPLE_RUNS,
+        }
+        md = generate_notebook(project, enrichment=_SAMPLE_ENRICHMENT)
+
+        # Check enriched names in timeline
+        assert "Baseline Small Transformer" in md
+        assert "Scaled-Up Model" in md
+
+        # Check narrative sections
+        assert "#### Hypothesis" in md
+        assert "minimal transformer should learn basic patterns" in md
+        assert "#### Approach" in md
+        assert "smallest viable model" in md
+        assert "#### Analysis" in md
+        assert "65% accuracy shows" in md
+        assert "#### Next Steps" in md
+
+        # Research insights should be near the top (before Experiment Timeline)
+        insights_pos = md.index("## Research Insights")
+        timeline_pos = md.index("## Experiment Timeline")
+        assert insights_pos < timeline_pos
+
+        assert "### Key Breakthrough" in md
+        assert "d_model=8 to d_model=16" in md
+        assert "### Lessons Learned" in md
+        assert "capacity was the primary bottleneck" in md
+
+    def test_notebook_without_enrichment(self):
+        """generate_notebook still works fine without enrichment."""
+        from distillate.experiments import generate_notebook
+
+        project = {
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "runs": _SAMPLE_RUNS,
+        }
+        md = generate_notebook(project)
+
+        # Should still have the basic structure
+        assert "# Test Project" in md
+        assert "## Experiment Timeline" in md
+        assert "d8_h1" in md  # original name, not enriched
+
+        # Should NOT have research insights
+        assert "## Research Insights" not in md
+
+    def test_factorize_hyperparams(self):
+        from distillate.experiments import _factorize_hyperparams
+
+        runs = [
+            {"hyperparameters": {"lr": 0.01, "batch_size": 32, "d_model": 8}},
+            {"hyperparameters": {"lr": 0.005, "batch_size": 32, "d_model": 16}},
+            {"hyperparameters": {"lr": 0.001, "batch_size": 32, "d_model": 32}},
+        ]
+        common, varying = _factorize_hyperparams(runs)
+        assert common == {"batch_size": 32}
+        assert "lr" in varying
+        assert "d_model" in varying
+        assert "batch_size" not in varying
+
+    def test_notebook_factorizes_hyperparams(self):
+        """Common hyperparams appear once; per-run cards show only changes."""
+        from distillate.experiments import generate_notebook
+
+        runs = {
+            "r1": {
+                "id": "r1", "name": "run1", "status": "completed",
+                "hyperparameters": {"lr": 0.01, "batch_size": 32, "n_layers": 1},
+                "results": {}, "tags": [], "git_commits": [],
+                "files_created": [], "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "", "duration_minutes": 0, "notes": [],
+                "hypothesis": "",
+            },
+            "r2": {
+                "id": "r2", "name": "run2", "status": "completed",
+                "hyperparameters": {"lr": 0.005, "batch_size": 32, "n_layers": 1},
+                "results": {}, "tags": [], "git_commits": [],
+                "files_created": [], "started_at": "2026-01-02T00:00:00Z",
+                "completed_at": "", "duration_minutes": 0, "notes": [],
+                "hypothesis": "",
+            },
+        }
+        md = generate_notebook({"name": "Test", "path": "/tmp", "runs": runs})
+
+        # Common config section should exist with shared params
+        assert "## Common Configuration" in md
+        assert "| batch_size | `32` |" in md
+        assert "| n_layers | `1` |" in md
+
+        # Per-run cards should show "Configuration (changes)" not full table
+        assert "#### Configuration (changes)" in md
+        # lr varies so it should appear in per-run cards
+        assert "| lr | `0.01` |" in md
+        assert "| lr | `0.005` |" in md
+
+    def test_enrich_skips_without_api_key(self, monkeypatch):
+        from distillate.experiments import enrich_runs_with_llm
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test", Path("/tmp"))
+        assert result is None
+
+    def test_enrich_uses_cache(self, tmp_path, monkeypatch):
+        from distillate.experiments import (
+            _runs_fingerprint,
+            _save_enrichment_cache,
+            enrich_runs_with_llm,
+        )
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test-key")
+
+        # Pre-populate cache
+        fp = _runs_fingerprint(_SAMPLE_RUNS)
+        _save_enrichment_cache(tmp_path, {
+            "fingerprint": fp,
+            "enrichment": _SAMPLE_ENRICHMENT,
+        })
+
+        # Should return cached enrichment without calling API
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test", tmp_path)
+        assert result is not None
+        assert result["project"]["key_breakthrough"].startswith("Scaling")
+
+    def test_enrich_calls_api(self, tmp_path, monkeypatch):
+        """When cache misses, enrich_runs_with_llm calls Claude API."""
+        from distillate.experiments import enrich_runs_with_llm
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test-key")
+        monkeypatch.setattr("distillate.config.CLAUDE_SMART_MODEL", "claude-sonnet-4-5-20250929")
+
+        # Mock the anthropic client
+        api_response = json.dumps(_SAMPLE_ENRICHMENT)
+
+        class FakeContent:
+            text = api_response
+
+        class FakeResponse:
+            content = [FakeContent()]
+
+        class FakeMessages:
+            def create(self, **kwargs):
+                return FakeResponse()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.messages = FakeMessages()
+
+        import distillate.experiments
+        monkeypatch.setattr("anthropic.Anthropic", FakeClient)
+        # Ensure anthropic is "importable" by pre-importing mock
+        import types
+        fake_anthropic = types.ModuleType("anthropic")
+        fake_anthropic.Anthropic = FakeClient
+        monkeypatch.setitem(__import__("sys").modules, "anthropic", fake_anthropic)
+
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test Project", tmp_path)
+        assert result is not None
+        assert "runs" in result
+        assert "project" in result
+        assert result["runs"]["exp-001"]["name"] == "Baseline Small Transformer"
+
+        # Check cache was written
+        from distillate.experiments import _load_enrichment_cache
+        cache = _load_enrichment_cache(tmp_path)
+        assert cache.get("enrichment") is not None

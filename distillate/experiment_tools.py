@@ -241,7 +241,9 @@ def scan_project_tool(*, state, path: str) -> dict:
     from datetime import datetime, timezone
     from pathlib import Path as _Path
 
-    from distillate.experiments import generate_notebook, scan_project, slugify
+    from distillate.experiments import (
+        enrich_runs_with_llm, generate_notebook, scan_project, slugify,
+    )
     from distillate.obsidian import write_experiment_notebook
 
     repo_path = _Path(path).expanduser().resolve()
@@ -290,10 +292,13 @@ def scan_project_tool(*, state, path: str) -> dict:
             f"{len(result.get('runs', {}))} discovered run(s)."
         )
 
-    # Generate and write notebook
+    # LLM enrichment + generate notebook
     proj = state.get_project(project_id)
     if proj:
-        notebook_md = generate_notebook(proj)
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), repo_path,
+        )
+        notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
 
     return {
@@ -307,14 +312,23 @@ def scan_project_tool(*, state, path: str) -> dict:
 
 def get_experiment_notebook(*, state, project: str, section: str = "main") -> dict:
     """Get or regenerate the lab notebook for a project."""
-    from distillate.experiments import generate_notebook
+    from pathlib import Path as _Path
+
+    from distillate.experiments import enrich_runs_with_llm, generate_notebook
     from distillate.obsidian import write_experiment_notebook
 
     proj = state.find_project(project)
     if not proj:
         return {"error": f"No project found matching '{project}'"}
 
-    notebook_md = generate_notebook(proj, section=section)
+    enrichment = None
+    proj_path = proj.get("path", "")
+    if proj_path:
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
+        )
+
+    notebook_md = generate_notebook(proj, section=section, enrichment=enrichment)
 
     # Write to disk
     write_experiment_notebook(proj, notebook_md, section=section)
