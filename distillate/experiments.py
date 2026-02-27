@@ -490,6 +490,9 @@ def scan_project(path: Path) -> dict:
         if not _is_duplicate_run(runs, run):
             runs[run["id"]] = run
 
+    # Filter out non-experiment runs (analysis files, metadata-only, etc.)
+    runs = {rid: r for rid, r in runs.items() if _is_experiment_run(r)}
+
     # Derive project name from directory
     project_name = path.name.replace("-", " ").replace("_", " ").title()
 
@@ -706,6 +709,57 @@ def _merge_into_run(target: dict, source: dict) -> None:
         target["command"] = source["command"]
 
 
+def _run_sort_key(run: dict) -> tuple:
+    """Sort key that orders runs by version number, then by timestamp.
+
+    Version extraction: 'v5' -> 5, 'final' -> 9999, unversioned -> 0.
+    Falls back to started_at/completed_at timestamp.
+    """
+    name = run.get("name", "")
+    tags = run.get("tags", [])
+    tag = tags[0] if tags else name
+
+    # Extract version number from tag or name
+    version = 0
+    m = re.search(r"v(\d+)", tag, re.IGNORECASE)
+    if m:
+        version = int(m.group(1))
+    elif "final" in tag.lower():
+        version = 9999
+
+    ts = run.get("started_at") or run.get("completed_at") or ""
+    return (version, ts)
+
+
+def _is_experiment_run(run: dict) -> bool:
+    """Return True if a run looks like an actual training experiment.
+
+    Filters out analysis files, metadata-only results, and empty runs.
+    A run is kept if it:
+    - Came from Claude logs (explicit training commands), OR
+    - Has hyperparameters (from config files or CLI flags), OR
+    - Has training-related metrics (loss, accuracy, recall, etc.)
+    """
+    # Claude log runs are always real experiments (matched training regex)
+    if run.get("source") == "claude_logs":
+        return True
+    hp = run.get("hyperparameters", {})
+    if hp:
+        return True
+    metrics = run.get("results", {})
+    if not metrics:
+        return False
+    # Check for training-related metric names
+    training_patterns = (
+        "loss", "accuracy", "acc", "recall", "precision", "f1",
+        "bleu", "rouge", "auc", "perplexity", "exact_match", "mrr",
+    )
+    return any(
+        any(pat in k.lower() for pat in training_patterns)
+        for k in metrics
+    )
+
+
 def _hyperparam_fingerprint(hp: dict) -> str:
     """Create a comparable fingerprint from hyperparameters."""
     # Normalize: sort keys, round floats
@@ -867,11 +921,8 @@ def _save_enrichment_cache(project_path: Path, data: dict) -> None:
 
 def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
     """Build the Sonnet prompt for enriching experiment runs."""
-    # Sort runs chronologically
-    sorted_runs = sorted(
-        runs.items(),
-        key=lambda kv: kv[1].get("started_at") or kv[1].get("completed_at") or "",
-    )
+    # Sort runs by version number, then chronologically
+    sorted_runs = sorted(runs.items(), key=lambda kv: _run_sort_key(kv[1]))
 
     run_descriptions = []
     prev_hp: dict = {}
@@ -1233,8 +1284,8 @@ def generate_notebook(project: dict, section: str = "main",
     run_enrichments = (enrichment or {}).get("runs", {})
     project_insights = (enrichment or {}).get("project", {})
 
-    # Sort runs by completion date, then by name
-    runs.sort(key=lambda r: r.get("completed_at") or r.get("started_at") or "")
+    # Sort runs by version number, then chronologically
+    runs.sort(key=_run_sort_key)
 
     # Factorize hyperparameters
     common_params, varying_keys = _factorize_hyperparams(runs)
