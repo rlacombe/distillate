@@ -3229,6 +3229,18 @@ def main():
                 stored_version, collection_key=_coll_key,
             )
 
+            # Check for items deleted from Zotero
+            try:
+                deleted_keys = zotero_client.get_deleted_item_keys(stored_version)
+                for dk in deleted_keys:
+                    if state.has_document(dk):
+                        title = state.get_document(dk).get("title", dk)
+                        log.info("Zotero item deleted: '%s'", title)
+                        print(f"  Removed (deleted from Zotero): \"{title}\"")
+                        state.remove_document(dk)
+            except Exception:
+                log.warning("Could not check Zotero deletions", exc_info=True)
+
             if changed_keys:
                 # Filter out items we already track
                 new_keys = [

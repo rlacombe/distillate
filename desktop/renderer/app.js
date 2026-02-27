@@ -108,6 +108,7 @@ function handleEvent(event) {
       const mutatingTools = [
         "run_sync", "add_paper_to_zotero", "reprocess_paper",
         "promote_papers", "refresh_metadata", "scan_project",
+        "delete_paper",
       ];
       if (mutatingTools.includes(event.name)) {
         turnHadMutation = true;

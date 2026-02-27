@@ -45,6 +45,7 @@ TOOL_LABELS = {
     "promote_papers": "\u2B50 Promoting to the shelf",
     "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
     "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
+    "delete_paper": "\U0001F5D1\uFE0F Removing from the library",
     "list_projects": "\U0001F9EA Surveying the laboratory",
     "get_project_details": "\U0001F52C Examining the experiment",
     "compare_runs": "\u2696\ufe0f Weighing the results",
@@ -251,7 +252,7 @@ def build_system_prompt(
         "auto-fetches the title, authors, and abstract. Don't ask the user "
         "for metadata you can look up.\n"
         "- Confirm with the user before write operations (sync, reprocess, "
-        "promote).\n"
+        "promote, delete).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
         "- End with a statement, not a question. Don't ask \"Want to know more?\" "
         "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
@@ -306,6 +307,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
         "promote_papers": tools.promote_papers,
         "get_trending_papers": tools.get_trending_papers,
         "add_paper_to_zotero": tools.add_paper_to_zotero,
+        "delete_paper": tools.delete_paper,
     }
 
     # Add experiment tools if enabled
