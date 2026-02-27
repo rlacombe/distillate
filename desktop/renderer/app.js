@@ -178,29 +178,32 @@ function addToolIndicator(name, done) {
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  // Map tool names to labels (mirrors agent_core TOOL_LABELS)
+  // Map tool names to [label, subtitle]
   const labels = {
-    search_papers: "\uD83D\uDD0D Searching the library",
-    get_paper_details: "\uD83D\uDCDC Unrolling the manuscript",
-    get_reading_stats: "\uD83D\uDCCA Tallying the ledger",
-    get_queue: "\u2697\uFE0F Inspecting the queue",
-    get_recent_reads: "\uD83D\uDCDA Reviewing recent reads",
-    suggest_next_reads: "\uD83D\uDD2E Consulting the oracle",
-    synthesize_across_papers: "\u2728 Cross-referencing texts",
-    run_sync: "\uD83D\uDD25 Firing up the furnace",
-    reprocess_paper: "\uD83E\uDDEA Re-extracting the essence",
-    promote_papers: "\u2B50 Promoting to the shelf",
-    get_trending_papers: "\uD83D\uDCC8 Scanning the latest papers",
-    add_paper_to_zotero: "\uD83D\uDCD6 Adding to the library",
-    refresh_metadata: "\uD83D\uDD04 Refreshing metadata",
+    search_papers: ["\uD83D\uDD0D Searching the library", "querying your papers"],
+    get_paper_details: ["\uD83D\uDCDC Unrolling the manuscript", "fetching paper details"],
+    get_reading_stats: ["\uD83D\uDCCA Tallying the ledger", "computing reading stats"],
+    get_queue: ["\u2697\uFE0F Inspecting the queue", "checking unread papers"],
+    get_recent_reads: ["\uD83D\uDCDA Reviewing recent reads", "looking at recent activity"],
+    suggest_next_reads: ["\uD83D\uDD2E Consulting the oracle", "suggesting next reads"],
+    synthesize_across_papers: ["\u2728 Cross-referencing texts", "connecting ideas across papers"],
+    run_sync: ["\uD83D\uDD25 Firing up the furnace", "syncing Zotero & reMarkable"],
+    reprocess_paper: ["\uD83E\uDDEA Re-extracting the essence", "reprocessing highlights"],
+    promote_papers: ["\u2B50 Promoting to the shelf", "pinning to top of queue"],
+    get_trending_papers: ["\uD83D\uDCC8 Scanning the latest papers", "fetching trending papers"],
+    add_paper_to_zotero: ["\uD83D\uDCD6 Adding to the library", "creating Zotero entry"],
+    refresh_metadata: ["\uD83D\uDD04 Refreshing metadata", "updating paper metadata"],
+    delete_paper: ["\uD83D\uDDD1\uFE0F Removing from the library", "deleting from Zotero"],
   };
 
-  const label = labels[name] || name.replace(/_/g, " ");
+  const entry = labels[name];
+  const label = entry ? entry[0] : name.replace(/_/g, " ");
+  const detail = entry ? entry[1] : "";
 
   if (!done) {
-    el.innerHTML = `<div class="spinner"></div><span>${label}</span>`;
+    el.innerHTML = `<div class="spinner"></div><span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
   } else {
-    el.innerHTML = `<span>${label}</span>`;
+    el.innerHTML = `<span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
   }
 
   messagesEl.appendChild(el);
@@ -278,6 +281,7 @@ function fetchWelcomeStats() {
       const parts = [];
       if (data.papers_read != null) parts.push(`${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`);
       if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+      if (data.version) parts.push(`v${data.version}`);
       if (parts.length) {
         welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
       }
@@ -411,6 +415,13 @@ document.addEventListener("keydown", (e) => {
 
 if (window.nicolas) {
   // Running inside Electron
+  window.nicolas.onUpdateProgress(({ phase, message }) => {
+    if (message) {
+      statusText.textContent = message;
+      statusDot.className = "dot updating";
+    }
+  });
+
   window.nicolas.onServerReady(({ port }) => {
     connect(port);
   });

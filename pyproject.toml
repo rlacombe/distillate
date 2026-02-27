@@ -32,6 +32,9 @@ dependencies = [
     "resend>=2.0.0",
 ]
 
+[project.optional-dependencies]
+desktop = ["fastapi", "uvicorn[standard]", "websockets"]
+
 [project.urls]
 Homepage = "https://distillate.dev"
 Repository = "https://github.com/rlacombe/distillate"

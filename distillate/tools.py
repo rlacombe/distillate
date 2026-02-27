@@ -146,11 +146,32 @@ TOOL_SCHEMAS = [
         "name": "get_queue",
         "description": (
             "Get the current reading queue — papers waiting to be read. "
-            "Shows days in queue for each paper."
+            "Returns paginated results; use limit/offset to browse. "
+            "Default: 20 newest papers. Use sort_by='oldest' to find "
+            "papers that have been waiting longest."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max papers to return (default 20, 0 = all)",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip this many papers (for pagination)",
+                },
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["newest", "oldest", "citations", "title"],
+                    "description": "Sort order (default 'newest')",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter to papers with any of these tags",
+                },
+            },
         },
     },
     {
@@ -502,8 +523,15 @@ def get_reading_stats(*, state, period_days: int = 30) -> dict:
     }
 
 
-def get_queue(*, state) -> dict:
-    """Get the current reading queue."""
+def get_queue(
+    *,
+    state,
+    limit: int = 20,
+    offset: int = 0,
+    sort_by: str = "newest",
+    tags: list | None = None,
+) -> dict:
+    """Get the current reading queue with pagination and filtering."""
     from distillate import config as _cfg
 
     now = datetime.now(timezone.utc)
@@ -516,6 +544,14 @@ def get_queue(*, state) -> dict:
         key = doc.get("zotero_item_key", "")
         meta = doc.get("metadata", {})
         uploaded = doc.get("uploaded_at", "")
+        doc_tags = meta.get("tags", [])
+
+        # Tag filter: skip if none of the requested tags match
+        if tags:
+            lower_tags = [t.lower() for t in tags]
+            if not any(t.lower() in lower_tags for t in doc_tags):
+                continue
+
         days = 0
         if uploaded:
             try:
@@ -529,14 +565,34 @@ def get_queue(*, state) -> dict:
             "days_in_queue": days,
             "uploaded_at": _to_local(uploaded),
             "_sort": uploaded,
-            "tags": meta.get("tags", [])[:5],
+            "tags": doc_tags[:5],
             "citation_count": meta.get("citation_count", 0),
             "promoted": key in promoted,
         })
 
-    # Newest first so the model can identify recently added papers
-    papers.sort(key=lambda p: p.pop("_sort", ""), reverse=True)
-    return {"queue": papers, "total": len(papers)}
+    # Sort
+    if sort_by == "oldest":
+        papers.sort(key=lambda p: p.get("_sort", ""))
+    elif sort_by == "citations":
+        papers.sort(key=lambda p: p.get("citation_count", 0), reverse=True)
+    elif sort_by == "title":
+        papers.sort(key=lambda p: p.get("title", "").lower())
+    else:  # newest (default)
+        papers.sort(key=lambda p: p.get("_sort", ""), reverse=True)
+
+    # Strip internal sort key
+    for p in papers:
+        p.pop("_sort", None)
+
+    total = len(papers)
+
+    # Paginate (limit=0 means all)
+    if limit > 0:
+        papers = papers[offset : offset + limit]
+    elif offset > 0:
+        papers = papers[offset:]
+
+    return {"queue": papers, "total": total, "offset": offset, "showing": len(papers)}
 
 
 def get_recent_reads(*, state, count: int = 10) -> dict:

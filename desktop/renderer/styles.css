@@ -266,6 +266,13 @@ body {
   font-size: 13px;
 }
 
+.tool-detail {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 2px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -308,6 +315,7 @@ body {
 
 .dot.connected { background: var(--green); }
 .dot.disconnected { background: var(--error); }
+.dot.updating { background: #f59e0b; }
 
 #input-form {
   display: flex;

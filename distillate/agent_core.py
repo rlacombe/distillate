@@ -24,7 +24,7 @@ MAX_TOOL_STEPS = 5
 MAX_TOKENS = 2048
 CONVERSATION_TRIM_THRESHOLD = 40
 CONVERSATION_KEEP = 24
-MAX_TOOL_RESULT_CHARS = 12000
+MAX_TOOL_RESULT_CHARS = 12000  # kept for reference; no longer enforced
 
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
@@ -443,11 +443,7 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
             }
 
             result = execute_tool(tool_use.name, tool_use.input, state)
-
             result_json = json.dumps(result)
-            if len(result_json) > MAX_TOOL_RESULT_CHARS:
-                result = truncate_result(result, MAX_TOOL_RESULT_CHARS)
-                result_json = json.dumps(result)
 
             yield {
                 "type": "tool_done",
