@@ -5,7 +5,6 @@ let serverPort = null;
 let isStreaming = false;
 let currentAssistantEl = null;
 let currentText = "";
-let turnHadMutation = false;
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -54,9 +53,6 @@ function connect(port) {
 
     // Fetch stats for welcome screen
     fetchWelcomeStats();
-
-    // Pull latest state from cloud on connect
-    triggerCloudSync();
   };
 
   ws.onclose = () => {
@@ -100,34 +96,26 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      addToolIndicator(event.name, false);
+      addToolIndicator(event.name, false, event.input);
       scrollToBottom();
       break;
 
-    case "tool_done": {
-      const mutatingTools = [
-        "run_sync", "add_paper_to_zotero", "reprocess_paper",
-        "promote_papers", "refresh_metadata", "scan_project",
-        "delete_paper",
-      ];
-      if (mutatingTools.includes(event.name)) {
-        turnHadMutation = true;
-      }
+    case "tool_done":
       markToolDone(event.tool_use_id || event.name);
       break;
-    }
 
     case "turn_end":
       finishStreaming();
-      if (turnHadMutation) {
-        triggerCloudSync();
-        turnHadMutation = false;
-      }
       break;
 
     case "error":
       finishStreaming();
-      addErrorMessage(event.message || "Something went wrong.");
+      if (event.category === "invalid_key") {
+        addErrorMessage("No API key configured. Open Settings (Cmd+,) to add your Anthropic API key.");
+        openSettings();
+      } else {
+        addErrorMessage(event.message || "Something went wrong.");
+      }
       break;
   }
 }
@@ -173,12 +161,48 @@ function finishStreaming() {
   inputEl.focus();
 }
 
-function addToolIndicator(name, done) {
+/** Build a context-aware subtitle from tool input params. */
+function _toolDetail(name, fallback, input) {
+  if (!input) return fallback;
+  switch (name) {
+    case "get_queue": {
+      const parts = [];
+      if (input.sort_by) parts.push(input.sort_by);
+      if (input.limit) parts.push(`${input.limit} papers`);
+      if (input.tags && input.tags.length) parts.push(input.tags.join(", "));
+      return parts.length ? parts.join(", ") : fallback;
+    }
+    case "search_papers":
+      return input.query ? `"${input.query}"` : fallback;
+    case "get_paper_details":
+      return input.identifier || fallback;
+    case "reprocess_paper":
+      return input.identifier || fallback;
+    case "delete_paper":
+      return input.identifier || fallback;
+    case "promote_papers":
+      if (input.identifiers && input.identifiers.length)
+        return `${input.identifiers.length} paper${input.identifiers.length > 1 ? "s" : ""}`;
+      return fallback;
+    case "get_recent_reads":
+      return input.count ? `last ${input.count}` : fallback;
+    case "get_trending_papers":
+      return input.limit ? `top ${input.limit}` : fallback;
+    case "synthesize_across_papers":
+      return input.topic || fallback;
+    case "add_paper_to_zotero":
+      return input.url || input.identifier || fallback;
+    default:
+      return fallback;
+  }
+}
+
+function addToolIndicator(name, done, input) {
   const el = document.createElement("div");
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  // Map tool names to [label, subtitle]
+  // Map tool names to [label, default subtitle]
   const labels = {
     search_papers: ["\uD83D\uDD0D Searching the library", "querying your papers"],
     get_paper_details: ["\uD83D\uDCDC Unrolling the manuscript", "fetching paper details"],
@@ -198,7 +222,7 @@ function addToolIndicator(name, done) {
 
   const entry = labels[name];
   const label = entry ? entry[0] : name.replace(/_/g, " ");
-  const detail = entry ? entry[1] : "";
+  const detail = _toolDetail(name, entry ? entry[1] : "", input);
 
   if (!done) {
     el.innerHTML = `<div class="spinner"></div><span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
@@ -252,7 +276,6 @@ function clearConversation() {
   currentAssistantEl = null;
   currentText = "";
   isStreaming = false;
-  turnHadMutation = false;
   inputEl.disabled = false;
   sendBtn.disabled = false;
   inputEl.value = "";
@@ -287,18 +310,6 @@ function fetchWelcomeStats() {
       }
     })
     .catch(() => {}); // Silently ignore if unavailable
-}
-
-/* ───── Cloud sync ───── */
-
-function triggerCloudSync() {
-  if (!serverPort) return;
-  fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" })
-    .then((r) => r.json())
-    .then((data) => {
-      if (data.ok) console.log("[sync] Cloud sync complete");
-    })
-    .catch(() => {}); // Silently ignore if sync unavailable
 }
 
 /* ───── Input handling ───── */
@@ -350,7 +361,6 @@ const settingsClose = document.getElementById("settings-close");
 const settingsSave = document.getElementById("settings-save");
 const settingsStatus = document.getElementById("settings-status");
 const settingApiKey = document.getElementById("setting-api-key");
-const settingAuthToken = document.getElementById("setting-auth-token");
 const consoleLink = document.getElementById("console-link");
 
 function openSettings() {
@@ -359,7 +369,6 @@ function openSettings() {
   if (window.nicolas && window.nicolas.getSettings) {
     window.nicolas.getSettings().then((s) => {
       settingApiKey.value = s.apiKey || "";
-      settingAuthToken.value = s.authToken || "";
     });
   }
   settingsOverlay.classList.remove("hidden");
@@ -386,10 +395,10 @@ if (settingsSave) {
     if (window.nicolas && window.nicolas.saveSettings) {
       window.nicolas.saveSettings({
         apiKey: settingApiKey.value.trim(),
-        authToken: settingAuthToken.value.trim(),
       }).then(() => {
-        settingsStatus.textContent = "Saved! Restart to apply.";
+        settingsStatus.textContent = "Saved! Restarting server...";
         settingsStatus.className = "setting-status success";
+        setTimeout(() => closeSettings(), 800);
       });
     }
   });
@@ -433,7 +442,6 @@ if (window.nicolas) {
 
   window.nicolas.onDeepLink((url) => {
     console.log("Deep link received:", url);
-    // TODO: handle nicolas://auth?token=XXX
   });
 
   window.nicolas.onNewConversation(() => {

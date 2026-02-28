@@ -29,7 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000  # kept for reference; no longer enforced
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project",
+    "scan_project", "delete_paper",
 })
 
 TOOL_LABELS = {
@@ -86,23 +86,15 @@ def get_model() -> str:
 
 
 def create_client():
-    """Create an Anthropic client based on available credentials.
+    """Create an Anthropic client from the user's own API key.
 
     Returns ``None`` when no credentials are configured.
-
-    * ``DISTILLATE_AUTH_TOKEN`` + ``DISTILLATE_API_URL`` → cloud proxy
-    * ``ANTHROPIC_API_KEY`` → direct Anthropic (CLI power users)
     """
     try:
         import anthropic
     except ImportError:
         return None
 
-    if config.DISTILLATE_AUTH_TOKEN and config.DISTILLATE_API_URL:
-        return anthropic.Anthropic(
-            api_key=config.DISTILLATE_AUTH_TOKEN,
-            base_url=config.DISTILLATE_API_URL,
-        )
     if config.ANTHROPIC_API_KEY:
         return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     return None

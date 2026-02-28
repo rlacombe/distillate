@@ -162,10 +162,9 @@ ipcMain.handle("get-settings", () => {
     const vars = _parseEnv(text);
     return {
       apiKey: vars.ANTHROPIC_API_KEY || "",
-      authToken: vars.DISTILLATE_AUTH_TOKEN || "",
     };
   } catch {
-    return { apiKey: "", authToken: "" };
+    return { apiKey: "" };
   }
 });
 
@@ -186,15 +185,33 @@ ipcMain.handle("save-settings", (_event, settings) => {
   if (settings.apiKey !== undefined) {
     vars.ANTHROPIC_API_KEY = settings.apiKey;
   }
-  if (settings.authToken !== undefined) {
-    if (settings.authToken) {
-      vars.DISTILLATE_AUTH_TOKEN = settings.authToken;
-    } else {
-      delete vars.DISTILLATE_AUTH_TOKEN;
-    }
-  }
 
   fs.writeFileSync(envFile, _serializeEnv(vars), "utf-8");
+
+  // Restart the Python server so it picks up the new API key
+  if (pythonManager) {
+    (async () => {
+      try {
+        await pythonManager.stop();
+        const port = await pythonManager.start((info) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("update-progress", info);
+          }
+        });
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("server-ready", { port });
+        }
+      } catch (err) {
+        console.error("Failed to restart Python server:", err);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("server-error", {
+            message: err.message || "Failed to restart",
+          });
+        }
+      }
+    })();
+  }
+
   return { ok: true };
 });
 
