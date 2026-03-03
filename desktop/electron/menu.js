@@ -1,6 +1,4 @@
 const { app, Menu, shell } = require("electron");
-const fsp = require("fs/promises");
-const path = require("path");
 
 /**
  * Build the application menu.
@@ -137,20 +135,6 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
           label: "View on GitHub",
           click: () =>
             shell.openExternal("https://github.com/rlacombe/distillate"),
-        },
-        { type: "separator" },
-        {
-          label: "Reset Python Environment",
-          click: () => {
-            const userData = app.getPath("userData");
-            Promise.all([
-              fsp.rm(path.join(userData, "python-env"), { recursive: true, force: true }),
-              fsp.rm(path.join(userData, "distillate-version.txt"), { force: true }),
-            ]).then(() => {
-              app.relaunch();
-              app.exit(0);
-            });
-          },
         },
       ],
     },

@@ -231,15 +231,6 @@ body {
   padding: 0;
 }
 
-.message.assistant a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.message.assistant a:hover {
-  text-decoration: underline;
-}
-
 .message.assistant ul, .message.assistant ol {
   padding-left: 20px;
   margin-bottom: 8px;
@@ -273,13 +264,6 @@ body {
 .tool-indicator.done::before {
   content: "✓";
   font-size: 13px;
-}
-
-.tool-detail {
-  color: var(--text-dim);
-  font-weight: 400;
-  font-size: 12px;
-  margin-left: 2px;
 }
 
 @keyframes spin {
@@ -324,7 +308,6 @@ body {
 
 .dot.connected { background: var(--green); }
 .dot.disconnected { background: var(--error); }
-.dot.updating { background: #f59e0b; }
 
 #input-form {
   display: flex;

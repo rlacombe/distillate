@@ -25,10 +25,6 @@ contextBridge.exposeInMainWorld("nicolas", {
     ipcRenderer.on("server-error", (_event, data) => callback(data)),
   getServerPort: () => ipcRenderer.invoke("get-server-port"),
 
-  // Auto-update progress
-  onUpdateProgress: (callback) =>
-    ipcRenderer.on("update-progress", (_event, data) => callback(data)),
-
   // Navigation
   onDeepLink: (callback) =>
     ipcRenderer.on("deep-link", (_event, url) => callback(url)),

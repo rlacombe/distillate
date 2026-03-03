@@ -7,7 +7,6 @@ goes through yielded events.
 
 import json
 import logging
-import time
 
 from datetime import datetime, timedelta, timezone
 
@@ -25,14 +24,12 @@ MAX_TOOL_STEPS = 5
 MAX_TOKENS = 2048
 CONVERSATION_TRIM_THRESHOLD = 40
 CONVERSATION_KEEP = 24
-MAX_TOOL_RESULT_CHARS = 12000  # kept for reference; no longer enforced
-API_MAX_RETRIES = 3
-API_BASE_DELAY = 2  # seconds
+MAX_TOOL_RESULT_CHARS = 12000
 
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project", "delete_paper",
+    "scan_project",
 })
 
 TOOL_LABELS = {
@@ -89,15 +86,23 @@ def get_model() -> str:
 
 
 def create_client():
-    """Create an Anthropic client from the user's own API key.
+    """Create an Anthropic client based on available credentials.
 
     Returns ``None`` when no credentials are configured.
+
+    * ``DISTILLATE_AUTH_TOKEN`` + ``DISTILLATE_API_URL`` → cloud proxy
+    * ``ANTHROPIC_API_KEY`` → direct Anthropic (CLI power users)
     """
     try:
         import anthropic
     except ImportError:
         return None
 
+    if config.DISTILLATE_AUTH_TOKEN and config.DISTILLATE_API_URL:
+        return anthropic.Anthropic(
+            api_key=config.DISTILLATE_AUTH_TOKEN,
+            base_url=config.DISTILLATE_API_URL,
+        )
     if config.ANTHROPIC_API_KEY:
         return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     return None
@@ -388,54 +393,35 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
     tools = _build_tool_schemas()
 
     for _step in range(MAX_TOOL_STEPS):
-        # --- API call (streaming, with retries for transient errors) ---
-        response = None
-        for _attempt in range(API_MAX_RETRIES):
-            try:
-                with client.messages.stream(
-                    model=get_model(),
-                    max_tokens=MAX_TOKENS,
-                    system=system_prompt,
-                    messages=conversation,
-                    tools=tools,
-                ) as stream:
-                    for event in stream:
-                        if (hasattr(event, "type")
-                                and event.type == "content_block_delta"
-                                and hasattr(event.delta, "text")):
-                            yield {"type": "text_delta", "text": event.delta.text}
-                    response = stream.get_final_message()
-                break  # success
-            except Exception as exc:
-                msg = str(exc)
-                retryable = "overloaded" in msg or "rate_limit" in msg
-                if retryable and _attempt < API_MAX_RETRIES - 1:
-                    delay = API_BASE_DELAY * (2 ** _attempt)
-                    log.warning("Retryable API error (attempt %d/%d), "
-                                "retrying in %ds: %s",
-                                _attempt + 1, API_MAX_RETRIES, delay, msg)
-                    yield {"type": "text_delta",
-                           "text": f"\n\n*API busy — retrying in {delay}s...*\n\n"}
-                    time.sleep(delay)
-                    continue
-
-                if "credit balance is too low" in msg:
-                    cat = "credits_depleted"
-                elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
-                    cat = "invalid_key"
-                elif "overloaded" in msg:
-                    cat = "overloaded"
-                elif "rate_limit" in msg:
-                    cat = "rate_limited"
-                else:
-                    cat = "unknown"
-                log.exception("Agent API call failed")
-                yield {"type": "error", "message": msg, "category": cat}
-                return
-
-        if response is None:
-            yield {"type": "error", "message": "Failed after retries",
-                   "category": "overloaded"}
+        # --- API call (streaming) ---
+        try:
+            with client.messages.stream(
+                model=get_model(),
+                max_tokens=MAX_TOKENS,
+                system=system_prompt,
+                messages=conversation,
+                tools=tools,
+            ) as stream:
+                for event in stream:
+                    if (hasattr(event, "type")
+                            and event.type == "content_block_delta"
+                            and hasattr(event.delta, "text")):
+                        yield {"type": "text_delta", "text": event.delta.text}
+                response = stream.get_final_message()
+        except Exception as exc:
+            msg = str(exc)
+            if "credit balance is too low" in msg:
+                cat = "credits_depleted"
+            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
+                cat = "invalid_key"
+            elif "overloaded" in msg:
+                cat = "overloaded"
+            elif "rate_limit" in msg:
+                cat = "rate_limited"
+            else:
+                cat = "unknown"
+            log.exception("Agent API call failed")
+            yield {"type": "error", "message": msg, "category": cat}
             return
 
         # --- Record assistant message ---
@@ -457,7 +443,11 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
             }
 
             result = execute_tool(tool_use.name, tool_use.input, state)
+
             result_json = json.dumps(result)
+            if len(result_json) > MAX_TOOL_RESULT_CHARS:
+                result = truncate_result(result, MAX_TOOL_RESULT_CHARS)
+                result_json = json.dumps(result)
 
             yield {
                 "type": "tool_done",

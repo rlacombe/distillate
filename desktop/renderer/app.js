@@ -5,6 +5,7 @@ let serverPort = null;
 let isStreaming = false;
 let currentAssistantEl = null;
 let currentText = "";
+let turnHadMutation = false;
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -53,6 +54,9 @@ function connect(port) {
 
     // Fetch stats for welcome screen
     fetchWelcomeStats();
+
+    // Pull latest state from cloud on connect
+    triggerCloudSync();
   };
 
   ws.onclose = () => {
@@ -96,26 +100,34 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      addToolIndicator(event.name, false, event.input);
+      addToolIndicator(event.name, false);
       scrollToBottom();
       break;
 
-    case "tool_done":
+    case "tool_done": {
+      const mutatingTools = [
+        "run_sync", "add_paper_to_zotero", "reprocess_paper",
+        "promote_papers", "refresh_metadata", "scan_project",
+        "delete_paper",
+      ];
+      if (mutatingTools.includes(event.name)) {
+        turnHadMutation = true;
+      }
       markToolDone(event.tool_use_id || event.name);
       break;
+    }
 
     case "turn_end":
       finishStreaming();
+      if (turnHadMutation) {
+        triggerCloudSync();
+        turnHadMutation = false;
+      }
       break;
 
     case "error":
       finishStreaming();
-      if (event.category === "invalid_key") {
-        addErrorMessage("No API key configured. Open Settings (Cmd+,) to add your Anthropic API key.");
-        openSettings();
-      } else {
-        addErrorMessage(event.message || "Something went wrong.");
-      }
+      addErrorMessage(event.message || "Something went wrong.");
       break;
   }
 }
@@ -161,73 +173,34 @@ function finishStreaming() {
   inputEl.focus();
 }
 
-/** Build a context-aware subtitle from tool input params. */
-function _toolDetail(name, fallback, input) {
-  if (!input) return fallback;
-  switch (name) {
-    case "get_queue": {
-      const parts = [];
-      if (input.sort_by) parts.push(input.sort_by);
-      if (input.limit) parts.push(`${input.limit} papers`);
-      if (input.tags && input.tags.length) parts.push(input.tags.join(", "));
-      return parts.length ? parts.join(", ") : fallback;
-    }
-    case "search_papers":
-      return input.query ? `"${input.query}"` : fallback;
-    case "get_paper_details":
-      return input.identifier || fallback;
-    case "reprocess_paper":
-      return input.identifier || fallback;
-    case "delete_paper":
-      return input.identifier || fallback;
-    case "promote_papers":
-      if (input.identifiers && input.identifiers.length)
-        return `${input.identifiers.length} paper${input.identifiers.length > 1 ? "s" : ""}`;
-      return fallback;
-    case "get_recent_reads":
-      return input.count ? `last ${input.count}` : fallback;
-    case "get_trending_papers":
-      return input.limit ? `top ${input.limit}` : fallback;
-    case "synthesize_across_papers":
-      return input.topic || fallback;
-    case "add_paper_to_zotero":
-      return input.url || input.identifier || fallback;
-    default:
-      return fallback;
-  }
-}
-
-function addToolIndicator(name, done, input) {
+function addToolIndicator(name, done) {
   const el = document.createElement("div");
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  // Map tool names to [label, default subtitle]
+  // Map tool names to labels (mirrors agent_core TOOL_LABELS)
   const labels = {
-    search_papers: ["\uD83D\uDD0D Searching the library", "querying your papers"],
-    get_paper_details: ["\uD83D\uDCDC Unrolling the manuscript", "fetching paper details"],
-    get_reading_stats: ["\uD83D\uDCCA Tallying the ledger", "computing reading stats"],
-    get_queue: ["\u2697\uFE0F Inspecting the queue", "checking unread papers"],
-    get_recent_reads: ["\uD83D\uDCDA Reviewing recent reads", "looking at recent activity"],
-    suggest_next_reads: ["\uD83D\uDD2E Consulting the oracle", "suggesting next reads"],
-    synthesize_across_papers: ["\u2728 Cross-referencing texts", "connecting ideas across papers"],
-    run_sync: ["\uD83D\uDD25 Firing up the furnace", "syncing Zotero & reMarkable"],
-    reprocess_paper: ["\uD83E\uDDEA Re-extracting the essence", "reprocessing highlights"],
-    promote_papers: ["\u2B50 Promoting to the shelf", "pinning to top of queue"],
-    get_trending_papers: ["\uD83D\uDCC8 Scanning the latest papers", "fetching trending papers"],
-    add_paper_to_zotero: ["\uD83D\uDCD6 Adding to the library", "creating Zotero entry"],
-    refresh_metadata: ["\uD83D\uDD04 Refreshing metadata", "updating paper metadata"],
-    delete_paper: ["\uD83D\uDDD1\uFE0F Removing from the library", "deleting from Zotero"],
+    search_papers: "\uD83D\uDD0D Searching the library",
+    get_paper_details: "\uD83D\uDCDC Unrolling the manuscript",
+    get_reading_stats: "\uD83D\uDCCA Tallying the ledger",
+    get_queue: "\u2697\uFE0F Inspecting the queue",
+    get_recent_reads: "\uD83D\uDCDA Reviewing recent reads",
+    suggest_next_reads: "\uD83D\uDD2E Consulting the oracle",
+    synthesize_across_papers: "\u2728 Cross-referencing texts",
+    run_sync: "\uD83D\uDD25 Firing up the furnace",
+    reprocess_paper: "\uD83E\uDDEA Re-extracting the essence",
+    promote_papers: "\u2B50 Promoting to the shelf",
+    get_trending_papers: "\uD83D\uDCC8 Scanning the latest papers",
+    add_paper_to_zotero: "\uD83D\uDCD6 Adding to the library",
+    refresh_metadata: "\uD83D\uDD04 Refreshing metadata",
   };
 
-  const entry = labels[name];
-  const label = entry ? entry[0] : name.replace(/_/g, " ");
-  const detail = _toolDetail(name, entry ? entry[1] : "", input);
+  const label = labels[name] || name.replace(/_/g, " ");
 
   if (!done) {
-    el.innerHTML = `<div class="spinner"></div><span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
+    el.innerHTML = `<div class="spinner"></div><span>${label}</span>`;
   } else {
-    el.innerHTML = `<span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
+    el.innerHTML = `<span>${label}</span>`;
   }
 
   messagesEl.appendChild(el);
@@ -276,6 +249,7 @@ function clearConversation() {
   currentAssistantEl = null;
   currentText = "";
   isStreaming = false;
+  turnHadMutation = false;
   inputEl.disabled = false;
   sendBtn.disabled = false;
   inputEl.value = "";
@@ -304,12 +278,23 @@ function fetchWelcomeStats() {
       const parts = [];
       if (data.papers_read != null) parts.push(`${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`);
       if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
-      if (data.version) parts.push(`v${data.version}`);
       if (parts.length) {
         welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
       }
     })
     .catch(() => {}); // Silently ignore if unavailable
+}
+
+/* ───── Cloud sync ───── */
+
+function triggerCloudSync() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.ok) console.log("[sync] Cloud sync complete");
+    })
+    .catch(() => {}); // Silently ignore if sync unavailable
 }
 
 /* ───── Input handling ───── */
@@ -361,6 +346,7 @@ const settingsClose = document.getElementById("settings-close");
 const settingsSave = document.getElementById("settings-save");
 const settingsStatus = document.getElementById("settings-status");
 const settingApiKey = document.getElementById("setting-api-key");
+const settingAuthToken = document.getElementById("setting-auth-token");
 const consoleLink = document.getElementById("console-link");
 
 function openSettings() {
@@ -369,6 +355,7 @@ function openSettings() {
   if (window.nicolas && window.nicolas.getSettings) {
     window.nicolas.getSettings().then((s) => {
       settingApiKey.value = s.apiKey || "";
+      settingAuthToken.value = s.authToken || "";
     });
   }
   settingsOverlay.classList.remove("hidden");
@@ -395,10 +382,10 @@ if (settingsSave) {
     if (window.nicolas && window.nicolas.saveSettings) {
       window.nicolas.saveSettings({
         apiKey: settingApiKey.value.trim(),
+        authToken: settingAuthToken.value.trim(),
       }).then(() => {
-        settingsStatus.textContent = "Saved! Restarting server...";
+        settingsStatus.textContent = "Saved! Restart to apply.";
         settingsStatus.className = "setting-status success";
-        setTimeout(() => closeSettings(), 800);
       });
     }
   });
@@ -424,13 +411,6 @@ document.addEventListener("keydown", (e) => {
 
 if (window.nicolas) {
   // Running inside Electron
-  window.nicolas.onUpdateProgress(({ phase, message }) => {
-    if (message) {
-      statusText.textContent = message;
-      statusDot.className = "dot updating";
-    }
-  });
-
   window.nicolas.onServerReady(({ port }) => {
     connect(port);
   });
@@ -442,6 +422,7 @@ if (window.nicolas) {
 
   window.nicolas.onDeepLink((url) => {
     console.log("Deep link received:", url);
+    // TODO: handle nicolas://auth?token=XXX
   });
 
   window.nicolas.onNewConversation(() => {

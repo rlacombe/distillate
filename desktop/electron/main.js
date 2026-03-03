@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const fsp = require("fs/promises");
 const { PythonManager } = require("./python-manager");
 const { buildMenu } = require("./menu");
 
@@ -45,49 +44,28 @@ function openSettings() {
 }
 
 app.on("ready", async () => {
+  // Build app menu
   buildMenu({
     onNewConversation: newConversation,
     onOpenSettings: openSettings,
     getWindow: () => mainWindow,
   });
 
-  // Create window first so we can show progress during Python startup
-  createWindow();
-
-  // Queue IPC messages until the renderer finishes loading
-  let rendererReady = false;
-  const messageQueue = [];
-
-  const sendToRenderer = (channel, data) => {
-    if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(channel, data);
-    } else {
-      messageQueue.push({ channel, data });
-    }
-  };
-
-  mainWindow.webContents.on("did-finish-load", () => {
-    rendererReady = true;
-    for (const { channel, data } of messageQueue) {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(channel, data);
-      }
-    }
-    messageQueue.length = 0;
-  });
-
-  // Start Python server (with auto-update in production)
   pythonManager = new PythonManager();
 
   try {
-    const port = await pythonManager.start((info) => {
-      sendToRenderer("update-progress", info);
+    const port = await pythonManager.start();
+    createWindow();
+    mainWindow.webContents.on("did-finish-load", () => {
+      mainWindow.webContents.send("server-ready", { port });
     });
-    sendToRenderer("server-ready", { port });
   } catch (err) {
     console.error("Failed to start Python server:", err);
-    sendToRenderer("server-error", {
-      message: err.message || "Failed to start Python server",
+    createWindow();
+    mainWindow.webContents.on("did-finish-load", () => {
+      mainWindow.webContents.send("server-error", {
+        message: err.message || "Failed to start Python server",
+      });
     });
   }
 });
@@ -105,7 +83,7 @@ app.on("activate", () => {
   }
 });
 
-// Handle distillate:// deep links (for auth callback)
+// Handle nicolas:// deep links (for auth callback)
 app.on("open-url", (event, url) => {
   event.preventDefault();
   if (mainWindow) {
@@ -162,9 +140,10 @@ ipcMain.handle("get-settings", () => {
     const vars = _parseEnv(text);
     return {
       apiKey: vars.ANTHROPIC_API_KEY || "",
+      authToken: vars.DISTILLATE_AUTH_TOKEN || "",
     };
   } catch {
-    return { apiKey: "" };
+    return { apiKey: "", authToken: "" };
   }
 });
 
@@ -185,48 +164,14 @@ ipcMain.handle("save-settings", (_event, settings) => {
   if (settings.apiKey !== undefined) {
     vars.ANTHROPIC_API_KEY = settings.apiKey;
   }
-
-  fs.writeFileSync(envFile, _serializeEnv(vars), "utf-8");
-
-  // Restart the Python server so it picks up the new API key
-  if (pythonManager) {
-    (async () => {
-      try {
-        await pythonManager.stop();
-        const port = await pythonManager.start((info) => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send("update-progress", info);
-          }
-        });
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("server-ready", { port });
-        }
-      } catch (err) {
-        console.error("Failed to restart Python server:", err);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("server-error", {
-            message: err.message || "Failed to restart",
-          });
-        }
-      }
-    })();
+  if (settings.authToken !== undefined) {
+    if (settings.authToken) {
+      vars.DISTILLATE_AUTH_TOKEN = settings.authToken;
+    } else {
+      delete vars.DISTILLATE_AUTH_TOKEN;
+    }
   }
 
+  fs.writeFileSync(envFile, _serializeEnv(vars), "utf-8");
   return { ok: true };
-});
-
-// ---------------------------------------------------------------------------
-// Reset Python environment (recovery)
-// ---------------------------------------------------------------------------
-
-ipcMain.handle("reset-python-env", async () => {
-  const userData = app.getPath("userData");
-  const extDir = path.join(userData, "python-env");
-  const versionFile = path.join(userData, "distillate-version.txt");
-
-  await fsp.rm(extDir, { recursive: true, force: true });
-  await fsp.rm(versionFile, { force: true });
-
-  app.relaunch();
-  app.exit(0);
 });
