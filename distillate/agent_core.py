@@ -7,6 +7,7 @@ goes through yielded events.
 
 import json
 import logging
+import time
 
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,8 @@ MAX_TOKENS = 2048
 CONVERSATION_TRIM_THRESHOLD = 40
 CONVERSATION_KEEP = 24
 MAX_TOOL_RESULT_CHARS = 12000  # kept for reference; no longer enforced
+API_MAX_RETRIES = 3
+API_BASE_DELAY = 2  # seconds
 
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
@@ -385,35 +388,54 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
     tools = _build_tool_schemas()
 
     for _step in range(MAX_TOOL_STEPS):
-        # --- API call (streaming) ---
-        try:
-            with client.messages.stream(
-                model=get_model(),
-                max_tokens=MAX_TOKENS,
-                system=system_prompt,
-                messages=conversation,
-                tools=tools,
-            ) as stream:
-                for event in stream:
-                    if (hasattr(event, "type")
-                            and event.type == "content_block_delta"
-                            and hasattr(event.delta, "text")):
-                        yield {"type": "text_delta", "text": event.delta.text}
-                response = stream.get_final_message()
-        except Exception as exc:
-            msg = str(exc)
-            if "credit balance is too low" in msg:
-                cat = "credits_depleted"
-            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
-                cat = "invalid_key"
-            elif "overloaded" in msg:
-                cat = "overloaded"
-            elif "rate_limit" in msg:
-                cat = "rate_limited"
-            else:
-                cat = "unknown"
-            log.exception("Agent API call failed")
-            yield {"type": "error", "message": msg, "category": cat}
+        # --- API call (streaming, with retries for transient errors) ---
+        response = None
+        for _attempt in range(API_MAX_RETRIES):
+            try:
+                with client.messages.stream(
+                    model=get_model(),
+                    max_tokens=MAX_TOKENS,
+                    system=system_prompt,
+                    messages=conversation,
+                    tools=tools,
+                ) as stream:
+                    for event in stream:
+                        if (hasattr(event, "type")
+                                and event.type == "content_block_delta"
+                                and hasattr(event.delta, "text")):
+                            yield {"type": "text_delta", "text": event.delta.text}
+                    response = stream.get_final_message()
+                break  # success
+            except Exception as exc:
+                msg = str(exc)
+                retryable = "overloaded" in msg or "rate_limit" in msg
+                if retryable and _attempt < API_MAX_RETRIES - 1:
+                    delay = API_BASE_DELAY * (2 ** _attempt)
+                    log.warning("Retryable API error (attempt %d/%d), "
+                                "retrying in %ds: %s",
+                                _attempt + 1, API_MAX_RETRIES, delay, msg)
+                    yield {"type": "text_delta",
+                           "text": f"\n\n*API busy — retrying in {delay}s...*\n\n"}
+                    time.sleep(delay)
+                    continue
+
+                if "credit balance is too low" in msg:
+                    cat = "credits_depleted"
+                elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
+                    cat = "invalid_key"
+                elif "overloaded" in msg:
+                    cat = "overloaded"
+                elif "rate_limit" in msg:
+                    cat = "rate_limited"
+                else:
+                    cat = "unknown"
+                log.exception("Agent API call failed")
+                yield {"type": "error", "message": msg, "category": cat}
+                return
+
+        if response is None:
+            yield {"type": "error", "message": "Failed after retries",
+                   "category": "overloaded"}
             return
 
         # --- Record assistant message ---
