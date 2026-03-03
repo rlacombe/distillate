@@ -20,6 +20,22 @@ if (typeof marked !== "undefined") {
     breaks: true,
     gfm: true,
   });
+
+  // Custom renderer for syntax highlighting (hljs exposed via preload)
+  const renderer = new marked.Renderer();
+  renderer.code = function ({ text, lang }) {
+    if (window.hljs && lang && window.hljs.getLanguage(lang)) {
+      const highlighted = window.hljs.highlight(text, { language: lang }).value;
+      return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    }
+    if (window.hljs) {
+      const auto = window.hljs.highlightAuto(text).value;
+      return `<pre><code class="hljs">${auto}</code></pre>`;
+    }
+    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<pre><code>${escaped}</code></pre>`;
+  };
+  marked.use({ renderer });
 }
 
 /* ───── Connection ───── */
@@ -34,6 +50,9 @@ function connect(port) {
     inputEl.disabled = false;
     sendBtn.disabled = false;
     inputEl.focus();
+
+    // Fetch stats for welcome screen
+    fetchWelcomeStats();
   };
 
   ws.onclose = () => {
@@ -70,7 +89,14 @@ function handleEvent(event) {
       break;
 
     case "tool_start":
-      addToolIndicator(event.name, false);
+      // Close current text block so the indicator appears between text sections
+      if (currentAssistantEl) {
+        currentAssistantEl.classList.remove("streaming-cursor");
+        renderAssistantMessage();
+        currentAssistantEl = null;
+        currentText = "";
+      }
+      addToolIndicator(event.name, false, event.input);
       scrollToBottom();
       break;
 
@@ -84,7 +110,12 @@ function handleEvent(event) {
 
     case "error":
       finishStreaming();
-      addErrorMessage(event.message || "Something went wrong.");
+      if (event.category === "invalid_key") {
+        addErrorMessage("No API key configured. Open Settings (Cmd+,) to add your Anthropic API key.");
+        openSettings();
+      } else {
+        addErrorMessage(event.message || "Something went wrong.");
+      }
       break;
   }
 }
@@ -97,7 +128,7 @@ function addUserMessage(text) {
   el.className = "message user";
   el.textContent = text;
   messagesEl.appendChild(el);
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 function startAssistantMessage() {
@@ -130,34 +161,73 @@ function finishStreaming() {
   inputEl.focus();
 }
 
-function addToolIndicator(name, done) {
+/** Build a context-aware subtitle from tool input params. */
+function _toolDetail(name, fallback, input) {
+  if (!input) return fallback;
+  switch (name) {
+    case "get_queue": {
+      const parts = [];
+      if (input.sort_by) parts.push(input.sort_by);
+      if (input.limit) parts.push(`${input.limit} papers`);
+      if (input.tags && input.tags.length) parts.push(input.tags.join(", "));
+      return parts.length ? parts.join(", ") : fallback;
+    }
+    case "search_papers":
+      return input.query ? `"${input.query}"` : fallback;
+    case "get_paper_details":
+      return input.identifier || fallback;
+    case "reprocess_paper":
+      return input.identifier || fallback;
+    case "delete_paper":
+      return input.identifier || fallback;
+    case "promote_papers":
+      if (input.identifiers && input.identifiers.length)
+        return `${input.identifiers.length} paper${input.identifiers.length > 1 ? "s" : ""}`;
+      return fallback;
+    case "get_recent_reads":
+      return input.count ? `last ${input.count}` : fallback;
+    case "get_trending_papers":
+      return input.limit ? `top ${input.limit}` : fallback;
+    case "synthesize_across_papers":
+      return input.topic || fallback;
+    case "add_paper_to_zotero":
+      return input.url || input.identifier || fallback;
+    default:
+      return fallback;
+  }
+}
+
+function addToolIndicator(name, done, input) {
   const el = document.createElement("div");
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  // Map tool names to labels (mirrors agent_core TOOL_LABELS)
+  // Map tool names to [label, default subtitle]
   const labels = {
-    search_papers: "\uD83D\uDD0D Searching the library",
-    get_paper_details: "\uD83D\uDCDC Unrolling the manuscript",
-    get_reading_stats: "\uD83D\uDCCA Tallying the ledger",
-    get_queue: "\u2697\uFE0F Inspecting the queue",
-    get_recent_reads: "\uD83D\uDCDA Reviewing recent reads",
-    suggest_next_reads: "\uD83D\uDD2E Consulting the oracle",
-    synthesize_across_papers: "\u2728 Cross-referencing texts",
-    run_sync: "\uD83D\uDD25 Firing up the furnace",
-    reprocess_paper: "\uD83E\uDDEA Re-extracting the essence",
-    promote_papers: "\u2B50 Promoting to the shelf",
-    get_trending_papers: "\uD83D\uDCC8 Scanning the latest papers",
-    add_paper_to_zotero: "\uD83D\uDCD6 Adding to the library",
-    refresh_metadata: "\uD83D\uDD04 Refreshing metadata",
+    search_papers: ["\uD83D\uDD0D Searching the library", "querying your papers"],
+    get_paper_details: ["\uD83D\uDCDC Unrolling the manuscript", "fetching paper details"],
+    get_reading_stats: ["\uD83D\uDCCA Tallying the ledger", "computing reading stats"],
+    get_queue: ["\u2697\uFE0F Inspecting the queue", "checking unread papers"],
+    get_recent_reads: ["\uD83D\uDCDA Reviewing recent reads", "looking at recent activity"],
+    suggest_next_reads: ["\uD83D\uDD2E Consulting the oracle", "suggesting next reads"],
+    synthesize_across_papers: ["\u2728 Cross-referencing texts", "connecting ideas across papers"],
+    run_sync: ["\uD83D\uDD25 Firing up the furnace", "syncing Zotero & reMarkable"],
+    reprocess_paper: ["\uD83E\uDDEA Re-extracting the essence", "reprocessing highlights"],
+    promote_papers: ["\u2B50 Promoting to the shelf", "pinning to top of queue"],
+    get_trending_papers: ["\uD83D\uDCC8 Scanning the latest papers", "fetching trending papers"],
+    add_paper_to_zotero: ["\uD83D\uDCD6 Adding to the library", "creating Zotero entry"],
+    refresh_metadata: ["\uD83D\uDD04 Refreshing metadata", "updating paper metadata"],
+    delete_paper: ["\uD83D\uDDD1\uFE0F Removing from the library", "deleting from Zotero"],
   };
 
-  const label = labels[name] || name.replace(/_/g, " ");
+  const entry = labels[name];
+  const label = entry ? entry[0] : name.replace(/_/g, " ");
+  const detail = _toolDetail(name, entry ? entry[1] : "", input);
 
   if (!done) {
-    el.innerHTML = `<div class="spinner"></div><span>${label}</span>`;
+    el.innerHTML = `<div class="spinner"></div><span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
   } else {
-    el.innerHTML = `<span>${label}</span>`;
+    el.innerHTML = `<span>${label}</span>${detail ? `<span class="tool-detail">\u2014 ${detail}</span>` : ""}`;
   }
 
   messagesEl.appendChild(el);
@@ -184,9 +254,62 @@ function addErrorMessage(text) {
   scrollToBottom();
 }
 
-function scrollToBottom() {
+function isNearBottom() {
   const container = document.getElementById("chat-container");
-  container.scrollTop = container.scrollHeight;
+  const threshold = 80; // px from bottom
+  return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+}
+
+function scrollToBottom(force = false) {
+  const container = document.getElementById("chat-container");
+  if (force || isNearBottom()) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+/* ───── New conversation ───── */
+
+function clearConversation() {
+  // Reset UI
+  messagesEl.innerHTML = "";
+  welcomeEl.classList.remove("hidden");
+  currentAssistantEl = null;
+  currentText = "";
+  isStreaming = false;
+  inputEl.disabled = false;
+  sendBtn.disabled = false;
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  inputEl.focus();
+
+  // Refresh stats
+  fetchWelcomeStats();
+
+  // Tell server to start fresh
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "new_conversation" }));
+  }
+}
+
+/* ───── Welcome stats ───── */
+
+const welcomeStatsEl = document.getElementById("welcome-stats");
+
+function fetchWelcomeStats() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/status`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data.ok || !welcomeStatsEl) return;
+      const parts = [];
+      if (data.papers_read != null) parts.push(`${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`);
+      if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+      if (data.version) parts.push(`v${data.version}`);
+      if (parts.length) {
+        welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
+      }
+    })
+    .catch(() => {}); // Silently ignore if unavailable
 }
 
 /* ───── Input handling ───── */
@@ -231,10 +354,83 @@ document.querySelectorAll(".suggestion").forEach((btn) => {
   });
 });
 
+/* ───── Settings modal ───── */
+
+const settingsOverlay = document.getElementById("settings-overlay");
+const settingsClose = document.getElementById("settings-close");
+const settingsSave = document.getElementById("settings-save");
+const settingsStatus = document.getElementById("settings-status");
+const settingApiKey = document.getElementById("setting-api-key");
+const consoleLink = document.getElementById("console-link");
+
+function openSettings() {
+  settingsStatus.textContent = "";
+  // Load current values
+  if (window.nicolas && window.nicolas.getSettings) {
+    window.nicolas.getSettings().then((s) => {
+      settingApiKey.value = s.apiKey || "";
+    });
+  }
+  settingsOverlay.classList.remove("hidden");
+  settingApiKey.focus();
+}
+
+function closeSettings() {
+  settingsOverlay.classList.add("hidden");
+  inputEl.focus();
+}
+
+if (settingsClose) {
+  settingsClose.addEventListener("click", closeSettings);
+}
+
+if (settingsOverlay) {
+  settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) closeSettings();
+  });
+}
+
+if (settingsSave) {
+  settingsSave.addEventListener("click", () => {
+    if (window.nicolas && window.nicolas.saveSettings) {
+      window.nicolas.saveSettings({
+        apiKey: settingApiKey.value.trim(),
+      }).then(() => {
+        settingsStatus.textContent = "Saved! Restarting server...";
+        settingsStatus.className = "setting-status success";
+        setTimeout(() => closeSettings(), 800);
+      });
+    }
+  });
+}
+
+if (consoleLink) {
+  consoleLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (window.nicolas && window.nicolas.openExternal) {
+      window.nicolas.openExternal("https://console.anthropic.com/settings/keys");
+    }
+  });
+}
+
+// Esc to close settings
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
+    closeSettings();
+  }
+});
+
 /* ───── Electron bridge ───── */
 
 if (window.nicolas) {
   // Running inside Electron
+  window.nicolas.onUpdateProgress(({ phase, message }) => {
+    if (message) {
+      statusText.textContent = message;
+      statusDot.className = "dot updating";
+    }
+  });
+
   window.nicolas.onServerReady(({ port }) => {
     connect(port);
   });
@@ -246,7 +442,14 @@ if (window.nicolas) {
 
   window.nicolas.onDeepLink((url) => {
     console.log("Deep link received:", url);
-    // TODO: handle nicolas://auth?token=XXX
+  });
+
+  window.nicolas.onNewConversation(() => {
+    clearConversation();
+  });
+
+  window.nicolas.onOpenSettings(() => {
+    openSettings();
   });
 } else {
   // Running in a regular browser (development)

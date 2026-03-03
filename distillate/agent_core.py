@@ -7,12 +7,13 @@ goes through yielded events.
 
 import json
 import logging
+import time
 
 from datetime import datetime, timedelta, timezone
 
 from distillate import config
 from distillate.state import State
-from distillate.tools import TOOL_SCHEMAS
+from distillate.tools import TOOL_SCHEMAS as _PAPER_TOOL_SCHEMAS
 
 log = logging.getLogger(__name__)
 
@@ -24,11 +25,14 @@ MAX_TOOL_STEPS = 5
 MAX_TOKENS = 2048
 CONVERSATION_TRIM_THRESHOLD = 40
 CONVERSATION_KEEP = 24
-MAX_TOOL_RESULT_CHARS = 12000
+MAX_TOOL_RESULT_CHARS = 12000  # kept for reference; no longer enforced
+API_MAX_RETRIES = 3
+API_BASE_DELAY = 2  # seconds
 
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
+    "scan_project", "delete_paper",
 })
 
 TOOL_LABELS = {
@@ -44,7 +48,25 @@ TOOL_LABELS = {
     "promote_papers": "\u2B50 Promoting to the shelf",
     "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
     "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
+    "delete_paper": "\U0001F5D1\uFE0F Removing from the library",
+    "list_projects": "\U0001F9EA Surveying the laboratory",
+    "get_project_details": "\U0001F52C Examining the experiment",
+    "compare_runs": "\u2696\ufe0f Weighing the results",
+    "scan_project": "\U0001F50D Scanning for experiments",
+    "get_experiment_notebook": "\U0001F4D3 Opening the lab notebook",
 }
+
+
+def _build_tool_schemas() -> list[dict]:
+    """Combine paper + experiment tool schemas."""
+    schemas = list(_PAPER_TOOL_SCHEMAS)
+    if config.EXPERIMENTS_ENABLED:
+        from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
+        schemas.extend(EXPERIMENT_TOOL_SCHEMAS)
+    return schemas
+
+
+TOOL_SCHEMAS = _build_tool_schemas()
 
 
 def tool_label(name: str) -> str:
@@ -67,23 +89,15 @@ def get_model() -> str:
 
 
 def create_client():
-    """Create an Anthropic client based on available credentials.
+    """Create an Anthropic client from the user's own API key.
 
     Returns ``None`` when no credentials are configured.
-
-    * ``DISTILLATE_AUTH_TOKEN`` + ``DISTILLATE_API_URL`` → cloud proxy
-    * ``ANTHROPIC_API_KEY`` → direct Anthropic (CLI power users)
     """
     try:
         import anthropic
     except ImportError:
         return None
 
-    if config.DISTILLATE_AUTH_TOKEN and config.DISTILLATE_API_URL:
-        return anthropic.Anthropic(
-            api_key=config.DISTILLATE_AUTH_TOKEN,
-            base_url=config.DISTILLATE_API_URL,
-        )
     if config.ANTHROPIC_API_KEY:
         return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     return None
@@ -122,6 +136,24 @@ def format_past_sessions(sessions: list[dict]) -> str:
     if not lines:
         return ""
     return "## Recent Conversations\n" + "\n".join(lines) + "\n\n"
+
+
+def _experiments_section(state: State) -> str:
+    """Build the experiments section of the system prompt."""
+    if not config.EXPERIMENTS_ENABLED:
+        return ""
+    projects = state.projects
+    if not projects:
+        return ""
+    lines = ["## Experiments"]
+    for proj in projects.values():
+        runs = proj.get("runs", {})
+        completed = sum(1 for r in runs.values() if r.get("status") == "completed")
+        lines.append(
+            f"- {proj.get('name', '?')}: {len(runs)} runs "
+            f"({completed} completed)"
+        )
+    return "\n".join(lines) + "\n\n"
 
 
 def build_system_prompt(
@@ -171,7 +203,14 @@ def build_system_prompt(
         )
         + " You have tools to search their library, read their "
         "highlights and notes, analyze reading patterns, and synthesize "
-        "insights across papers.\n\n"
+        "insights across papers."
+        + (
+            " You can also track their ML experiments — scanning project "
+            "directories for training runs, comparing experiments, and "
+            "generating lab notebooks."
+            if config.EXPERIMENTS_ENABLED else ""
+        )
+        + "\n\n"
         "## Library\n"
         f"- {len(processed)} papers read, {len(queue)} in queue"
         f", {len(awaiting)} awaiting PDF\n"
@@ -180,6 +219,7 @@ def build_system_prompt(
         f"{recent_section}\n\n"
         "## Research Interests\n"
         f"{tags_section}\n\n"
+        f"{_experiments_section(state)}"
         f"{format_past_sessions(past_sessions or [])}"
         "## Personality\n"
         "You're warm, witty, and genuinely curious about the user's research. "
@@ -207,12 +247,19 @@ def build_system_prompt(
         "auto-fetches the title, authors, and abstract. Don't ask the user "
         "for metadata you can look up.\n"
         "- Confirm with the user before write operations (sync, reprocess, "
-        "promote).\n"
+        "promote, delete).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
         "- End with a statement, not a question. Don't ask \"Want to know more?\" "
         "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
         "will ask if they want more.\n"
         "- When asked to compare or synthesize, use synthesize_across_papers.\n"
+        + (
+            "- When asked about experiments or projects, use the experiment "
+            "tools (list_projects, get_project_details, compare_runs).\n"
+            "- Use scan_project to track a new directory as an ML project.\n"
+            "- Use compare_runs to show what changed between experiments.\n"
+            if config.EXPERIMENTS_ENABLED else ""
+        )
     )
 
 
@@ -255,7 +302,19 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
         "promote_papers": tools.promote_papers,
         "get_trending_papers": tools.get_trending_papers,
         "add_paper_to_zotero": tools.add_paper_to_zotero,
+        "delete_paper": tools.delete_paper,
     }
+
+    # Add experiment tools if enabled
+    if config.EXPERIMENTS_ENABLED:
+        from distillate import experiment_tools as et
+        dispatch.update({
+            "list_projects": et.list_projects,
+            "get_project_details": et.get_project_details,
+            "compare_runs": et.compare_runs,
+            "scan_project": et.scan_project_tool,
+            "get_experiment_notebook": et.get_experiment_notebook,
+        })
 
     fn = dispatch.get(name)
     if not fn:
@@ -326,38 +385,57 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
     state.reload()
 
     system_prompt = build_system_prompt(state, past_sessions=past_sessions)
-    tools = TOOL_SCHEMAS
+    tools = _build_tool_schemas()
 
     for _step in range(MAX_TOOL_STEPS):
-        # --- API call (streaming) ---
-        try:
-            with client.messages.stream(
-                model=get_model(),
-                max_tokens=MAX_TOKENS,
-                system=system_prompt,
-                messages=conversation,
-                tools=tools,
-            ) as stream:
-                for event in stream:
-                    if (hasattr(event, "type")
-                            and event.type == "content_block_delta"
-                            and hasattr(event.delta, "text")):
-                        yield {"type": "text_delta", "text": event.delta.text}
-                response = stream.get_final_message()
-        except Exception as exc:
-            msg = str(exc)
-            if "credit balance is too low" in msg:
-                cat = "credits_depleted"
-            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
-                cat = "invalid_key"
-            elif "overloaded" in msg:
-                cat = "overloaded"
-            elif "rate_limit" in msg:
-                cat = "rate_limited"
-            else:
-                cat = "unknown"
-            log.exception("Agent API call failed")
-            yield {"type": "error", "message": msg, "category": cat}
+        # --- API call (streaming, with retries for transient errors) ---
+        response = None
+        for _attempt in range(API_MAX_RETRIES):
+            try:
+                with client.messages.stream(
+                    model=get_model(),
+                    max_tokens=MAX_TOKENS,
+                    system=system_prompt,
+                    messages=conversation,
+                    tools=tools,
+                ) as stream:
+                    for event in stream:
+                        if (hasattr(event, "type")
+                                and event.type == "content_block_delta"
+                                and hasattr(event.delta, "text")):
+                            yield {"type": "text_delta", "text": event.delta.text}
+                    response = stream.get_final_message()
+                break  # success
+            except Exception as exc:
+                msg = str(exc)
+                retryable = "overloaded" in msg or "rate_limit" in msg
+                if retryable and _attempt < API_MAX_RETRIES - 1:
+                    delay = API_BASE_DELAY * (2 ** _attempt)
+                    log.warning("Retryable API error (attempt %d/%d), "
+                                "retrying in %ds: %s",
+                                _attempt + 1, API_MAX_RETRIES, delay, msg)
+                    yield {"type": "text_delta",
+                           "text": f"\n\n*API busy — retrying in {delay}s...*\n\n"}
+                    time.sleep(delay)
+                    continue
+
+                if "credit balance is too low" in msg:
+                    cat = "credits_depleted"
+                elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
+                    cat = "invalid_key"
+                elif "overloaded" in msg:
+                    cat = "overloaded"
+                elif "rate_limit" in msg:
+                    cat = "rate_limited"
+                else:
+                    cat = "unknown"
+                log.exception("Agent API call failed")
+                yield {"type": "error", "message": msg, "category": cat}
+                return
+
+        if response is None:
+            yield {"type": "error", "message": "Failed after retries",
+                   "category": "overloaded"}
             return
 
         # --- Record assistant message ---
@@ -379,11 +457,7 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
             }
 
             result = execute_tool(tool_use.name, tool_use.input, state)
-
             result_json = json.dumps(result)
-            if len(result_json) > MAX_TOOL_RESULT_CHARS:
-                result = truncate_result(result, MAX_TOOL_RESULT_CHARS)
-                result_json = json.dumps(result)
 
             yield {
                 "type": "tool_done",

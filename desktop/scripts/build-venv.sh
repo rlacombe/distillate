@@ -2,7 +2,9 @@
 # Build a self-contained Python venv for bundling with Electron.
 # Usage: ./scripts/build-venv.sh
 #
-# Creates ../.venv-desktop with distillate + fastapi + uvicorn installed.
+# Creates ../.venv-desktop with distillate[desktop] installed from PyPI.
+# This venv is copied into the .app as a bootstrap seed on first launch,
+# then pip-upgraded to the latest version from the external user directory.
 
 set -euo pipefail
 
@@ -13,10 +15,10 @@ VENV_DIR="$ROOT_DIR/.venv-desktop"
 echo "==> Creating venv at $VENV_DIR"
 uv venv --python 3.12 "$VENV_DIR"
 
-echo "==> Installing distillate + server deps"
+echo "==> Installing distillate[desktop] (fastapi + uvicorn + websockets)"
 uv pip install --python "$VENV_DIR/bin/python3" \
-  -e "$ROOT_DIR" \
-  fastapi uvicorn[standard] websockets
+  "$ROOT_DIR" \
+  fastapi "uvicorn[standard]" websockets
 
 echo "==> Venv ready at $VENV_DIR"
 echo "    Python: $VENV_DIR/bin/python3"
