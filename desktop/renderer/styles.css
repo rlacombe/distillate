@@ -231,6 +231,15 @@ body {
   padding: 0;
 }
 
+.message.assistant a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.message.assistant a:hover {
+  text-decoration: underline;
+}
+
 .message.assistant ul, .message.assistant ol {
   padding-left: 20px;
   margin-bottom: 8px;
