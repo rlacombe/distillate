@@ -487,6 +487,6 @@ class TestInitDisclosures:
         import inspect
         from distillate import main
 
-        source = inspect.getsource(main._init_step5)
+        source = inspect.getsource(main._init_step5_claude)
         assert "Claude API" in source
         assert "highlights" in source

@@ -5,12 +5,13 @@ Discovers ML projects, reconstructs experiment history from artifacts
 markdown lab notebooks.  Works with or without git.
 """
 
+import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
-import uuid
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,14 @@ _SKIP_DIRS = {
     "venv", "env", ".venv", ".tox", ".mypy_cache", ".pytest_cache",
     "dist", "build", "egg-info",
 }
+
+# Constants
+_RUN_ID_HEX_LENGTH = 6          # hex chars in auto-generated run IDs
+_ML_IMPORT_SCAN_CHARS = 2000     # max bytes to read when checking for ML imports
+_GIT_LOG_TIMEOUT = 30            # seconds for git log subprocess
+_GIT_SUBPROCESS_TIMEOUT = 10     # seconds for short git commands
+_COMMAND_DISPLAY_CHARS = 200     # truncation limit for commands in LLM prompt
+_FINGERPRINT_HEX_LENGTH = 16    # hex chars for enrichment cache fingerprint
 
 # File patterns that indicate an ML project
 _ML_FILE_PATTERNS = [
@@ -45,6 +54,42 @@ _LOWER_BETTER_KEYWORDS = (
     "time", "duration", "seconds", "minutes",
     "latency", "perplexity",
 )
+
+
+def _create_run(
+    *,
+    prefix: str = "exp",
+    name: str = "",
+    hyperparameters: Optional[dict] = None,
+    results: Optional[dict] = None,
+    tags: Optional[list] = None,
+    files_created: Optional[list] = None,
+    started_at: str = "",
+    completed_at: str = "",
+    duration_minutes: int = 0,
+    **extra: Any,
+) -> dict:
+    """Build a run dict with consistent schema.  Extra kwargs are merged in."""
+    # Deterministic ID from name + started_at so scans are idempotent.
+    id_seed = f"{name}|{started_at}"
+    run_id = f"{prefix}-{hashlib.sha256(id_seed.encode()).hexdigest()[:_RUN_ID_HEX_LENGTH]}"
+    run: dict[str, Any] = {
+        "id": run_id,
+        "name": name,
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": hyperparameters or {},
+        "results": results or {},
+        "tags": tags or [],
+        "git_commits": [],
+        "files_created": files_created or [],
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_minutes": duration_minutes,
+        "notes": [],
+    }
+    run.update(extra)
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +142,7 @@ def _is_ml_repo(path: Path) -> bool:
             # Check Python files for ML imports
             if fname.endswith(".py"):
                 try:
-                    text = Path(root, fname).read_text(encoding="utf-8", errors="ignore")[:2000]
+                    text = Path(root, fname).read_text(encoding="utf-8", errors="ignore")[:_ML_IMPORT_SCAN_CHARS]
                     for kw in _ML_IMPORT_KEYWORDS:
                         if f"import {kw}" in text or f"from {kw}" in text:
                             return True
@@ -226,7 +271,7 @@ def _git_log(repo_path: Path, since_hash: str = "") -> list[dict]:
     if since_hash:
         cmd.append(f"{since_hash}..HEAD")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_GIT_LOG_TIMEOUT)
         if result.returncode != 0:
             return []
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -250,7 +295,7 @@ def _git_head_hash(repo_path: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_GIT_SUBPROCESS_TIMEOUT,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -263,7 +308,7 @@ def _git_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id",
              "--name-only", "-r", commit_hash],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_GIT_SUBPROCESS_TIMEOUT,
         )
         return result.stdout.strip().splitlines() if result.returncode == 0 else []
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -345,24 +390,17 @@ def scan_project(path: Path) -> dict:
         hyperparams = {k: v for k, v in config.items()
                        if isinstance(v, (int, float, str, bool))}
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        name = tag if tag else Path(tl["path"]).stem
-        runs[run_id] = {
-            "id": run_id,
-            "name": name,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": hyperparams,
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": [tl["path"]],
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": int(data.get("total_time", 0) / 60)
-                               if data.get("total_time") else 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(tl["path"]).stem,
+            hyperparameters=hyperparams,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=[tl["path"]],
+            duration_minutes=(int(data.get("total_time", 0) / 60)
+                              if data.get("total_time") else 0),
+        )
+        run_id = run["id"]
+        runs[run_id] = run
 
         # Try matching result files by tag
         for rf in result_files:
@@ -379,7 +417,9 @@ def scan_project(path: Path) -> dict:
         data = hf["data"]
         tag = hf["tag"]
         # Skip if already covered by a training log with same tag
-        if any(r.get("tags", [None])[0] == tag for r in runs.values() if tag):
+        if tag and any(
+            (r.get("tags") or [None])[0] == tag for r in runs.values()
+        ):
             continue
 
         # Extract last-row metrics
@@ -398,22 +438,13 @@ def scan_project(path: Path) -> dict:
             if isinstance(v, list) and len(v) == n and v and isinstance(v[-1], (int, float)):
                 metrics[k] = v[-1]
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        runs[run_id] = {
-            "id": run_id,
-            "name": tag if tag else Path(hf["path"]).stem,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": {},
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": [hf["path"]],
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(hf["path"]).stem,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=[hf["path"]],
+        )
+        runs[run["id"]] = run
 
     # Build runs from standalone result files (not yet covered by a training log)
     used_result_paths = {f for r in runs.values() for f in r["files_created"]}
@@ -440,26 +471,17 @@ def scan_project(path: Path) -> dict:
                 config_path = cf["path"]
                 break
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        name = tag if tag else Path(rf["path"]).stem
         files = [rf["path"]]
         if config_path:
             files.append(config_path)
-        runs[run_id] = {
-            "id": run_id,
-            "name": name,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": hyperparams,
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": files,
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(rf["path"]).stem,
+            hyperparameters=hyperparams,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=files,
+        )
+        runs[run["id"]] = run
 
     # Assign timestamps from file mtimes
     for run in runs.values():
@@ -483,6 +505,15 @@ def scan_project(path: Path) -> dict:
                 if any(f in changed for f in run["files_created"]):
                     run["git_commits"].append(commit["hash"])
 
+    # Extract runs from Claude Code conversation logs
+    claude_runs = extract_runs_from_claude_logs(path)
+    for run in claude_runs:
+        if not _is_duplicate_run(runs, run):
+            runs[run["id"]] = run
+
+    # Filter out non-experiment runs (analysis files, metadata-only, etc.)
+    runs = {rid: r for rid, r in runs.items() if _is_experiment_run(r)}
+
     # Derive project name from directory
     project_name = path.name.replace("-", " ").replace("_", " ").title()
 
@@ -498,6 +529,565 @@ def scan_project(path: Path) -> dict:
         "total_commits": len(commits),
         "artifact_files": len(classified),
     }
+
+
+# ---------------------------------------------------------------------------
+# Claude Code log extraction
+# ---------------------------------------------------------------------------
+
+# Training script indicators in bash commands
+# Detect "python ... something.py" invocations
+_PYTHON_SCRIPT_RE = re.compile(
+    r"python[3]?\s+(\S+\.py)", re.IGNORECASE,
+)
+# Match training-related script FILENAMES (not directory paths)
+_TRAIN_FILENAME_RE = re.compile(
+    r"(?:train|run_exp|finetune|sweep)", re.IGNORECASE,
+)
+
+# Key=value pairs on the command line (e.g. d_model=8 lr=0.003)
+_CMD_KV_RE = re.compile(
+    r"(?<![/\w])(\w+)\s*=\s*([\d.eE+-]+|[Tt]rue|[Ff]alse)"
+)
+
+# Known hyperparameter names (for filtering noise from key=value extraction)
+_KNOWN_HYPERPARAMS = {
+    "d_model", "n_heads", "d_ff", "n_layers", "epochs", "lr",
+    "learning_rate", "batch_size", "dropout", "warmup_steps",
+    "weight_decay", "eval_every", "hidden_dim", "num_layers",
+    "num_heads", "embed_dim", "max_len", "val_split", "seed",
+    "gradient_clip", "accumulation_steps", "num_epochs", "steps",
+}
+
+# Metric patterns in training stdout
+_METRIC_RE = re.compile(
+    r"(?:^|[|\s,])\s*"
+    r"(accuracy|loss|exact_match|val_loss|val_accuracy|test_accuracy|"
+    r"train_loss|train_accuracy|val_exact_match|f1|precision|recall|"
+    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss)"
+    r"\s*[=:]\s*([\d.]+)%?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Config JSON block in stdout (e.g. "Config: { ... }")
+_CONFIG_BLOCK_RE = re.compile(
+    r"Config:\s*(\{[^}]+\})", re.DOTALL,
+)
+
+
+def _find_claude_log_dir(project_path: Path) -> Optional[Path]:
+    """Find the Claude Code log directory for a project path."""
+    claude_dir = Path.home() / ".claude" / "projects"
+    if not claude_dir.is_dir():
+        return None
+    encoded = str(project_path).replace("/", "-")
+    log_dir = claude_dir / encoded
+    if log_dir.is_dir():
+        return log_dir
+    return None
+
+
+def _parse_training_command(command: str) -> Optional[dict]:
+    """Parse a bash command and extract hyperparameters if it's a training run.
+
+    Returns {"script": "train.py", "hyperparameters": {...}} or None.
+    Matches based on the script FILENAME (not directory path), so
+    'python experiment/train.py' matches but 'python experiment/plot.py'
+    does not.
+    """
+    m = _PYTHON_SCRIPT_RE.search(command)
+    if not m:
+        return None
+    full_path = m.group(1)
+    # Check the filename only (strip directory prefix)
+    filename = full_path.rsplit("/", 1)[-1]
+    if not _TRAIN_FILENAME_RE.search(filename):
+        return None
+
+    script = full_path
+
+    # Extract key=value pairs
+    hyperparams: dict[str, Any] = {}
+    for key, val in _CMD_KV_RE.findall(command):
+        key_lower = key.lower()
+        # Only keep known hyperparameter names or numeric-valued keys
+        if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
+            hyperparams[key] = _coerce_value(val)
+        elif re.match(r"^[\d.eE+-]+$", val):
+            # Keep any numeric key=value — likely a hyperparameter
+            hyperparams[key] = _coerce_value(val)
+
+    return {"script": script, "hyperparameters": hyperparams}
+
+
+def _coerce_value(val: str) -> Any:
+    """Coerce a string value to int, float, or bool."""
+    if val.lower() == "true":
+        return True
+    if val.lower() == "false":
+        return False
+    try:
+        f = float(val)
+        return int(f) if f == int(f) and "." not in val and "e" not in val.lower() else f
+    except ValueError:
+        return val
+
+
+def _extract_metrics_from_output(text: str) -> dict:
+    """Extract metric values from training stdout text."""
+    metrics: dict[str, float] = {}
+    # Find all metric=value patterns; keep the LAST occurrence (final value)
+    for match in _METRIC_RE.finditer(text):
+        name = match.group(1).lower()
+        try:
+            metrics[name] = float(match.group(2))
+        except ValueError:
+            pass
+    return metrics
+
+
+def _parse_config_block(text: str) -> dict:
+    """Extract hyperparameters from a 'Config: {...}' JSON block in stdout."""
+    m = _CONFIG_BLOCK_RE.search(text)
+    if not m:
+        return {}
+    try:
+        config = json.loads(m.group(1))
+        if isinstance(config, dict):
+            return {k: v for k, v in config.items()
+                    if isinstance(v, (int, float, str, bool))}
+    except json.JSONDecodeError:
+        pass
+    return {}
+
+
+def _is_duplicate_run(existing_runs: dict, candidate: dict) -> bool:
+    """Check if a candidate run duplicates an existing run.
+
+    Matches by exact hyperparameter fingerprint OR by normalized tag
+    (e.g. Claude log run 'train_v5' matches JSON run 'v5').
+    When a match is found by tag, merges the candidate's data into
+    the existing run (hyperparams, metrics, timestamps, command).
+    """
+    # Match by hyperparameter fingerprint
+    cand_hp = candidate.get("hyperparameters", {})
+    if cand_hp:
+        cand_key = _hyperparam_fingerprint(cand_hp)
+        for run in existing_runs.values():
+            existing_hp = run.get("hyperparameters", {})
+            if existing_hp and _hyperparam_fingerprint(existing_hp) == cand_key:
+                _merge_into_run(run, candidate)
+                return True
+
+    # Match by normalized tag (strip common prefixes like "train_")
+    cand_tag = _normalize_run_tag(candidate.get("name", ""))
+    if cand_tag:
+        for run in existing_runs.values():
+            existing_tag = _normalize_run_tag(run.get("name", ""))
+            if existing_tag and existing_tag == cand_tag:
+                _merge_into_run(run, candidate)
+                return True
+
+    return False
+
+
+def _normalize_run_tag(name: str) -> str:
+    """Normalize a run name for dedup matching.
+
+    'train_v5' -> 'v5', 'train_model' -> 'model', 'v5' -> 'v5',
+    'scibert_finetune_results' -> 'scibert_finetune'
+    """
+    if not name:
+        return ""
+    # Strip common prefixes
+    for prefix in ("train_", "run_", "experiment_"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    # Strip common suffixes
+    for suffix in ("_results", "_result", "_output", "_log"):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return name.lower()
+
+
+def _merge_into_run(target: dict, source: dict) -> None:
+    """Merge source run data into target run (in place)."""
+    # Merge hyperparameters (source overrides for new keys only)
+    for k, v in source.get("hyperparameters", {}).items():
+        target.setdefault("hyperparameters", {}).setdefault(k, v)
+    # Merge results (source overrides for new keys only)
+    for k, v in source.get("results", {}).items():
+        target.setdefault("results", {}).setdefault(k, v)
+    # Use source timestamps if target has none
+    if source.get("started_at") and not target.get("started_at"):
+        target["started_at"] = source["started_at"]
+    if source.get("completed_at") and not target.get("completed_at"):
+        target["completed_at"] = source["completed_at"]
+    # Keep the command from Claude logs
+    if source.get("command") and not target.get("command"):
+        target["command"] = source["command"]
+
+
+def _run_sort_key(run: dict) -> tuple:
+    """Sort key that orders runs by version number, then by timestamp.
+
+    Version extraction: 'v5' -> 5, 'final' -> 9999, unversioned -> 0.
+    Falls back to started_at/completed_at timestamp.
+    """
+    name = run.get("name", "")
+    tags = run.get("tags", [])
+    tag = tags[0] if tags else name
+
+    # Extract version number from tag or name
+    version = 0
+    m = re.search(r"v(\d+)", tag, re.IGNORECASE)
+    if m:
+        version = int(m.group(1))
+    elif "final" in tag.lower():
+        version = 9999
+
+    ts = run.get("started_at") or run.get("completed_at") or ""
+    return (version, ts)
+
+
+def _is_experiment_run(run: dict) -> bool:
+    """Return True if a run looks like an actual training experiment.
+
+    Filters out analysis files, metadata-only results, and empty runs.
+    A run is kept if it:
+    - Came from Claude logs (explicit training commands), OR
+    - Has hyperparameters (from config files or CLI flags), OR
+    - Has training-related metrics (loss, accuracy, recall, etc.)
+    """
+    # Claude log runs are always real experiments (matched training regex)
+    if run.get("source") == "claude_logs":
+        return True
+    hp = run.get("hyperparameters", {})
+    if hp:
+        return True
+    metrics = run.get("results", {})
+    if not metrics:
+        return False
+    # Check for training-related metric names
+    training_patterns = (
+        "loss", "accuracy", "acc", "recall", "precision", "f1",
+        "bleu", "rouge", "auc", "perplexity", "exact_match", "mrr",
+    )
+    return any(
+        any(pat in k.lower() for pat in training_patterns)
+        for k in metrics
+    )
+
+
+def _hyperparam_fingerprint(hp: dict) -> str:
+    """Create a comparable fingerprint from hyperparameters."""
+    # Normalize: sort keys, round floats
+    items = []
+    for k in sorted(hp.keys()):
+        v = hp[k]
+        if isinstance(v, float):
+            v = round(v, 8)
+        items.append(f"{k}={v}")
+    return "|".join(items)
+
+
+def extract_runs_from_claude_logs(project_path: Path) -> list[dict]:
+    """Extract experiment runs from Claude Code conversation logs.
+
+    Parses ~/.claude/projects/<encoded-path>/*.jsonl files for bash
+    training commands and their stdout output.  Returns a list of
+    run dicts compatible with scan_project().
+    """
+    log_dir = _find_claude_log_dir(project_path)
+    if not log_dir:
+        return []
+
+    runs: list[dict] = []
+    for jsonl_file in sorted(log_dir.glob("*.jsonl")):
+        try:
+            session_runs = _parse_claude_session(jsonl_file)
+            runs.extend(session_runs)
+        except (json.JSONDecodeError, OSError, KeyError, ValueError, IndexError):
+            log.debug("Failed to parse Claude session %s", jsonl_file, exc_info=True)
+            continue
+
+    return runs
+
+
+def _parse_claude_session(jsonl_path: Path) -> list[dict]:
+    """Parse a single Claude Code JSONL session file for training runs."""
+    messages: list[dict] = []
+    try:
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+
+    # Walk messages looking for (Bash tool_use, tool_result) pairs
+    runs: list[dict] = []
+    pending_commands: dict[str, dict] = {}  # tool_use_id -> {command, timestamp, parsed}
+
+    for msg in messages:
+        msg_type = msg.get("type")
+        timestamp = msg.get("timestamp", "")
+        content = msg.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+
+        if msg_type == "assistant":
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    command = block.get("input", {}).get("command", "")
+                    parsed = _parse_training_command(command)
+                    if parsed:
+                        tool_id = block.get("id", "")
+                        pending_commands[tool_id] = {
+                            "command": command,
+                            "timestamp": timestamp,
+                            "parsed": parsed,
+                        }
+
+        elif msg_type == "user":
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    tool_id = block.get("tool_use_id", "")
+                    if tool_id in pending_commands:
+                        pending = pending_commands.pop(tool_id)
+                        output = block.get("content", "")
+                        if not isinstance(output, str):
+                            continue
+
+                        # Extract metrics and config from output
+                        metrics = _extract_metrics_from_output(output)
+                        config_hp = _parse_config_block(output)
+
+                        # Merge hyperparameters: command-line overrides config block
+                        hp = {**config_hp, **pending["parsed"]["hyperparameters"]}
+
+                        # Build name from model tag or script
+                        name = _tag_from_config(hp)
+                        if not name:
+                            name = Path(pending["parsed"]["script"]).stem
+
+                        runs.append(_create_run(
+                            prefix="claude",
+                            name=name,
+                            hyperparameters=hp,
+                            results=metrics,
+                            tags=[name] if name else [],
+                            started_at=pending["timestamp"],
+                            completed_at=timestamp,
+                            source="claude_logs",
+                            session_file=jsonl_path.name,
+                            command=pending["command"],
+                        ))
+
+    return runs
+
+
+# ---------------------------------------------------------------------------
+# LLM enrichment (narrative sections via Claude)
+# ---------------------------------------------------------------------------
+
+def _runs_fingerprint(runs: dict) -> str:
+    """Hash of sorted run hyperparams+metrics for cache invalidation."""
+    items = []
+    for rid in sorted(runs.keys()):
+        r = runs[rid]
+        hp = json.dumps(r.get("hyperparameters", {}), sort_keys=True)
+        mt = json.dumps(r.get("results", {}), sort_keys=True)
+        items.append(f"{rid}:{hp}:{mt}")
+    return hashlib.sha256("|".join(items).encode()).hexdigest()[:_FINGERPRINT_HEX_LENGTH]
+
+
+def _load_enrichment_cache(project_path: Path) -> dict:
+    """Load LLM enrichment cache from .distillate/llm_enrichment.json."""
+    cache_file = project_path / ".distillate" / "llm_enrichment.json"
+    if not cache_file.exists():
+        return {}
+    try:
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_enrichment_cache(project_path: Path, data: dict) -> None:
+    """Save LLM enrichment cache to .distillate/llm_enrichment.json."""
+    distillate_dir = project_path / ".distillate"
+    distillate_dir.mkdir(exist_ok=True)
+    (distillate_dir / "llm_enrichment.json").write_text(
+        json.dumps(data, indent=2), encoding="utf-8"
+    )
+
+
+def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
+    """Build the Sonnet prompt for enriching experiment runs."""
+    # Sort runs by version number, then chronologically
+    sorted_runs = sorted(runs.items(), key=lambda kv: _run_sort_key(kv[1]))
+
+    run_descriptions = []
+    prev_hp: dict = {}
+    for i, (rid, run) in enumerate(sorted_runs, 1):
+        hp = run.get("hyperparameters", {})
+        metrics = run.get("results", {})
+        command = run.get("command", "")
+
+        # Build diff from previous
+        diff_parts = []
+        if prev_hp:
+            for k in sorted(set(hp.keys()) | set(prev_hp.keys())):
+                old = prev_hp.get(k)
+                new = hp.get(k)
+                if old != new:
+                    if old is not None and new is not None:
+                        diff_parts.append(f"{k}: {old} -> {new}")
+                    elif new is not None:
+                        diff_parts.append(f"{k}: (new) {new}")
+
+        hp_str = ", ".join(f"{k}={v}" for k, v in sorted(hp.items()))
+        metric_str = ", ".join(
+            f"{k}={v}" for k, v in sorted(metrics.items())
+            if isinstance(v, (int, float))
+        )
+        diff_str = "; ".join(diff_parts) if diff_parts else "(first experiment)"
+
+        desc = f"Experiment {i} [{rid}]: {run.get('name', '?')}\n"
+        desc += f"  Hyperparameters: {hp_str}\n"
+        desc += f"  Metrics: {metric_str}\n"
+        desc += f"  Changes from previous: {diff_str}\n"
+        if command:
+            desc += f"  Command: {command[:_COMMAND_DISPLAY_CHARS]}\n"
+
+        run_descriptions.append(desc)
+        prev_hp = hp
+
+    run_ids_json = json.dumps([rid for rid, _ in sorted_runs])
+
+    return f"""You are a research scientist writing a lab notebook for an ML experiment series.
+
+Project: {project_name}
+
+Experiment timeline (chronological order):
+
+{chr(10).join(run_descriptions)}
+
+For each experiment, generate:
+1. name: A descriptive human-readable name (e.g. "Baseline Character-Level Transformer", "Scaled-Up Model", "Triplet Tokenization Breakthrough"). Keep it short (3-6 words).
+2. hypothesis: Why this experiment was tried (1-2 sentences). For the first experiment, describe the baseline rationale.
+3. approach: What was done differently from the previous experiment (1-2 sentences).
+4. analysis: What the results mean — interpret the metrics by name, note failure modes, explain surprising outcomes (2-3 sentences). Be specific: say "loss dropped from 13.0 to 0.0" not just "improved". If no metrics were reported, say so explicitly and speculate why (e.g. incomplete run, setup step, utility script).
+5. next_steps: What to try next based on these results (1 sentence).
+6. params: Estimated total trainable parameter count as a SHORT string (e.g. "~98K", "~1.5K", "~350"). ALWAYS estimate this from the architecture hyperparameters — for a transformer, consider embeddings, attention projections, feedforward layers, and layer norms. If a run's hyperparameters are incomplete, infer the architecture from adjacent experiments in the series (e.g. the first run likely used the same architecture as the next run that has full hyperparameters). NEVER use "N/A" — every training run had a model, estimate its size.
+7. validation: The key quality metric result as a SHORT string. Use the most important evaluation metric (e.g. "100%", "99.8%", "converged", "loss=0.0"). If the experiment has no reported results but the architecture was later re-run successfully with the same or similar hyperparameters, infer the likely outcome. If the experiment genuinely failed or was too small to learn, say "failed" or "did not converge". NEVER say "no metrics" — always make a judgment call based on context.
+
+Also generate project-level insights:
+8. key_breakthrough: Which experiment was the biggest improvement and why (1-2 sentences). Reference specific metric values.
+9. lessons_learned: 3-5 bullets of deeper insights connecting the experiments. Reference concrete numbers, not vague claims.
+
+Output ONLY valid JSON in this exact format (no markdown, no code blocks):
+{{"runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}, "project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}}}
+
+The "runs" object must have keys matching these exact run IDs: {run_ids_json}
+Each run value: {{"name": "...", "hypothesis": "...", "approach": "...", "analysis": "...", "next_steps": "...", "params": "...", "validation": "..."}}"""
+
+
+def enrich_runs_with_llm(runs: dict, project_name: str,
+                          project_path: Path) -> Optional[dict]:
+    """Enrich experiment runs with LLM-generated narrative sections.
+
+    Uses Claude Sonnet to add hypothesis, approach, analysis, next_steps,
+    and a descriptive name to each run.  Also adds project-level insights.
+
+    Returns enrichment dict or None if unavailable (no API key, error).
+    Results are cached in .distillate/llm_enrichment.json.
+    """
+    from distillate import config
+
+    if not config.ANTHROPIC_API_KEY:
+        log.debug("No ANTHROPIC_API_KEY — skipping LLM enrichment")
+        return None
+
+    if not runs:
+        return None
+
+    # Check cache
+    fingerprint = _runs_fingerprint(runs)
+    cache = _load_enrichment_cache(project_path)
+    if cache.get("fingerprint") == fingerprint and cache.get("enrichment"):
+        log.info("Using cached LLM enrichment for %s", project_name)
+        return cache["enrichment"]
+
+    # Build prompt and call Sonnet
+    prompt = _build_enrichment_prompt(runs, project_name)
+
+    try:
+        import anthropic
+    except ImportError:
+        log.error("LLM enrichment requires the 'anthropic' package")
+        return None
+
+    try:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=config.CLAUDE_SMART_MODEL,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if not response.content or not hasattr(response.content[0], "text"):
+            log.error("Unexpected API response: no content blocks")
+            return None
+        text = response.content[0].text.strip()
+        log.info("LLM enrichment response: %d chars", len(text))
+    except (anthropic.APIError, anthropic.APIConnectionError) as e:
+        log.error("Claude API error during LLM enrichment: %s", e)
+        return None
+
+    # Parse JSON response (handle markdown code blocks)
+    if text.startswith("```") and "\n" in text:
+        text = text.split("\n", 1)[1]
+        if "```" in text:
+            text = text.rsplit("```", 1)[0]
+    try:
+        enrichment = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract JSON object
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                enrichment = json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                log.error("Failed to parse LLM enrichment JSON")
+                return None
+        else:
+            log.error("No JSON found in LLM enrichment response")
+            return None
+
+    if not isinstance(enrichment, dict) or "runs" not in enrichment:
+        log.error("LLM enrichment missing 'runs' key")
+        return None
+
+    # Cache the result
+    _save_enrichment_cache(project_path, {
+        "fingerprint": fingerprint,
+        "enrichment": enrichment,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return enrichment
 
 
 # ---------------------------------------------------------------------------
@@ -672,18 +1262,58 @@ def _diff_dicts(a: dict, b: dict) -> list[dict]:
 # Notebook generation
 # ---------------------------------------------------------------------------
 
-def generate_notebook(project: dict, section: str = "main") -> str:
+def _factorize_hyperparams(runs: list[dict]) -> tuple[dict, set]:
+    """Find hyperparameters that are identical across all runs that have them.
+
+    Returns (common_params, varying_keys).  A param is "common" if every run
+    that defines it uses the same value and at least 2 runs define it.
+    """
+    # Collect all values per key
+    key_values: dict[str, list] = {}
+    key_counts: dict[str, int] = {}
+    for run in runs:
+        for k, v in run.get("hyperparameters", {}).items():
+            key_values.setdefault(k, []).append(v)
+            key_counts[k] = key_counts.get(k, 0) + 1
+
+    common: dict = {}
+    varying: set = set()
+    for k, vals in key_values.items():
+        if key_counts[k] >= 2 and len(set(str(v) for v in vals)) == 1:
+            common[k] = vals[0]
+        else:
+            varying.add(k)
+
+    return common, varying
+
+
+def generate_notebook(project: dict, section: str = "main",
+                      enrichment: Optional[dict] = None) -> str:
     """Generate a markdown lab notebook for a project.
 
     Produces a rich document with project overview, experiment timeline,
     per-run detail cards, and diff sections between consecutive runs.
+
+    If ``enrichment`` is provided (from ``enrich_runs_with_llm()``), adds
+    narrative sections: hypothesis, approach, analysis, next steps per run,
+    plus project-level research insights.
     """
     name = project.get("name", "Untitled Project")
     runs_dict = project.get("runs", {})
     runs = list(runs_dict.values())
+    run_enrichments = (enrichment or {}).get("runs", {})
+    project_insights = (enrichment or {}).get("project", {})
 
-    # Sort runs by completion date, then by name
-    runs.sort(key=lambda r: r.get("completed_at") or r.get("started_at") or "")
+    # Sort runs by version number, then chronologically
+    runs.sort(key=_run_sort_key)
+
+    # Factorize hyperparameters
+    common_params, varying_keys = _factorize_hyperparams(runs)
+
+    # Helper to get enrichment for a run
+    def _enrich(run: dict, field: str) -> str:
+        e = run_enrichments.get(run.get("id", ""), {})
+        return e.get(field, "")
 
     parts = [
         f"# {name}",
@@ -696,6 +1326,23 @@ def generate_notebook(project: dict, section: str = "main") -> str:
         f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  ",
         f"**Repository:** `{project.get('path', '')}`  ",
     ]
+
+    # Research Insights (from enrichment) — at the top
+    if project_insights:
+        breakthrough = project_insights.get("key_breakthrough", "")
+        lessons = project_insights.get("lessons_learned", [])
+        if breakthrough or lessons:
+            parts.append("")
+            parts.append("## Research Insights")
+            if breakthrough:
+                parts.append("")
+                parts.append("### Key Breakthrough")
+                parts.append(f"> {breakthrough}")
+            if lessons:
+                parts.append("")
+                parts.append("### Lessons Learned")
+                for idx, lesson in enumerate(lessons, 1):
+                    parts.append(f"{idx}. {lesson}")
 
     # Goals
     goals = project.get("goals", [])
@@ -726,17 +1373,31 @@ def generate_notebook(project: dict, section: str = "main") -> str:
             f"**{failed}** failed"
         )
         parts.append("")
-        parts.append("| # | Experiment | Status | Duration | Key Metric |")
-        parts.append("|---|-----------|--------|----------|------------|")
+        parts.append("| # | Experiment | Status | Duration | Result |")
+        parts.append("|---|-----------|--------|----------|--------|")
 
         for i, run in enumerate(runs, 1):
             status_icon = _status_icon(run.get("status", "planned"))
             duration = _fmt_duration(run.get("duration_minutes", 0))
-            key_metric = _pick_key_metric(run.get("results", {}))
+            run_enr = run_enrichments.get(run.get("id", ""), {})
+            key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
+            display_name = _enrich(run, "name") or run.get("name", "?")
             parts.append(
-                f"| {i} | {run.get('name', '?')} | {status_icon} | "
+                f"| {i} | {display_name} | {status_icon} | "
                 f"{duration} | {key_metric} |"
             )
+
+    # Common hyperparameters table
+    if common_params:
+        parts.append("")
+        parts.append("## Common Configuration")
+        parts.append("")
+        parts.append("> Parameters shared across all experiments.")
+        parts.append("")
+        parts.append("| Parameter | Value |")
+        parts.append("|-----------|-------|")
+        for k, v in sorted(common_params.items()):
+            parts.append(f"| {k} | `{v}` |")
 
     # Per-run detail cards
     if runs:
@@ -744,8 +1405,9 @@ def generate_notebook(project: dict, section: str = "main") -> str:
         parts.append("## Experiment Details")
 
     for i, run in enumerate(runs):
+        display_name = _enrich(run, "name") or run.get("name", "Untitled")
         parts.append("")
-        parts.append(f"### {run.get('id', '')}: {run.get('name', 'Untitled')}")
+        parts.append(f"### {run.get('id', '')}: {display_name}")
         parts.append("")
 
         status = run.get("status", "planned").capitalize()
@@ -760,21 +1422,33 @@ def generate_notebook(project: dict, section: str = "main") -> str:
         if run.get("completed_at"):
             parts.append(f"**Completed:** {run['completed_at']}")
 
-        if run.get("hypothesis"):
+        # Narrative sections from enrichment
+        hypothesis = _enrich(run, "hypothesis") or run.get("hypothesis", "")
+        if hypothesis:
             parts.append("")
             parts.append("#### Hypothesis")
-            parts.append(run["hypothesis"])
+            parts.append(hypothesis)
 
-        # Hyperparameters table
+        approach = _enrich(run, "approach")
+        if approach:
+            parts.append("")
+            parts.append("#### Approach")
+            parts.append(approach)
+
+        # Hyperparameters table — only varying params (or all if no common)
         hyperparams = run.get("hyperparameters", {})
         if hyperparams:
-            parts.append("")
-            parts.append("#### Hyperparameters")
-            parts.append("")
-            parts.append("| Parameter | Value |")
-            parts.append("|-----------|-------|")
-            for k, v in hyperparams.items():
-                parts.append(f"| {k} | `{v}` |")
+            delta = {k: v for k, v in hyperparams.items()
+                     if k in varying_keys or not common_params}
+            if delta:
+                label = "#### Configuration (changes)" if common_params else "#### Hyperparameters"
+                parts.append("")
+                parts.append(label)
+                parts.append("")
+                parts.append("| Parameter | Value |")
+                parts.append("|-----------|-------|")
+                for k, v in delta.items():
+                    parts.append(f"| {k} | `{v}` |")
 
         # Results table
         results = run.get("results", {})
@@ -787,11 +1461,25 @@ def generate_notebook(project: dict, section: str = "main") -> str:
             for k, v in results.items():
                 parts.append(f"| {k} | **{_fmt_metric(k, v)}** |")
 
+        # Analysis from enrichment
+        analysis = _enrich(run, "analysis")
+        if analysis:
+            parts.append("")
+            parts.append("#### Analysis")
+            parts.append(analysis)
+
         if run.get("notes"):
             parts.append("")
             parts.append("#### Notes")
             for note in run["notes"]:
                 parts.append(f"- {note}")
+
+        # Next steps from enrichment
+        next_steps = _enrich(run, "next_steps")
+        if next_steps:
+            parts.append("")
+            parts.append("#### Next Steps")
+            parts.append(next_steps)
 
         # Diff with previous run
         if i > 0:
@@ -855,8 +1543,24 @@ def _fmt_metric(name: str, val: Any) -> str:
     return str(val)
 
 
-def _pick_key_metric(results: dict) -> str:
-    """Pick the most important metric from results for the timeline table."""
+def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
+    """Pick the most important metric from results for the timeline table.
+
+    If *enrichment* is available, combine params + validation from it.
+    Otherwise falls back to heuristic priority ordering.
+    Returns a labeled string like 'loss=0.0012' or 'accuracy=98.50%'.
+    """
+    if enrichment:
+        parts = []
+        if enrichment.get("params"):
+            parts.append(enrichment["params"])
+        if enrichment.get("validation"):
+            parts.append(enrichment["validation"])
+        # Fallback to legacy key_metric if new fields missing
+        if not parts and enrichment.get("key_metric"):
+            return enrichment["key_metric"]
+        if parts:
+            return ", ".join(parts)
     if not results:
         return "-"
     # Priority order for key metrics
@@ -865,11 +1569,13 @@ def _pick_key_metric(results: dict) -> str:
                  "loss", "final_loss", "val_loss"]
     for key in priority:
         if key in results and isinstance(results[key], (int, float)):
-            return _fmt_metric(key, results[key])
-    # Fallback: first numeric metric
+            return f"{key}={_fmt_metric(key, results[key])}"
+    # Fallback: first numeric metric (skip metadata-like fields)
+    skip = {"n_params", "duration_minutes", "num_examples", "n_samples",
+            "num_classes", "vocab_size", "num_papers"}
     for k, v in results.items():
-        if isinstance(v, (int, float)) and k not in ("n_params", "duration_minutes"):
-            return _fmt_metric(k, v)
+        if isinstance(v, (int, float)) and k not in skip:
+            return f"{k}={_fmt_metric(k, v)}"
     return "-"
 
 

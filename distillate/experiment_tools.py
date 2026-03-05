@@ -40,6 +40,86 @@ def _run_summary(run: dict) -> dict:
     }
 
 
+def _resolve_project(state, identifier: str) -> tuple[dict | None, dict | None]:
+    """Resolve a project by identifier, returning (project, error_dict).
+
+    Returns (project_dict, None) on success, or (None, error_dict) on
+    failure (not found or ambiguous match).
+    """
+    matches = state.find_all_projects(identifier)
+    if not matches:
+        return None, {"error": f"No project found matching '{identifier}'"}
+    if len(matches) > 1:
+        names = [m.get("name", m.get("id", "")) for m in matches[:5]]
+        return None, {
+            "error": f"Multiple projects match '{identifier}'. Be more specific.",
+            "matches": names,
+        }
+    return matches[0], None
+
+
+def _find_run(runs: dict, query: str) -> Any:
+    """Find a run by id or name substring. Returns first match."""
+    if not query:
+        return None
+    if query in runs:
+        return runs[query]
+    query_lower = query.lower()
+    for run in runs.values():
+        if query_lower in run.get("name", "").lower():
+            return run
+        if query_lower in run.get("id", "").lower():
+            return run
+    return None
+
+
+def _find_all_runs(runs: dict, query: str) -> list[dict]:
+    """Find all runs matching query (id or name substring)."""
+    if not query:
+        return []
+    # Exact id match is always unique
+    if query in runs:
+        return [runs[query]]
+    query_lower = query.lower()
+    matches = []
+    for run in runs.values():
+        if (query_lower in run.get("name", "").lower()
+                or query_lower in run.get("id", "").lower()):
+            matches.append(run)
+    return matches
+
+
+def _resolve_run(runs: dict, query: str, project_name: str) -> tuple[dict | None, dict | None]:
+    """Resolve a run by query, returning (run, error_dict)."""
+    matches = _find_all_runs(runs, query)
+    if not matches:
+        return None, {"error": f"No run found matching '{query}' in project '{project_name}'"}
+    if len(matches) > 1:
+        names = [m.get("name", m.get("id", "")) for m in matches[:5]]
+        return None, {
+            "error": f"Multiple runs match '{query}'. Be more specific.",
+            "matches": names,
+        }
+    return matches[0], None
+
+
+def _regen_notebook(proj: dict) -> None:
+    """Regenerate the Obsidian lab notebook for a project."""
+    from pathlib import Path as _Path
+
+    from distillate.experiments import enrich_runs_with_llm, generate_notebook
+    from distillate.obsidian import write_experiment_notebook
+
+    proj_path = proj.get("path", "")
+    enrichment = None
+    if proj_path:
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
+        )
+    notebook_md = generate_notebook(proj, enrichment=enrichment)
+    write_experiment_notebook(proj, notebook_md)
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (sent to Claude)
 # ---------------------------------------------------------------------------
@@ -144,6 +224,218 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project"],
         },
     },
+    # -- CRUD tools --
+    {
+        "name": "add_project",
+        "description": (
+            "Add a directory as a tracked ML project and scan it for "
+            "experiments. Superset of scan_project — also lets you set a "
+            "custom name, description, and tags. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the project directory",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Display name (default: directory name, title-cased)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Short description of the project",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for categorization (e.g. 'nlp', 'vision')",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "rename_project",
+        "description": (
+            "Rename a tracked ML project. Updates the display name, slug, "
+            "and Obsidian notebook filename. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "The new display name for the project",
+                },
+            },
+            "required": ["identifier", "new_name"],
+        },
+    },
+    {
+        "name": "rename_run",
+        "description": (
+            "Rename an experiment run within a project. Updates the "
+            "display name and regenerates the lab notebook."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id or name substring",
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "The new display name for the run",
+                },
+            },
+            "required": ["project", "run", "new_name"],
+        },
+    },
+    {
+        "name": "delete_project",
+        "description": (
+            "Delete a tracked ML project and its Obsidian notebook. "
+            "Two-phase: call with confirm=false to preview, then "
+            "confirm=true to execute. Does NOT delete source files."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Set to true to actually delete (default: false = preview)",
+                },
+            },
+            "required": ["identifier"],
+        },
+    },
+    {
+        "name": "delete_run",
+        "description": (
+            "Delete an experiment run from a project. "
+            "Two-phase: call with confirm=false to preview, then "
+            "confirm=true to execute. Does NOT delete source files."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id or name substring",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Set to true to actually delete (default: false = preview)",
+                },
+            },
+            "required": ["project", "run"],
+        },
+    },
+    {
+        "name": "update_project",
+        "description": (
+            "Update a project's description, tags, or status. "
+            "Only provided fields are changed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New project description",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New tags list (replaces existing)",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "New status (tracking, paused, archived, completed)",
+                },
+            },
+            "required": ["identifier"],
+        },
+    },
+    {
+        "name": "link_paper",
+        "description": (
+            "Link a paper from the library to an ML project. "
+            "Use when the user mentions a paper is related to a project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "paper": {
+                    "type": "string",
+                    "description": "Paper citekey, title substring, or index number",
+                },
+            },
+            "required": ["project", "paper"],
+        },
+    },
+    {
+        "name": "update_goals",
+        "description": (
+            "Set metric goals on a project. Each goal has a metric name, "
+            "direction (maximize/minimize), and threshold value."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "goals": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "metric": {"type": "string"},
+                            "direction": {
+                                "type": "string",
+                                "enum": ["maximize", "minimize"],
+                            },
+                            "threshold": {"type": "number"},
+                        },
+                        "required": ["metric", "direction", "threshold"],
+                    },
+                    "description": "List of metric goals",
+                },
+            },
+            "required": ["project", "goals"],
+        },
+    },
 ]
 
 
@@ -182,13 +474,12 @@ def list_projects(*, state) -> dict:
 
 def get_project_details(*, state, identifier: str) -> dict:
     """Get full details for a project including all runs."""
-    proj = state.find_project(identifier)
-    if not proj:
-        return {"found": False, "error": f"No project found matching '{identifier}'"}
+    proj, err = _resolve_project(state, identifier)
+    if err:
+        return {"found": False, **err}
 
     runs = proj.get("runs", {})
     run_summaries = [_run_summary(r) for r in runs.values()]
-    # Sort by completion date
     run_summaries.sort(
         key=lambda r: r.get("completed_at", "") or "", reverse=True
     )
@@ -217,21 +508,20 @@ def compare_runs(*, state, project: str, run_a: str, run_b: str) -> dict:
     """Compare two experiment runs within a project."""
     from distillate.experiments import diff_runs
 
-    proj = state.find_project(project)
-    if not proj:
-        return {"error": f"No project found matching '{project}'"}
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
 
     runs = proj.get("runs", {})
+    proj_name = proj.get("name", "")
 
-    # Find run_a
-    a = _find_run(runs, run_a)
-    if not a:
-        return {"error": f"No run found matching '{run_a}' in project '{proj.get('name', '')}'"}
+    a, err = _resolve_run(runs, run_a, proj_name)
+    if err:
+        return err
 
-    # Find run_b
-    b = _find_run(runs, run_b)
-    if not b:
-        return {"error": f"No run found matching '{run_b}' in project '{proj.get('name', '')}'"}
+    b, err = _resolve_run(runs, run_b, proj_name)
+    if err:
+        return err
 
     return diff_runs(a, b)
 
@@ -241,8 +531,11 @@ def scan_project_tool(*, state, path: str) -> dict:
     from datetime import datetime, timezone
     from pathlib import Path as _Path
 
-    from distillate.experiments import generate_notebook, scan_project, slugify
+    from distillate.experiments import (
+        enrich_runs_with_llm, generate_notebook, scan_project, slugify,
+    )
     from distillate.obsidian import write_experiment_notebook
+    from distillate.state import acquire_lock, release_lock
 
     repo_path = _Path(path).expanduser().resolve()
     if not repo_path.is_dir():
@@ -254,46 +547,55 @@ def scan_project_tool(*, state, path: str) -> dict:
 
     project_id = slugify(result["name"])
 
-    # Add or update in state
-    if state.has_project(project_id):
-        # Merge new runs into existing project
-        existing = state.get_project(project_id)
-        existing_names = {r["name"] for r in existing.get("runs", {}).values()}
-        new_runs = 0
-        for run_id, run_data in result.get("runs", {}).items():
-            if run_data["name"] not in existing_names:
+    # Lock state for the mutation section
+    acquire_lock()
+    try:
+        state.reload()
+        # Add or update in state
+        if state.has_project(project_id):
+            # Merge new runs into existing project
+            existing = state.get_project(project_id)
+            existing_names = {r["name"] for r in existing.get("runs", {}).values()}
+            new_runs = 0
+            for run_id, run_data in result.get("runs", {}).items():
+                if run_data["name"] not in existing_names:
+                    state.add_run(project_id, run_id, run_data)
+                    new_runs += 1
+            state.update_project(
+                project_id,
+                last_scanned_at=datetime.now(timezone.utc).isoformat(),
+                last_commit_hash=result["head_hash"],
+            )
+            state.save()
+            message = f"Rescanned '{result['name']}': found {new_runs} new run(s)."
+        else:
+            state.add_project(
+                project_id=project_id,
+                name=result["name"],
+                path=str(repo_path),
+            )
+            for run_id, run_data in result.get("runs", {}).items():
                 state.add_run(project_id, run_id, run_data)
-                new_runs += 1
-        state.update_project(
-            project_id,
-            last_scanned_at=datetime.now(timezone.utc).isoformat(),
-            last_commit_hash=result["head_hash"],
-        )
-        state.save()
-        message = f"Rescanned '{result['name']}': found {new_runs} new run(s)."
-    else:
-        state.add_project(
-            project_id=project_id,
-            name=result["name"],
-            path=str(repo_path),
-        )
-        for run_id, run_data in result.get("runs", {}).items():
-            state.add_run(project_id, run_id, run_data)
-        state.update_project(
-            project_id,
-            last_scanned_at=datetime.now(timezone.utc).isoformat(),
-            last_commit_hash=result["head_hash"],
-        )
-        state.save()
-        message = (
-            f"Now tracking '{result['name']}' with "
-            f"{len(result.get('runs', {}))} discovered run(s)."
-        )
+            state.update_project(
+                project_id,
+                last_scanned_at=datetime.now(timezone.utc).isoformat(),
+                last_commit_hash=result["head_hash"],
+            )
+            state.save()
+            message = (
+                f"Now tracking '{result['name']}' with "
+                f"{len(result.get('runs', {}))} discovered run(s)."
+            )
+    finally:
+        release_lock()
 
-    # Generate and write notebook
+    # LLM enrichment + generate notebook
     proj = state.get_project(project_id)
     if proj:
-        notebook_md = generate_notebook(proj)
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), repo_path,
+        )
+        notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
 
     return {
@@ -307,14 +609,23 @@ def scan_project_tool(*, state, path: str) -> dict:
 
 def get_experiment_notebook(*, state, project: str, section: str = "main") -> dict:
     """Get or regenerate the lab notebook for a project."""
-    from distillate.experiments import generate_notebook
+    from pathlib import Path as _Path
+
+    from distillate.experiments import enrich_runs_with_llm, generate_notebook
     from distillate.obsidian import write_experiment_notebook
 
-    proj = state.find_project(project)
-    if not proj:
-        return {"error": f"No project found matching '{project}'"}
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
 
-    notebook_md = generate_notebook(proj, section=section)
+    enrichment = None
+    proj_path = proj.get("path", "")
+    if proj_path:
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
+        )
+
+    notebook_md = generate_notebook(proj, section=section, enrichment=enrichment)
 
     # Write to disk
     write_experiment_notebook(proj, notebook_md, section=section)
@@ -331,21 +642,349 @@ def get_experiment_notebook(*, state, project: str, section: str = "main") -> di
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# CRUD tool implementations
 # ---------------------------------------------------------------------------
 
-def _find_run(runs: dict, query: str) -> Any:
-    """Find a run by id or name substring."""
-    if not query:
-        return None
-    # Exact id
-    if query in runs:
-        return runs[query]
-    # Name substring
-    query_lower = query.lower()
-    for run in runs.values():
-        if query_lower in run.get("name", "").lower():
-            return run
-        if query_lower in run.get("id", "").lower():
-            return run
-    return None
+def add_project_tool(*, state, path: str, name: str = "",
+                     description: str = "", tags: list[str] | None = None) -> dict:
+    """Add a directory as a tracked ML project and scan it."""
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    from distillate.experiments import scan_project, slugify
+    from distillate.state import acquire_lock, release_lock
+
+    repo_path = _Path(path).expanduser().resolve()
+    if not repo_path.is_dir():
+        return {"success": False, "error": f"Directory not found: {path}"}
+
+    result = scan_project(repo_path)
+    if "error" in result:
+        return {"success": False, "error": result["error"]}
+
+    display_name = name or result["name"]
+    project_id = slugify(display_name)
+
+    acquire_lock()
+    try:
+        state.reload()
+        if state.has_project(project_id):
+            return {"success": False, "error": f"Project '{display_name}' already tracked. Use scan_project to rescan."}
+
+        state.add_project(
+            project_id=project_id,
+            name=display_name,
+            path=str(repo_path),
+            description=description,
+            tags=tags,
+        )
+        for run_id, run_data in result.get("runs", {}).items():
+            state.add_run(project_id, run_id, run_data)
+        state.update_project(
+            project_id,
+            last_scanned_at=datetime.now(timezone.utc).isoformat(),
+            last_commit_hash=result.get("head_hash", ""),
+        )
+        state.save()
+    finally:
+        release_lock()
+
+    # Generate notebook
+    proj = state.get_project(project_id)
+    if proj:
+        _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "name": display_name,
+        "runs_discovered": len(result.get("runs", {})),
+        "message": (
+            f"Now tracking '{display_name}' with "
+            f"{len(result.get('runs', {}))} discovered run(s)."
+        ),
+    }
+
+
+def rename_project_tool(*, state, identifier: str, new_name: str) -> dict:
+    """Rename a tracked ML project."""
+    from distillate.experiments import slugify
+    from distillate.obsidian import write_experiment_notebook
+
+    proj, err = _resolve_project(state, identifier)
+    if err:
+        return err
+
+    old_id = proj["id"]
+    old_name = proj.get("name", "")
+    new_id = slugify(new_name)
+
+    if new_id == old_id and new_name == old_name:
+        return {"success": False, "error": "New name is the same as current name."}
+
+    if new_id != old_id and state.has_project(new_id):
+        return {"success": False, "error": f"A project with slug '{new_id}' already exists."}
+
+    # If slug changed, we need to re-key the project in state
+    if new_id != old_id:
+        proj_data = state.projects.pop(old_id)
+        proj_data["id"] = new_id
+        proj_data["name"] = new_name
+        state.projects[new_id] = proj_data
+
+        # Remove old notebook, write new one
+        _remove_notebook(old_id)
+        _regen_notebook(proj_data)
+    else:
+        state.update_project(old_id, name=new_name)
+        proj["name"] = new_name
+        _regen_notebook(proj)
+
+    state.save()
+
+    return {
+        "success": True,
+        "old_name": old_name,
+        "new_name": new_name,
+        "old_id": old_id,
+        "new_id": new_id,
+        "message": f"Renamed '{old_name}' → '{new_name}'.",
+    }
+
+
+def rename_run_tool(*, state, project: str, run: str, new_name: str) -> dict:
+    """Rename an experiment run within a project."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    old_name = run_obj.get("name", "")
+    run_obj["name"] = new_name
+    state.save()
+
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "old_name": old_name,
+        "new_name": new_name,
+        "message": f"Renamed run '{old_name}' → '{new_name}'.",
+    }
+
+
+def delete_project_tool(*, state, identifier: str, confirm: bool = False) -> dict:
+    """Delete a tracked ML project (two-phase)."""
+    proj, err = _resolve_project(state, identifier)
+    if err:
+        return err
+
+    proj_name = proj.get("name", "")
+    run_count = len(proj.get("runs", {}))
+
+    if not confirm:
+        return {
+            "confirm_required": True,
+            "project": proj_name,
+            "run_count": run_count,
+            "message": (
+                f"Will delete project '{proj_name}' with {run_count} run(s) "
+                f"from tracking. Source files will NOT be deleted. "
+                f"Call again with confirm=true to proceed."
+            ),
+        }
+
+    proj_id = proj["id"]
+    _remove_notebook(proj_id)
+    state.remove_project(proj_id)
+    state.save()
+
+    return {
+        "success": True,
+        "message": f"Deleted project '{proj_name}' ({run_count} runs removed from tracking).",
+    }
+
+
+def delete_run_tool(*, state, project: str, run: str, confirm: bool = False) -> dict:
+    """Delete an experiment run from a project (two-phase)."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    run_name = run_obj.get("name", "")
+    run_id = run_obj.get("id", "")
+
+    if not confirm:
+        return {
+            "confirm_required": True,
+            "project": proj.get("name", ""),
+            "run": run_name,
+            "message": (
+                f"Will delete run '{run_name}' from project "
+                f"'{proj.get('name', '')}'. Source files will NOT be "
+                f"deleted. Call again with confirm=true to proceed."
+            ),
+        }
+
+    state.remove_run(proj["id"], run_id)
+    state.save()
+
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "message": f"Deleted run '{run_name}' from '{proj.get('name', '')}'.",
+    }
+
+
+def update_project_tool(*, state, identifier: str,
+                        description: str | None = None,
+                        tags: list[str] | None = None,
+                        status: str | None = None) -> dict:
+    """Update a project's description, tags, or status."""
+    proj, err = _resolve_project(state, identifier)
+    if err:
+        return err
+
+    updates = {}
+    if description is not None:
+        updates["description"] = description
+    if tags is not None:
+        updates["tags"] = tags
+    if status is not None:
+        valid_statuses = ("tracking", "paused", "archived", "completed")
+        if status not in valid_statuses:
+            return {"error": f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"}
+        updates["status"] = status
+
+    if not updates:
+        return {"error": "No fields to update. Provide description, tags, or status."}
+
+    state.update_project(proj["id"], **updates)
+    state.save()
+
+    return {
+        "success": True,
+        "project": proj.get("name", ""),
+        "updated": list(updates.keys()),
+        "message": f"Updated {', '.join(updates.keys())} for '{proj.get('name', '')}'.",
+    }
+
+
+def link_paper_tool(*, state, project: str, paper: str) -> dict:
+    """Link a paper from the library to an ML project."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    # Resolve paper — try index, citekey, title substring
+    paper_query = paper.strip()
+    found_key = None
+    found_title = None
+
+    # Try index number
+    if paper_query.isdigit():
+        key = state.key_for_index(int(paper_query))
+        if key:
+            doc = state.get_document(key)
+            if doc:
+                found_key = key
+                ck = doc.get("metadata", {}).get("citekey", "")
+                found_title = ck or doc.get("title", "")
+
+    # Try citekey or title
+    if not found_key:
+        doc = state.find_by_citekey(paper_query)
+        if doc:
+            found_key = doc.get("zotero_item_key", "")
+            found_title = paper_query
+        else:
+            # Title substring search
+            query_lower = paper_query.lower()
+            for key, doc in state.documents.items():
+                ck = doc.get("metadata", {}).get("citekey", "")
+                if (query_lower in ck.lower()
+                        or query_lower in doc.get("title", "").lower()):
+                    found_key = key
+                    found_title = ck or doc.get("title", "")
+                    break
+
+    if not found_key:
+        return {"error": f"No paper found matching '{paper_query}'"}
+
+    linked = proj.get("linked_papers", [])
+    if found_title in linked:
+        return {"success": False, "error": f"Paper '{found_title}' is already linked to this project."}
+
+    linked.append(found_title)
+    state.update_project(proj["id"], linked_papers=linked)
+    state.save()
+
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "project": proj.get("name", ""),
+        "paper": found_title,
+        "message": f"Linked '{found_title}' to project '{proj.get('name', '')}'.",
+    }
+
+
+def update_goals_tool(*, state, project: str, goals: list[dict]) -> dict:
+    """Set metric goals on a project."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    # Validate goals
+    for g in goals:
+        if not g.get("metric"):
+            return {"error": "Each goal must have a 'metric' field."}
+        if g.get("direction") not in ("maximize", "minimize"):
+            return {"error": f"Invalid direction '{g.get('direction')}'. Must be 'maximize' or 'minimize'."}
+        if not isinstance(g.get("threshold"), (int, float)):
+            return {"error": f"Threshold must be a number, got '{g.get('threshold')}'."}
+
+    state.update_project(proj["id"], goals=goals)
+    state.save()
+
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "project": proj.get("name", ""),
+        "goals_count": len(goals),
+        "message": f"Set {len(goals)} goal(s) for '{proj.get('name', '')}'.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _remove_notebook(project_id: str) -> None:
+    """Remove the Obsidian notebook file for a project."""
+    from distillate import config
+
+    vault = config.OBSIDIAN_VAULT_PATH
+    output = config.OUTPUT_PATH if not vault else ""
+    base = vault or output
+    if not base:
+        return
+
+    from pathlib import Path as _Path
+    folder = config.OBSIDIAN_PAPERS_FOLDER if vault else ""
+    nb_dir = _Path(base) / folder / "Projects" if folder else _Path(base) / "Projects"
+
+    # Remove main notebook and any section notebooks
+    for md_file in nb_dir.glob(f"{project_id}*.md"):
+        md_file.unlink(missing_ok=True)

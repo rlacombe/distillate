@@ -206,13 +206,13 @@ def _merge_single_document(local: dict, remote: dict) -> None:
     local_meta = local.setdefault("metadata", {})
     remote_meta = remote.get("metadata", {})
     for mk, mv in remote_meta.items():
-        if mk not in local_meta or not local_meta[mk]:
+        if mk not in local_meta or local_meta[mk] is None:
             local_meta[mk] = mv
 
     # Engagement and highlight fields: take whichever is nonzero
     for field in ("engagement", "highlight_count", "highlighted_pages",
                   "highlight_word_count", "page_count"):
-        if not local.get(field) and remote.get(field):
+        if local.get(field) is None and remote.get(field) is not None:
             local[field] = remote[field]
 
 

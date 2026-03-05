@@ -33,7 +33,8 @@ class TestStateProjects:
         assert state.has_project("my-project")
         proj = state.get_project("my-project")
         assert proj["name"] == "My Project"
-        assert proj["path"] == "/tmp/my-project"
+        from pathlib import Path
+        assert proj["path"] == str(Path("/tmp/my-project").resolve())
         assert proj["status"] == "tracking"
         assert proj["runs"] == {}
         assert proj["notebook_sections"] == ["main"]
@@ -788,8 +789,8 @@ class TestMetricFormatting:
 
     def test_pick_key_metric(self):
         from distillate.experiments import _pick_key_metric
-        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "95.0%"
-        assert _pick_key_metric({"loss": 0.1}) == "0.1000"
+        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "accuracy=95.0%"
+        assert _pick_key_metric({"loss": 0.1}) == "loss=0.1000"
         assert _pick_key_metric({}) == "-"
 
 
@@ -801,7 +802,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 5
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 13
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -814,6 +815,9 @@ class TestExperimentToolSchemas:
         assert names == {
             "list_projects", "get_project_details", "compare_runs",
             "scan_project", "get_experiment_notebook",
+            "add_project", "rename_project", "rename_run",
+            "delete_project", "delete_run", "update_project",
+            "link_paper", "update_goals",
         }
 
 
@@ -858,3 +862,902 @@ class TestObsidianNotebook:
         from distillate.obsidian import write_experiment_notebook
         result = write_experiment_notebook({"id": "test"}, "content")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Claude Code log extraction tests
+# ---------------------------------------------------------------------------
+
+
+def _make_jsonl_session(path: Path, messages: list[dict]) -> Path:
+    """Write a fake JSONL session file."""
+    jsonl_file = path / "abc12345-fake-session.jsonl"
+    with open(jsonl_file, "w") as f:
+        for msg in messages:
+            f.write(json.dumps(msg) + "\n")
+    return jsonl_file
+
+
+def _assistant_bash(tool_id: str, command: str, ts: str = "2026-01-15T10:00:00Z") -> dict:
+    """Build an assistant message with a Bash tool_use block."""
+    return {
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": "Bash",
+                    "input": {"command": command},
+                }
+            ]
+        },
+    }
+
+
+def _user_tool_result(tool_id: str, output: str, ts: str = "2026-01-15T10:05:00Z") -> dict:
+    """Build a user message with a tool_result block."""
+    return {
+        "type": "user",
+        "timestamp": ts,
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": output,
+                }
+            ]
+        },
+    }
+
+
+class TestClaudeLogExtraction:
+    """Tests for extracting experiment runs from Claude Code JSONL logs."""
+
+    def test_find_claude_log_dir(self, tmp_path, monkeypatch):
+        from distillate.experiments import _find_claude_log_dir
+
+        # Create a fake .claude/projects directory
+        claude_projects = tmp_path / ".claude" / "projects"
+        encoded = str(tmp_path / "my-project").replace("/", "-")
+        log_dir = claude_projects / encoded
+        log_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        result = _find_claude_log_dir(tmp_path / "my-project")
+        assert result == log_dir
+
+    def test_find_claude_log_dir_missing(self, tmp_path, monkeypatch):
+        from distillate.experiments import _find_claude_log_dir
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        result = _find_claude_log_dir(tmp_path / "nonexistent")
+        assert result is None
+
+    def test_parse_training_command(self):
+        from distillate.experiments import _parse_training_command
+
+        result = _parse_training_command(
+            "python3 train.py d_model=8 n_heads=1 d_ff=16 epochs=20 lr=0.005"
+        )
+        assert result is not None
+        assert result["script"] == "train.py"
+        hp = result["hyperparameters"]
+        assert hp["d_model"] == 8
+        assert hp["n_heads"] == 1
+        assert hp["d_ff"] == 16
+        assert hp["epochs"] == 20
+        assert hp["lr"] == 0.005
+
+    def test_parse_training_command_with_path(self):
+        from distillate.experiments import _parse_training_command
+
+        result = _parse_training_command(
+            "cd /some/path && python3 train.py epochs=5 batch_size=32 2>&1"
+        )
+        assert result is not None
+        assert result["hyperparameters"]["epochs"] == 5
+        assert result["hyperparameters"]["batch_size"] == 32
+
+    def test_parse_training_command_not_training(self):
+        from distillate.experiments import _parse_training_command
+
+        # evaluate.py — not a training script
+        assert _parse_training_command("python3 evaluate.py") is None
+        # git command
+        assert _parse_training_command("git status") is None
+        # pip install
+        assert _parse_training_command("pip install torch") is None
+
+    def test_extract_metrics_from_output(self):
+        from distillate.experiments import _extract_metrics_from_output
+
+        output = (
+            "Epoch 1: loss=6.432 accuracy=0.01\n"
+            "Epoch 2: loss=3.210 accuracy=0.45\n"
+            "Epoch 3: loss=1.050 accuracy=0.82\n"
+            "Final: loss=0.320 exact_match=0.95\n"
+        )
+        metrics = _extract_metrics_from_output(output)
+        # Should keep the last occurrence of each metric
+        assert metrics["loss"] == 0.320
+        assert metrics["accuracy"] == 0.82
+        assert metrics["exact_match"] == 0.95
+
+    def test_parse_config_block(self):
+        from distillate.experiments import _parse_config_block
+
+        output = (
+            'Some warning text\n'
+            'Config: {\n'
+            '  "d_model": 64,\n'
+            '  "n_heads": 2,\n'
+            '  "lr": 0.003\n'
+            '}\n'
+            'Device: mps\n'
+        )
+        config = _parse_config_block(output)
+        assert config["d_model"] == 64
+        assert config["n_heads"] == 2
+        assert config["lr"] == 0.003
+
+    def test_parse_config_block_no_config(self):
+        from distillate.experiments import _parse_config_block
+
+        assert _parse_config_block("just some output text") == {}
+
+    def test_extract_runs_from_session(self, tmp_path, monkeypatch):
+        """Full integration: write fake JSONL, extract runs."""
+        from distillate.experiments import extract_runs_from_claude_logs
+
+        # Set up fake claude log directory
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        claude_projects = tmp_path / ".claude" / "projects"
+        encoded = str(project_path).replace("/", "-")
+        log_dir = claude_projects / encoded
+        log_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        # Write a session with two training runs
+        _make_jsonl_session(log_dir, [
+            _assistant_bash("t1", "python3 train.py d_model=8 n_heads=1 epochs=5 lr=0.01",
+                           ts="2026-01-15T10:00:00Z"),
+            _user_tool_result("t1",
+                             "Config: {\"d_model\": 8, \"n_heads\": 1}\n"
+                             "Epoch 5: loss=1.23 accuracy=0.85\n",
+                             ts="2026-01-15T10:05:00Z"),
+            _assistant_bash("t2", "python3 train.py d_model=16 n_heads=2 epochs=10 lr=0.005",
+                           ts="2026-01-15T11:00:00Z"),
+            _user_tool_result("t2",
+                             "Epoch 10: loss=0.45 accuracy=0.95 exact_match=0.92\n",
+                             ts="2026-01-15T11:30:00Z"),
+        ])
+
+        runs = extract_runs_from_claude_logs(project_path)
+        assert len(runs) == 2
+
+        # First run
+        r1 = runs[0]
+        assert r1["hyperparameters"]["d_model"] == 8
+        assert r1["hyperparameters"]["n_heads"] == 1
+        assert r1["results"]["accuracy"] == 0.85
+        assert r1["started_at"] == "2026-01-15T10:00:00Z"
+        assert r1["completed_at"] == "2026-01-15T10:05:00Z"
+        assert r1["source"] == "claude_logs"
+        assert r1["id"].startswith("claude-")
+
+        # Second run
+        r2 = runs[1]
+        assert r2["hyperparameters"]["d_model"] == 16
+        assert r2["results"]["exact_match"] == 0.92
+        assert r2["results"]["loss"] == 0.45
+
+    def test_non_training_commands_skipped(self, tmp_path, monkeypatch):
+        """Non-training bash commands should not produce runs."""
+        from distillate.experiments import extract_runs_from_claude_logs
+
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        claude_projects = tmp_path / ".claude" / "projects"
+        encoded = str(project_path).replace("/", "-")
+        log_dir = claude_projects / encoded
+        log_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        _make_jsonl_session(log_dir, [
+            _assistant_bash("t1", "git status"),
+            _user_tool_result("t1", "On branch main\nnothing to commit"),
+            _assistant_bash("t2", "python3 evaluate.py"),
+            _user_tool_result("t2", "accuracy=0.95"),
+            _assistant_bash("t3", "cat train.py"),
+            _user_tool_result("t3", "import torch\n..."),
+        ])
+
+        runs = extract_runs_from_claude_logs(project_path)
+        assert len(runs) == 0
+
+    def test_duplicate_run_skipped_in_scan(self, tmp_path, monkeypatch):
+        """Claude log runs with same hyperparams as artifact runs are skipped."""
+        from distillate.experiments import _is_duplicate_run
+
+        existing_runs = {
+            "exp-abc123": {
+                "id": "exp-abc123",
+                "name": "d8_h1",
+                "hyperparameters": {"d_model": 8, "n_heads": 1, "lr": 0.01},
+                "results": {"accuracy": 0.85},
+            }
+        }
+
+        # Same hyperparams → duplicate
+        candidate = {
+            "id": "claude-xyz789",
+            "hyperparameters": {"d_model": 8, "n_heads": 1, "lr": 0.01},
+        }
+        assert _is_duplicate_run(existing_runs, candidate) is True
+
+        # Different hyperparams → not duplicate
+        candidate2 = {
+            "id": "claude-xyz790",
+            "hyperparameters": {"d_model": 16, "n_heads": 2, "lr": 0.005},
+        }
+        assert _is_duplicate_run(existing_runs, candidate2) is False
+
+    def test_claude_runs_integrated_in_scan(self, tmp_path, monkeypatch):
+        """scan_project() should include Claude log runs alongside artifact runs."""
+        from distillate.experiments import scan_project
+
+        # Create a project dir with no artifacts
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+
+        # Set up Claude logs
+        claude_projects = tmp_path / ".claude" / "projects"
+        encoded = str(project_path).replace("/", "-")
+        log_dir = claude_projects / encoded
+        log_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        _make_jsonl_session(log_dir, [
+            _assistant_bash("t1", "python3 train.py d_model=32 epochs=10",
+                           ts="2026-01-15T10:00:00Z"),
+            _user_tool_result("t1", "loss=0.5 accuracy=0.90\n",
+                             ts="2026-01-15T10:10:00Z"),
+        ])
+
+        result = scan_project(project_path)
+        assert len(result["runs"]) == 1
+        run = list(result["runs"].values())[0]
+        assert run["source"] == "claude_logs"
+        assert run["hyperparameters"]["d_model"] == 32
+
+    def test_coerce_value(self):
+        from distillate.experiments import _coerce_value
+
+        assert _coerce_value("42") == 42
+        assert isinstance(_coerce_value("42"), int)
+        assert _coerce_value("0.005") == 0.005
+        assert isinstance(_coerce_value("0.005"), float)
+        assert _coerce_value("True") is True
+        assert _coerce_value("false") is False
+        assert _coerce_value("1e-4") == 1e-4
+
+
+# ---------------------------------------------------------------------------
+# LLM enrichment tests
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_RUNS = {
+    "exp-001": {
+        "id": "exp-001",
+        "name": "d8_h1",
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": {"d_model": 8, "n_heads": 1, "lr": 0.01},
+        "results": {"accuracy": 0.65, "loss": 2.1},
+        "tags": ["d8_h1"],
+        "git_commits": [],
+        "files_created": [],
+        "started_at": "2026-01-15T10:00:00Z",
+        "completed_at": "2026-01-15T10:30:00Z",
+        "duration_minutes": 30,
+        "notes": [],
+    },
+    "exp-002": {
+        "id": "exp-002",
+        "name": "d16_h2",
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": {"d_model": 16, "n_heads": 2, "lr": 0.005},
+        "results": {"accuracy": 0.92, "loss": 0.4},
+        "tags": ["d16_h2"],
+        "git_commits": [],
+        "files_created": [],
+        "started_at": "2026-01-15T11:00:00Z",
+        "completed_at": "2026-01-15T11:45:00Z",
+        "duration_minutes": 45,
+        "notes": [],
+    },
+}
+
+_SAMPLE_ENRICHMENT = {
+    "runs": {
+        "exp-001": {
+            "name": "Baseline Small Transformer",
+            "hypothesis": "A minimal transformer should learn basic patterns.",
+            "approach": "Start with the smallest viable model to establish a baseline.",
+            "analysis": "65% accuracy shows the model learns some patterns but lacks capacity.",
+            "next_steps": "Double the model dimensions to test if capacity is the bottleneck.",
+        },
+        "exp-002": {
+            "name": "Scaled-Up Model",
+            "hypothesis": "Doubling dimensions should improve accuracy if capacity was the issue.",
+            "approach": "Increased d_model from 8 to 16, added a second attention head.",
+            "analysis": "92% accuracy confirms capacity was the main bottleneck. Loss dropped 5x.",
+            "next_steps": "Try reducing learning rate further or adding regularization.",
+        },
+    },
+    "project": {
+        "key_breakthrough": "Scaling from d_model=8 to d_model=16 jumped accuracy from 65% to 92%.",
+        "lessons_learned": [
+            "Model capacity was the primary bottleneck, not training procedure.",
+            "Halving the learning rate alongside scaling helped stability.",
+        ],
+    },
+}
+
+
+class TestLLMEnrichment:
+    """Tests for LLM-based experiment enrichment."""
+
+    def test_runs_fingerprint_stable(self):
+        from distillate.experiments import _runs_fingerprint
+
+        fp1 = _runs_fingerprint(_SAMPLE_RUNS)
+        fp2 = _runs_fingerprint(_SAMPLE_RUNS)
+        assert fp1 == fp2
+
+    def test_runs_fingerprint_changes(self):
+        from distillate.experiments import _runs_fingerprint
+
+        fp1 = _runs_fingerprint(_SAMPLE_RUNS)
+        modified = json.loads(json.dumps(_SAMPLE_RUNS))
+        modified["exp-001"]["results"]["accuracy"] = 0.70
+        fp2 = _runs_fingerprint(modified)
+        assert fp1 != fp2
+
+    def test_enrichment_cache_round_trip(self, tmp_path):
+        from distillate.experiments import (
+            _load_enrichment_cache,
+            _save_enrichment_cache,
+        )
+
+        _save_enrichment_cache(tmp_path, {
+            "fingerprint": "abc123",
+            "enrichment": _SAMPLE_ENRICHMENT,
+        })
+        loaded = _load_enrichment_cache(tmp_path)
+        assert loaded["fingerprint"] == "abc123"
+        assert loaded["enrichment"]["project"]["key_breakthrough"].startswith("Scaling")
+
+    def test_enrichment_cache_missing(self, tmp_path):
+        from distillate.experiments import _load_enrichment_cache
+
+        assert _load_enrichment_cache(tmp_path) == {}
+
+    def test_build_enrichment_prompt(self):
+        from distillate.experiments import _build_enrichment_prompt
+
+        prompt = _build_enrichment_prompt(_SAMPLE_RUNS, "Test Project")
+        assert "Test Project" in prompt
+        assert "d_model=8" in prompt
+        assert "d_model=16" in prompt
+        assert "accuracy" in prompt
+        assert "exp-001" in prompt
+        assert "exp-002" in prompt
+        assert "(first experiment)" in prompt  # first run has no diff
+
+    def test_notebook_with_enrichment(self):
+        from distillate.experiments import generate_notebook
+
+        project = {
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "runs": _SAMPLE_RUNS,
+        }
+        md = generate_notebook(project, enrichment=_SAMPLE_ENRICHMENT)
+
+        # Check enriched names in timeline
+        assert "Baseline Small Transformer" in md
+        assert "Scaled-Up Model" in md
+
+        # Check narrative sections
+        assert "#### Hypothesis" in md
+        assert "minimal transformer should learn basic patterns" in md
+        assert "#### Approach" in md
+        assert "smallest viable model" in md
+        assert "#### Analysis" in md
+        assert "65% accuracy shows" in md
+        assert "#### Next Steps" in md
+
+        # Research insights should be near the top (before Experiment Timeline)
+        insights_pos = md.index("## Research Insights")
+        timeline_pos = md.index("## Experiment Timeline")
+        assert insights_pos < timeline_pos
+
+        assert "### Key Breakthrough" in md
+        assert "d_model=8 to d_model=16" in md
+        assert "### Lessons Learned" in md
+        assert "capacity was the primary bottleneck" in md
+
+    def test_notebook_without_enrichment(self):
+        """generate_notebook still works fine without enrichment."""
+        from distillate.experiments import generate_notebook
+
+        project = {
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "runs": _SAMPLE_RUNS,
+        }
+        md = generate_notebook(project)
+
+        # Should still have the basic structure
+        assert "# Test Project" in md
+        assert "## Experiment Timeline" in md
+        assert "d8_h1" in md  # original name, not enriched
+
+        # Should NOT have research insights
+        assert "## Research Insights" not in md
+
+    def test_factorize_hyperparams(self):
+        from distillate.experiments import _factorize_hyperparams
+
+        runs = [
+            {"hyperparameters": {"lr": 0.01, "batch_size": 32, "d_model": 8}},
+            {"hyperparameters": {"lr": 0.005, "batch_size": 32, "d_model": 16}},
+            {"hyperparameters": {"lr": 0.001, "batch_size": 32, "d_model": 32}},
+        ]
+        common, varying = _factorize_hyperparams(runs)
+        assert common == {"batch_size": 32}
+        assert "lr" in varying
+        assert "d_model" in varying
+        assert "batch_size" not in varying
+
+    def test_notebook_factorizes_hyperparams(self):
+        """Common hyperparams appear once; per-run cards show only changes."""
+        from distillate.experiments import generate_notebook
+
+        runs = {
+            "r1": {
+                "id": "r1", "name": "run1", "status": "completed",
+                "hyperparameters": {"lr": 0.01, "batch_size": 32, "n_layers": 1},
+                "results": {}, "tags": [], "git_commits": [],
+                "files_created": [], "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "", "duration_minutes": 0, "notes": [],
+                "hypothesis": "",
+            },
+            "r2": {
+                "id": "r2", "name": "run2", "status": "completed",
+                "hyperparameters": {"lr": 0.005, "batch_size": 32, "n_layers": 1},
+                "results": {}, "tags": [], "git_commits": [],
+                "files_created": [], "started_at": "2026-01-02T00:00:00Z",
+                "completed_at": "", "duration_minutes": 0, "notes": [],
+                "hypothesis": "",
+            },
+        }
+        md = generate_notebook({"name": "Test", "path": "/tmp", "runs": runs})
+
+        # Common config section should exist with shared params
+        assert "## Common Configuration" in md
+        assert "| batch_size | `32` |" in md
+        assert "| n_layers | `1` |" in md
+
+        # Per-run cards should show "Configuration (changes)" not full table
+        assert "#### Configuration (changes)" in md
+        # lr varies so it should appear in per-run cards
+        assert "| lr | `0.01` |" in md
+        assert "| lr | `0.005` |" in md
+
+    def test_enrich_skips_without_api_key(self, monkeypatch):
+        from distillate.experiments import enrich_runs_with_llm
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test", Path("/tmp"))
+        assert result is None
+
+    def test_enrich_uses_cache(self, tmp_path, monkeypatch):
+        from distillate.experiments import (
+            _runs_fingerprint,
+            _save_enrichment_cache,
+            enrich_runs_with_llm,
+        )
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test-key")
+
+        # Pre-populate cache
+        fp = _runs_fingerprint(_SAMPLE_RUNS)
+        _save_enrichment_cache(tmp_path, {
+            "fingerprint": fp,
+            "enrichment": _SAMPLE_ENRICHMENT,
+        })
+
+        # Should return cached enrichment without calling API
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test", tmp_path)
+        assert result is not None
+        assert result["project"]["key_breakthrough"].startswith("Scaling")
+
+    def test_enrich_calls_api(self, tmp_path, monkeypatch):
+        """When cache misses, enrich_runs_with_llm calls Claude API."""
+        from distillate.experiments import enrich_runs_with_llm
+
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "sk-test-key")
+        monkeypatch.setattr("distillate.config.CLAUDE_SMART_MODEL", "claude-sonnet-4-5-20250929")
+
+        # Mock the anthropic client
+        api_response = json.dumps(_SAMPLE_ENRICHMENT)
+
+        class FakeContent:
+            text = api_response
+
+        class FakeResponse:
+            content = [FakeContent()]
+
+        class FakeMessages:
+            def create(self, **kwargs):
+                return FakeResponse()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.messages = FakeMessages()
+
+        import distillate.experiments
+        monkeypatch.setattr("anthropic.Anthropic", FakeClient)
+        # Ensure anthropic is "importable" by pre-importing mock
+        import types
+        fake_anthropic = types.ModuleType("anthropic")
+        fake_anthropic.Anthropic = FakeClient
+        monkeypatch.setitem(__import__("sys").modules, "anthropic", fake_anthropic)
+
+        result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test Project", tmp_path)
+        assert result is not None
+        assert "runs" in result
+        assert "project" in result
+        assert result["runs"]["exp-001"]["name"] == "Baseline Small Transformer"
+
+        # Check cache was written
+        from distillate.experiments import _load_enrichment_cache
+        cache = _load_enrichment_cache(tmp_path)
+        assert cache.get("enrichment") is not None
+
+
+# ---------------------------------------------------------------------------
+# State remove_run tests
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveRun:
+    def test_remove_existing_run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        state = State()
+        state.add_project("proj", "Proj", "/path")
+        state.add_run("proj", "run-1", {"id": "run-1", "name": "Run 1"})
+        assert state.remove_run("proj", "run-1") is True
+        assert state.get_run("proj", "run-1") is None
+
+    def test_remove_nonexistent_run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        state = State()
+        state.add_project("proj", "Proj", "/path")
+        assert state.remove_run("proj", "nope") is False
+
+    def test_remove_run_nonexistent_project(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        state = State()
+        assert state.remove_run("nope", "run-1") is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProject:
+    def test_resolve_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        from distillate.experiment_tools import _resolve_project
+        state = State()
+        state.add_project("my-proj", "My Proj", "/path")
+        proj, err = _resolve_project(state, "my-proj")
+        assert proj is not None
+        assert err is None
+        assert proj["name"] == "My Proj"
+
+    def test_resolve_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        from distillate.experiment_tools import _resolve_project
+        state = State()
+        proj, err = _resolve_project(state, "nope")
+        assert proj is None
+        assert "error" in err
+
+    def test_resolve_ambiguous(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.state import State
+        from distillate.experiment_tools import _resolve_project
+        state = State()
+        state.add_project("ml-proj-a", "ML Project A", "/a")
+        state.add_project("ml-proj-b", "ML Project B", "/b")
+        proj, err = _resolve_project(state, "ML Project")
+        assert proj is None
+        assert "Multiple" in err["error"]
+
+
+class TestFindAllRuns:
+    def test_find_all_by_substring(self):
+        from distillate.experiment_tools import _find_all_runs
+        runs = {
+            "r1": {"id": "r1", "name": "baseline v1"},
+            "r2": {"id": "r2", "name": "baseline v2"},
+            "r3": {"id": "r3", "name": "final"},
+        }
+        matches = _find_all_runs(runs, "baseline")
+        assert len(matches) == 2
+
+    def test_find_all_exact_id(self):
+        from distillate.experiment_tools import _find_all_runs
+        runs = {"r1": {"id": "r1", "name": "run 1"}}
+        assert len(_find_all_runs(runs, "r1")) == 1
+
+    def test_find_all_empty(self):
+        from distillate.experiment_tools import _find_all_runs
+        assert _find_all_runs({}, "x") == []
+        assert _find_all_runs({"r1": {"id": "r1", "name": "a"}}, "") == []
+
+
+# ---------------------------------------------------------------------------
+# CRUD tool tests
+# ---------------------------------------------------------------------------
+
+
+def _make_state(tmp_path, monkeypatch):
+    """Create a State with a project and two runs for CRUD tool tests."""
+    monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+    monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+    monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+    from distillate.state import State
+    state = State()
+    state.add_project("test-proj", "Test Project", str(tmp_path / "fake-dir"))
+    state.add_run("test-proj", "run-1", {
+        "id": "run-1", "name": "Baseline", "status": "completed",
+        "hyperparameters": {"lr": 0.01}, "results": {"accuracy": 0.8},
+        "tags": [], "git_commits": [], "files_created": [],
+        "started_at": "", "completed_at": "", "duration_minutes": 30, "notes": [],
+    })
+    state.add_run("test-proj", "run-2", {
+        "id": "run-2", "name": "Improved", "status": "completed",
+        "hyperparameters": {"lr": 0.005}, "results": {"accuracy": 0.9},
+        "tags": [], "git_commits": [], "files_created": [],
+        "started_at": "", "completed_at": "", "duration_minutes": 45, "notes": [],
+    })
+    state.save()
+    return state
+
+
+class TestRenameProjectTool:
+    def test_rename_success(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import rename_project_tool
+        result = rename_project_tool(state=state, identifier="test-proj", new_name="Better Name")
+        assert result["success"] is True
+        assert result["old_name"] == "Test Project"
+        assert result["new_name"] == "Better Name"
+        assert state.has_project("better-name")
+        assert not state.has_project("test-proj")
+
+    def test_rename_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import rename_project_tool
+        result = rename_project_tool(state=state, identifier="nope", new_name="X")
+        assert "error" in result
+
+    def test_rename_same_slug_and_name(self, tmp_path, monkeypatch):
+        """Renaming to the exact same name (same slug) is a no-op error."""
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+        from distillate.state import State
+        state = State()
+        # Create project where id matches slugify(name)
+        state.add_project("test-project", "Test Project", str(tmp_path))
+        state.save()
+        from distillate.experiment_tools import rename_project_tool
+        result = rename_project_tool(state=state, identifier="test-project", new_name="Test Project")
+        assert result.get("success") is False
+
+
+class TestRenameRunTool:
+    def test_rename_run_success(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import rename_run_tool
+        result = rename_run_tool(state=state, project="test-proj", run="run-1", new_name="New Baseline")
+        assert result["success"] is True
+        assert result["old_name"] == "Baseline"
+        assert state.get_run("test-proj", "run-1")["name"] == "New Baseline"
+
+    def test_rename_run_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import rename_run_tool
+        result = rename_run_tool(state=state, project="test-proj", run="nope", new_name="X")
+        assert "error" in result
+
+
+class TestDeleteProjectTool:
+    def test_delete_preview(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_project_tool
+        result = delete_project_tool(state=state, identifier="test-proj", confirm=False)
+        assert result["confirm_required"] is True
+        assert state.has_project("test-proj")  # not deleted yet
+
+    def test_delete_confirm(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_project_tool
+        result = delete_project_tool(state=state, identifier="test-proj", confirm=True)
+        assert result["success"] is True
+        assert not state.has_project("test-proj")
+
+    def test_delete_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_project_tool
+        result = delete_project_tool(state=state, identifier="nope")
+        assert "error" in result
+
+
+class TestDeleteRunTool:
+    def test_delete_run_preview(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_run_tool
+        result = delete_run_tool(state=state, project="test-proj", run="run-1", confirm=False)
+        assert result["confirm_required"] is True
+        assert state.get_run("test-proj", "run-1") is not None
+
+    def test_delete_run_confirm(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_run_tool
+        result = delete_run_tool(state=state, project="test-proj", run="run-1", confirm=True)
+        assert result["success"] is True
+        assert state.get_run("test-proj", "run-1") is None
+        # Other run still exists
+        assert state.get_run("test-proj", "run-2") is not None
+
+    def test_delete_run_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import delete_run_tool
+        result = delete_run_tool(state=state, project="test-proj", run="nope")
+        assert "error" in result
+
+
+class TestUpdateProjectTool:
+    def test_update_description(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="test-proj", description="New desc")
+        assert result["success"] is True
+        assert state.get_project("test-proj")["description"] == "New desc"
+
+    def test_update_tags(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="test-proj", tags=["nlp", "transformers"])
+        assert result["success"] is True
+        assert state.get_project("test-proj")["tags"] == ["nlp", "transformers"]
+
+    def test_update_status(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="test-proj", status="archived")
+        assert result["success"] is True
+        assert state.get_project("test-proj")["status"] == "archived"
+
+    def test_update_invalid_status(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="test-proj", status="bad")
+        assert "error" in result
+
+    def test_update_no_fields(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="test-proj")
+        assert "error" in result
+
+    def test_update_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_project_tool
+        result = update_project_tool(state=state, identifier="nope", description="x")
+        assert "error" in result
+
+
+class TestLinkPaperTool:
+    def test_link_by_citekey(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        # Add a paper to state
+        state.add_document("ZOT123", "ATT123", "md5", "doc", "Deep RL Paper",
+                          ["Author"], metadata={"citekey": "smith2026"})
+        state.save()
+        from distillate.experiment_tools import link_paper_tool
+        result = link_paper_tool(state=state, project="test-proj", paper="smith2026")
+        assert result["success"] is True
+        proj = state.get_project("test-proj")
+        assert "smith2026" in proj["linked_papers"]
+
+    def test_link_by_title_substring(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        state.add_document("ZOT123", "ATT123", "md5", "doc", "Deep RL Paper",
+                          ["Author"], metadata={"citekey": "smith2026"})
+        from distillate.experiment_tools import link_paper_tool
+        result = link_paper_tool(state=state, project="test-proj", paper="Deep RL")
+        assert result["success"] is True
+
+    def test_link_paper_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import link_paper_tool
+        result = link_paper_tool(state=state, project="test-proj", paper="nonexistent")
+        assert "error" in result
+
+    def test_link_already_linked(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        state.add_document("ZOT123", "ATT123", "md5", "doc", "Paper",
+                          ["Author"], metadata={"citekey": "smith2026"})
+        state.update_project("test-proj", linked_papers=["smith2026"])
+        from distillate.experiment_tools import link_paper_tool
+        result = link_paper_tool(state=state, project="test-proj", paper="smith2026")
+        assert result.get("success") is False
+
+    def test_link_project_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import link_paper_tool
+        result = link_paper_tool(state=state, project="nope", paper="x")
+        assert "error" in result
+
+
+class TestUpdateGoalsTool:
+    def test_set_goals(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_goals_tool
+        goals = [
+            {"metric": "accuracy", "direction": "maximize", "threshold": 0.95},
+            {"metric": "loss", "direction": "minimize", "threshold": 0.1},
+        ]
+        result = update_goals_tool(state=state, project="test-proj", goals=goals)
+        assert result["success"] is True
+        assert result["goals_count"] == 2
+        proj = state.get_project("test-proj")
+        assert len(proj["goals"]) == 2
+
+    def test_invalid_direction(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_goals_tool
+        goals = [{"metric": "acc", "direction": "up", "threshold": 0.9}]
+        result = update_goals_tool(state=state, project="test-proj", goals=goals)
+        assert "error" in result
+
+    def test_goals_project_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import update_goals_tool
+        result = update_goals_tool(state=state, project="nope", goals=[])
+        assert "error" in result

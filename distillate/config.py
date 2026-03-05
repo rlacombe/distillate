@@ -158,6 +158,9 @@ def _validate_optional() -> None:
             "RESEND_API_KEY doesn't look like a valid key (expected 're_' prefix)"
         )
 
+    if EXPERIMENTS_ROOT and not Path(EXPERIMENTS_ROOT).is_dir():
+        log.warning("EXPERIMENTS_ROOT does not exist: %s", EXPERIMENTS_ROOT)
+
 
 LOG_FILE = CONFIG_DIR / "distillate.log"
 

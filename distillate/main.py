@@ -1916,25 +1916,21 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     return True
 
 
-def _init_step5(save_to_env) -> None:
-    """Step 5: Optional features (AI summaries, email digest)."""
+def _init_step5_claude(save_to_env) -> None:
+    """Step 5: Claude API key."""
     print("  " + "-" * 48)
-    print("  Step 5 of 5: Optional Features")
+    print("  Step 5 of 6: Claude API")
     print("  " + "-" * 48)
     print()
-    print("  These are all optional. Press Enter to skip any of them.")
-    print("  You can come back anytime with 'distillate --init'.")
+    print("  An Anthropic API key powers several features:")
     print()
-
-    # AI Summaries
-    print("  AI Summaries")
+    print("    - AI summaries & key learnings for each paper")
+    print("    - The Nicolas agent REPL (interactive assistant)")
+    print("    - Daily reading suggestions")
+    print("    - Experiment enrichment (hypothesis generation)")
     print()
-    print("  With an Anthropic API key, each paper you read gets:")
-    print("    - A one-liner summary (shown in your Reading Log)")
-    print("    - A paragraph overview of methods and findings")
-    print("    - 4-6 key learnings distilled from your highlights")
-    print()
-    print("  Without a key, papers use their abstract as fallback.")
+    print("  Without a key, papers use their abstract as fallback")
+    print("  and the agent REPL is unavailable.")
     print()
     print("  Note: your highlights and abstracts are sent to the Claude API")
     print("  for processing. No data is stored by Anthropic.")
@@ -1944,9 +1940,20 @@ def _init_step5(save_to_env) -> None:
     )
     if anthropic_key:
         save_to_env("ANTHROPIC_API_KEY", anthropic_key)
-        print("  AI summaries enabled.")
+        print("  Claude API enabled.")
     else:
         print("  Skipped.")
+    print()
+
+
+def _init_step6_extras(save_to_env) -> None:
+    """Step 6: Email digest + experiment tracking."""
+    print("  " + "-" * 48)
+    print("  Step 6 of 6: Extras")
+    print("  " + "-" * 48)
+    print()
+    print("  These are all optional. Press Enter to skip any of them.")
+    print("  You can come back anytime with 'distillate --init'.")
     print()
 
     # Email Digest
@@ -1973,6 +1980,86 @@ def _init_step5(save_to_env) -> None:
         print("  Email digest enabled.")
     else:
         print("  Skipped.")
+    print()
+
+    # Experiment tracking (merged from old step 6)
+    print("  Experiment Tracking")
+    print()
+    print("  Track ML experiments alongside your papers.")
+    print("  Distillate can auto-discover experiments in your project directories")
+    print("  and generate rich lab notebooks with run timelines and diffs.")
+    print()
+
+    enable = input("  Enable experiment tracking? [y/N] ").strip().lower()
+    if enable not in ("y", "yes"):
+        print("  Skipped. You can enable later with EXPERIMENTS_ENABLED=true")
+        print()
+        return
+
+    save_to_env("EXPERIMENTS_ENABLED", "true")
+
+    root = input("  Research folder root (e.g. ~/Code/Research): ").strip()
+    if root:
+        from pathlib import Path
+        root_path = Path(root).expanduser().resolve()
+        if root_path.is_dir():
+            save_to_env("EXPERIMENTS_ROOT", str(root_path))
+            print(f"  Set EXPERIMENTS_ROOT={root_path}")
+
+            # Auto-discover ML repos
+            from distillate.experiments import detect_ml_repos
+            repos = detect_ml_repos(root_path)
+            if repos:
+                print(f"\n  Found {len(repos)} ML project(s):")
+                for r in repos[:10]:
+                    print(f"    - {r.name} ({r})")
+                print()
+                scan_now = input("  Scan them now? [Y/n] ").strip().lower()
+                if scan_now not in ("n", "no"):
+                    from distillate.experiments import (
+                        generate_notebook,
+                        scan_project,
+                        slugify,
+                    )
+                    from distillate.obsidian import write_experiment_notebook
+                    from distillate.state import State
+                    state = State()
+                    for repo_path in repos:
+                        print(f"    Scanning {repo_path.name}...")
+                        result = scan_project(repo_path)
+                        if "error" not in result:
+                            pid = slugify(result["name"])
+                            state.add_project(
+                                project_id=pid,
+                                name=result["name"],
+                                path=str(repo_path),
+                            )
+                            for run_id, run_data in result.get("runs", {}).items():
+                                state.add_run(pid, run_id, run_data)
+                            state.update_project(
+                                pid,
+                                last_scanned_at=__import__("datetime").datetime.now(
+                                    __import__("datetime").timezone.utc
+                                ).isoformat(),
+                                last_commit_hash=result.get("head_hash", ""),
+                            )
+                            runs = result.get("runs", {})
+                            print(f"      {len(runs)} run(s) discovered")
+                            # Generate notebook
+                            proj = state.get_project(pid)
+                            if proj:
+                                nb = generate_notebook(proj)
+                                write_experiment_notebook(proj, nb)
+                    state.save()
+                    print(f"\n  Tracking {len(repos)} project(s).")
+            else:
+                print("  No ML projects found in that folder.")
+        else:
+            print(f"  Directory not found: {root_path}")
+    else:
+        print("  Skipped root folder. You can set EXPERIMENTS_ROOT later.")
+
+    print()
 
 
 def _schedule() -> None:
@@ -2184,87 +2271,6 @@ def _init_newsletter() -> None:
         print("  Couldn't reach the server, but no worries.")
 
 
-def _init_step6_experiments(save_to_env) -> None:
-    """Step 6: Optional experiment tracking."""
-    print("  " + "-" * 48)
-    print("  Step 6: Experiment Tracking (optional)")
-    print("  " + "-" * 48)
-    print()
-    print("  Track ML experiments alongside your papers.")
-    print("  Distillate can auto-discover experiments in your project directories")
-    print("  and generate rich lab notebooks with run timelines and diffs.")
-    print()
-
-    enable = input("  Enable experiment tracking? [y/N] ").strip().lower()
-    if enable not in ("y", "yes"):
-        print("  Skipped. You can enable later with EXPERIMENTS_ENABLED=true")
-        print()
-        return
-
-    save_to_env("EXPERIMENTS_ENABLED", "true")
-
-    root = input("  Research folder root (e.g. ~/Code/Research): ").strip()
-    if root:
-        from pathlib import Path
-        root_path = Path(root).expanduser().resolve()
-        if root_path.is_dir():
-            save_to_env("EXPERIMENTS_ROOT", str(root_path))
-            print(f"  Set EXPERIMENTS_ROOT={root_path}")
-
-            # Auto-discover ML repos
-            from distillate.experiments import detect_ml_repos
-            repos = detect_ml_repos(root_path)
-            if repos:
-                print(f"\n  Found {len(repos)} ML project(s):")
-                for r in repos[:10]:
-                    print(f"    - {r.name} ({r})")
-                print()
-                scan_now = input("  Scan them now? [Y/n] ").strip().lower()
-                if scan_now not in ("n", "no"):
-                    from distillate.experiments import (
-                        generate_notebook,
-                        scan_project,
-                        slugify,
-                    )
-                    from distillate.obsidian import write_experiment_notebook
-                    from distillate.state import State
-                    state = State()
-                    for repo_path in repos:
-                        print(f"    Scanning {repo_path.name}...")
-                        result = scan_project(repo_path)
-                        if "error" not in result:
-                            pid = slugify(result["name"])
-                            state.add_project(
-                                project_id=pid,
-                                name=result["name"],
-                                path=str(repo_path),
-                            )
-                            for run_id, run_data in result.get("runs", {}).items():
-                                state.add_run(pid, run_id, run_data)
-                            state.update_project(
-                                pid,
-                                last_scanned_at=__import__("datetime").datetime.now(
-                                    __import__("datetime").timezone.utc
-                                ).isoformat(),
-                                last_commit_hash=result.get("head_hash", ""),
-                            )
-                            runs = result.get("runs", {})
-                            print(f"      {len(runs)} run(s) discovered")
-                            # Generate notebook
-                            proj = state.get_project(pid)
-                            if proj:
-                                nb = generate_notebook(proj)
-                                write_experiment_notebook(proj, nb)
-                    state.save()
-                    print(f"\n  Tracking {len(repos)} project(s).")
-            else:
-                print("  No ML projects found in that folder.")
-        else:
-            print(f"  Directory not found: {root_path}")
-    else:
-        print("  Skipped root folder. You can set EXPERIMENTS_ROOT later.")
-
-    print()
 
 
 def _init_done(env_path) -> None:
@@ -2471,12 +2477,13 @@ def _init_wizard() -> None:
         print(f"  Existing config found at: {ENV_PATH}")
         print()
         print("    1. Re-run full setup")
-        print("    2. Configure optional features (AI, email)")
+        print("    2. Configure AI & extras")
         print()
         choice = input("  Your choice [2]: ").strip()
         if choice != "1":
             print()
-            _init_step5(save_to_env)
+            _init_step5_claude(save_to_env)
+            _init_step6_extras(save_to_env)
             _init_done(ENV_PATH)
             return
         print()
@@ -2491,10 +2498,10 @@ def _init_wizard() -> None:
         print("    3. Distillate extracts your highlights, creates an")
         print("       annotated PDF, writes a note, and archives it")
         print()
-        print("  Power-user features (optional):")
-        print("    - AI summaries & key learnings (with Anthropic API)")
+        print("  Power-user features (optional, with Anthropic API key):")
+        print("    - Nicolas, an interactive research agent in your terminal")
+        print("    - AI summaries & key learnings for each paper")
         print("    - Daily reading suggestions & weekly digest emails")
-        print("      (with a free Resend account)")
         print()
         print("  Let's get you set up. This takes about 2 minutes.")
         print()
@@ -2504,7 +2511,7 @@ def _init_wizard() -> None:
     # -- Step 1: Zotero --
 
     print("  " + "-" * 48)
-    print("  Step 1 of 5: Zotero")
+    print("  Step 1 of 6: Zotero")
     print("  " + "-" * 48)
     print()
     print("  Distillate watches your Zotero library for new papers.")
@@ -2643,7 +2650,7 @@ def _init_wizard() -> None:
 
     if not use_zotero_reader:
         print("  " + "-" * 48)
-        print("  Step 2 of 5: reMarkable")
+        print("  Step 2 of 6: reMarkable")
         print("  " + "-" * 48)
         print()
         print("  Distillate uses rmapi to sync PDFs with your reMarkable")
@@ -2724,7 +2731,7 @@ def _init_wizard() -> None:
     # -- Step 3: Notes & PDFs --
 
     print("  " + "-" * 48)
-    print("  Step 3 of 5: Notes & PDFs")
+    print("  Step 3 of 6: Notes & PDFs")
     print("  " + "-" * 48)
     print()
     print("  When you finish reading, Distillate creates two files")
@@ -2813,7 +2820,7 @@ def _init_wizard() -> None:
     # -- Step 4: PDF storage --
 
     print("  " + "-" * 48)
-    print("  Step 4 of 5: PDF Storage")
+    print("  Step 4 of 6: PDF Storage")
     print("  " + "-" * 48)
     print()
     if use_zotero_reader:
@@ -2848,13 +2855,13 @@ def _init_wizard() -> None:
         print("  PDFs will stay in Zotero.")
     print()
 
-    # -- Step 5: Optional features --
+    # -- Step 5: Claude API --
 
-    _init_step5(save_to_env)
+    _init_step5_claude(save_to_env)
 
-    # -- Step 6: Experiments (optional) --
+    # -- Step 6: Extras (email + experiments) --
 
-    _init_step6_experiments(save_to_env)
+    _init_step6_extras(save_to_env)
 
     # -- Done --
 
@@ -3228,6 +3235,18 @@ def main():
             changed_keys, new_version = zotero_client.get_changed_item_keys(
                 stored_version, collection_key=_coll_key,
             )
+
+            # Check for items deleted from Zotero
+            try:
+                deleted_keys = zotero_client.get_deleted_item_keys(stored_version)
+                for dk in deleted_keys:
+                    if state.has_document(dk):
+                        title = state.get_document(dk).get("title", dk)
+                        log.info("Zotero item deleted: '%s'", title)
+                        print(f"  Removed (deleted from Zotero): \"{title}\"")
+                        state.remove_document(dk)
+            except Exception:
+                log.warning("Could not check Zotero deletions", exc_info=True)
 
             if changed_keys:
                 # Filter out items we already track

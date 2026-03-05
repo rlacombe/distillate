@@ -138,6 +138,28 @@ def get_changed_item_keys(
     return resp.json(), new_version
 
 
+def get_deleted_item_keys(since_version: int) -> List[str]:
+    """Get item keys deleted from Zotero since a given library version.
+
+    Uses the ``/deleted?since=`` endpoint.
+    Returns a list of deleted item keys.
+    """
+    resp = _get("/deleted", params={"since": str(since_version)})
+    data = resp.json()
+    return data.get("items", [])
+
+
+def delete_item(item_key: str) -> None:
+    """Permanently delete an item (and all children) from Zotero."""
+    resp = _get(f"/items/{item_key}")
+    version = resp.json()["version"]
+    _delete(
+        f"/items/{item_key}",
+        headers={"If-Unmodified-Since-Version": str(version)},
+    )
+    log.info("Deleted item %s from Zotero", item_key)
+
+
 def get_recent_papers(
     limit: int = 100, collection_key: str = "",
 ) -> List[Dict[str, Any]]:

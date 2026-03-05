@@ -333,6 +333,32 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "delete_paper",
+        "description": (
+            "Permanently delete a paper from Zotero and remove it from tracking. "
+            "This is IRREVERSIBLE — the paper and all its attachments will be gone. "
+            "Always describe what will be deleted and ask the user to confirm first. "
+            "Only set confirm=true after the user explicitly agrees."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Paper index number, citekey, or title substring",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Safety flag. Must be true to proceed. "
+                        "Set to false first to preview, then true after user confirms."
+                    ),
+                },
+            },
+            "required": ["identifier", "confirm"],
+        },
+    },
 ]
 
 
@@ -959,3 +985,36 @@ def add_paper_to_zotero(
         "title": title,
         "message": message,
     }
+
+
+def delete_paper(*, state, identifier: str, confirm: bool = False) -> dict:
+    """Delete a paper from Zotero and remove from tracking."""
+    matches = _find_papers_from_state(identifier, state)
+    if not matches:
+        return {"error": f"No paper found matching '{identifier}'."}
+    if len(matches) > 1:
+        return {
+            "error": "Multiple matches — be more specific.",
+            "matches": [
+                {"index": d.get("index"), "title": d.get("title")}
+                for _, d in matches[:5]
+            ],
+        }
+
+    key, doc = matches[0]
+    title = doc.get("title", key)
+
+    if not confirm:
+        return {
+            "action_required": (
+                f"This will permanently delete '{title}' from Zotero "
+                "and remove it from tracking. Ask the user to confirm."
+            ),
+            "paper": {"index": doc.get("index"), "title": title, "key": key},
+        }
+
+    from distillate import zotero_client
+    zotero_client.delete_item(key)
+    state.remove_document(key)
+    state.save()
+    return {"success": True, "deleted": title}

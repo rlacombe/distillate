@@ -29,7 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project",
+    "scan_project", "add_project",
 })
 
 TOOL_LABELS = {
@@ -45,11 +45,20 @@ TOOL_LABELS = {
     "promote_papers": "\u2B50 Promoting to the shelf",
     "get_trending_papers": "\U0001F4C8 Scanning the latest papers",
     "add_paper_to_zotero": "\U0001F4D6 Adding to the library",
+    "delete_paper": "\U0001F5D1\uFE0F Removing from the library",
     "list_projects": "\U0001F9EA Surveying the laboratory",
     "get_project_details": "\U0001F52C Examining the experiment",
     "compare_runs": "\u2696\ufe0f Weighing the results",
     "scan_project": "\U0001F50D Scanning for experiments",
     "get_experiment_notebook": "\U0001F4D3 Opening the lab notebook",
+    "add_project": "\U0001F4C1 Adding project to the lab",
+    "rename_project": "\u270F\uFE0F Relabeling the project",
+    "rename_run": "\u270F\uFE0F Relabeling the run",
+    "delete_project": "\U0001F5D1\uFE0F Removing from the lab",
+    "delete_run": "\U0001F5D1\uFE0F Removing the run",
+    "update_project": "\U0001F4DD Updating project details",
+    "link_paper": "\U0001F517 Linking paper to project",
+    "update_goals": "\U0001F3AF Setting project goals",
 }
 
 
@@ -251,7 +260,7 @@ def build_system_prompt(
         "auto-fetches the title, authors, and abstract. Don't ask the user "
         "for metadata you can look up.\n"
         "- Confirm with the user before write operations (sync, reprocess, "
-        "promote).\n"
+        "promote, delete).\n"
         "- Keep responses concise \u2014 this is a terminal REPL.\n"
         "- End with a statement, not a question. Don't ask \"Want to know more?\" "
         "or \"Shall I look into X?\" \u2014 just deliver the answer. The user "
@@ -260,8 +269,12 @@ def build_system_prompt(
         + (
             "- When asked about experiments or projects, use the experiment "
             "tools (list_projects, get_project_details, compare_runs).\n"
-            "- Use scan_project to track a new directory as an ML project.\n"
+            "- Use add_project or scan_project to track a new directory.\n"
             "- Use compare_runs to show what changed between experiments.\n"
+            "- Use rename_project, rename_run, update_project, update_goals, "
+            "link_paper to manage projects.\n"
+            "- Use delete_project/delete_run with confirm=false first, then "
+            "confirm=true after user approval.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )
     )
@@ -306,6 +319,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
         "promote_papers": tools.promote_papers,
         "get_trending_papers": tools.get_trending_papers,
         "add_paper_to_zotero": tools.add_paper_to_zotero,
+        "delete_paper": tools.delete_paper,
     }
 
     # Add experiment tools if enabled
@@ -317,6 +331,14 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "compare_runs": et.compare_runs,
             "scan_project": et.scan_project_tool,
             "get_experiment_notebook": et.get_experiment_notebook,
+            "add_project": et.add_project_tool,
+            "rename_project": et.rename_project_tool,
+            "rename_run": et.rename_run_tool,
+            "delete_project": et.delete_project_tool,
+            "delete_run": et.delete_run_tool,
+            "update_project": et.update_project_tool,
+            "link_paper": et.link_paper_tool,
+            "update_goals": et.update_goals_tool,
         })
 
     fn = dispatch.get(name)

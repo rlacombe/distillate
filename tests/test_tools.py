@@ -436,7 +436,7 @@ class TestAddPaperToZotero:
 class TestToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.tools import TOOL_SCHEMAS
-        assert len(TOOL_SCHEMAS) == 13
+        assert len(TOOL_SCHEMAS) == 14
         for schema in TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -449,3 +449,63 @@ class TestToolSchemas:
         for schema in TOOL_SCHEMAS:
             fn = getattr(tools, schema["name"], None)
             assert fn is not None, f"No function for tool '{schema['name']}'"
+
+
+import pytest
+
+from distillate.state import State
+
+
+@pytest.fixture()
+def real_state(tmp_path, monkeypatch):
+    """Provide a real State backed by a temp directory."""
+    import distillate.state as state_mod
+    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(state_mod, "LOCK_PATH", tmp_path / "state.lock")
+    return State()
+
+
+def _add_test_doc(state, key="KEY1", title="Test Paper"):
+    """Helper to add a minimal document to state for testing."""
+    state.add_document(
+        zotero_item_key=key,
+        zotero_attachment_key=f"{key}_att",
+        zotero_attachment_md5="abc123",
+        remarkable_doc_name=title,
+        title=title,
+        authors=["Author"],
+        status="tracked",
+    )
+
+
+class TestDeletePaper:
+    def test_delete_not_found(self, real_state):
+        from distillate.tools import delete_paper
+        result = delete_paper(state=real_state, identifier="nonexistent", confirm=True)
+        assert "error" in result
+
+    def test_delete_requires_confirm(self, real_state):
+        from distillate.tools import delete_paper
+        _add_test_doc(real_state)
+        real_state.save()
+
+        result = delete_paper(state=real_state, identifier="Test Paper", confirm=False)
+        assert "action_required" in result
+        assert real_state.has_document("KEY1")
+
+    def test_delete_success(self, real_state, monkeypatch):
+        from distillate.tools import delete_paper
+        _add_test_doc(real_state)
+        real_state.save()
+
+        deleted_keys = []
+        monkeypatch.setattr(
+            "distillate.zotero_client.delete_item",
+            lambda key: deleted_keys.append(key),
+        )
+
+        result = delete_paper(state=real_state, identifier="Test Paper", confirm=True)
+        assert result["success"] is True
+        assert result["deleted"] == "Test Paper"
+        assert not real_state.has_document("KEY1")
+        assert deleted_keys == ["KEY1"]

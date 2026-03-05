@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.0 — 2026-03-03
+
+Desktop app, auto-update, and BYOK mode.
+
+### New Features
+
+- **Desktop app**: Electron shell for Nicolas — a native macOS app with syntax highlighting, tool indicators, and the same agent you know from the terminal
+- **Auto-update via PyPI**: the desktop app checks PyPI on launch and upgrades distillate automatically — no need to rebuild or re-download the DMG
+- **BYOK mode**: bring your own Anthropic API key via Settings (Cmd+,) — no account or cloud service required
+- **Recovery menu**: Help > Reset Python Environment re-creates the bundled venv if something goes wrong
+
+### Improvements
+
+- Tool indicator subtitles in the desktop UI (e.g. "Searching for 'attention'...")
+- Queue pagination for large libraries
+- Retry with backoff on overloaded/rate-limited API errors
+- Link styling in chat messages matches indigo accent
+- `[desktop]` optional dependency group in pyproject.toml for clean server installs
+
+### Migration from 0.6.x
+
+- **Desktop app is optional** — the CLI works exactly the same as before. Install and run `distillate` as usual.
+- **Desktop download**: grab the DMG from the [GitHub Releases](https://github.com/rlacombe/distillate/releases) page. Right-click > Open on first launch (unsigned).
+
 ## 0.6.0 — 2026-02-25
 
 ### New Features
