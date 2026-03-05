@@ -52,8 +52,8 @@ class TestInitWizard:
             "",                 # Skip plain folder
             "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
-            "",                 # Skip Anthropic
-            "",                 # Skip Resend
+            "",                 # Skip Anthropic (step 5)
+            "",                 # Skip Resend (step 6)
             "",                 # Skip newsletter
             "n",                # Skip experiments
         ], tmp_path, monkeypatch)
@@ -168,7 +168,7 @@ class TestInitRerun:
     """Tests for the re-run shortcut when config already exists."""
 
     def test_shortcut_jumps_to_step5(self, tmp_path, monkeypatch, capsys):
-        """Option 2 (default) on re-run skips to optional features."""
+        """Option 2 (default) on re-run skips to AI & extras."""
         from distillate import config
 
         env_file = tmp_path / ".env"
@@ -179,9 +179,9 @@ class TestInitRerun:
         monkeypatch.setenv("ZOTERO_API_KEY", "existing_key")
 
         inputs = iter([
-            "",                     # Default choice (2 = optional features)
-            "sk-ant-new123",        # Anthropic key
-            "",                     # Skip Resend
+            "",                     # Default choice (2 = AI & extras)
+            "sk-ant-new123",        # Anthropic key (step 5)
+            "",                     # Skip Resend (step 6)
             "",                     # Skip newsletter
             "n",                    # Skip experiments
         ])
@@ -202,7 +202,7 @@ class TestInitRerun:
         assert "ZOTERO_API_KEY=existing_key" in text
         # Should NOT show Step 1
         output = capsys.readouterr().out
-        assert "Step 1 of 5" not in output
+        assert "Step 1 of 6" not in output
 
     def test_full_rerun_shows_existing_values(self, tmp_path, monkeypatch, capsys):
         """Option 1 on re-run shows full wizard with existing values."""

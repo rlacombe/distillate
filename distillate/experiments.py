@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import subprocess
-import uuid
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +24,14 @@ _SKIP_DIRS = {
     "venv", "env", ".venv", ".tox", ".mypy_cache", ".pytest_cache",
     "dist", "build", "egg-info",
 }
+
+# Constants
+_RUN_ID_HEX_LENGTH = 6          # hex chars in auto-generated run IDs
+_ML_IMPORT_SCAN_CHARS = 2000     # max bytes to read when checking for ML imports
+_GIT_LOG_TIMEOUT = 30            # seconds for git log subprocess
+_GIT_SUBPROCESS_TIMEOUT = 10     # seconds for short git commands
+_COMMAND_DISPLAY_CHARS = 200     # truncation limit for commands in LLM prompt
+_FINGERPRINT_HEX_LENGTH = 16    # hex chars for enrichment cache fingerprint
 
 # File patterns that indicate an ML project
 _ML_FILE_PATTERNS = [
@@ -46,6 +54,42 @@ _LOWER_BETTER_KEYWORDS = (
     "time", "duration", "seconds", "minutes",
     "latency", "perplexity",
 )
+
+
+def _create_run(
+    *,
+    prefix: str = "exp",
+    name: str = "",
+    hyperparameters: Optional[dict] = None,
+    results: Optional[dict] = None,
+    tags: Optional[list] = None,
+    files_created: Optional[list] = None,
+    started_at: str = "",
+    completed_at: str = "",
+    duration_minutes: int = 0,
+    **extra: Any,
+) -> dict:
+    """Build a run dict with consistent schema.  Extra kwargs are merged in."""
+    # Deterministic ID from name + started_at so scans are idempotent.
+    id_seed = f"{name}|{started_at}"
+    run_id = f"{prefix}-{hashlib.sha256(id_seed.encode()).hexdigest()[:_RUN_ID_HEX_LENGTH]}"
+    run: dict[str, Any] = {
+        "id": run_id,
+        "name": name,
+        "status": "completed",
+        "hypothesis": "",
+        "hyperparameters": hyperparameters or {},
+        "results": results or {},
+        "tags": tags or [],
+        "git_commits": [],
+        "files_created": files_created or [],
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_minutes": duration_minutes,
+        "notes": [],
+    }
+    run.update(extra)
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +142,7 @@ def _is_ml_repo(path: Path) -> bool:
             # Check Python files for ML imports
             if fname.endswith(".py"):
                 try:
-                    text = Path(root, fname).read_text(encoding="utf-8", errors="ignore")[:2000]
+                    text = Path(root, fname).read_text(encoding="utf-8", errors="ignore")[:_ML_IMPORT_SCAN_CHARS]
                     for kw in _ML_IMPORT_KEYWORDS:
                         if f"import {kw}" in text or f"from {kw}" in text:
                             return True
@@ -227,7 +271,7 @@ def _git_log(repo_path: Path, since_hash: str = "") -> list[dict]:
     if since_hash:
         cmd.append(f"{since_hash}..HEAD")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_GIT_LOG_TIMEOUT)
         if result.returncode != 0:
             return []
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -251,7 +295,7 @@ def _git_head_hash(repo_path: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_GIT_SUBPROCESS_TIMEOUT,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -264,7 +308,7 @@ def _git_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id",
              "--name-only", "-r", commit_hash],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_GIT_SUBPROCESS_TIMEOUT,
         )
         return result.stdout.strip().splitlines() if result.returncode == 0 else []
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -346,24 +390,17 @@ def scan_project(path: Path) -> dict:
         hyperparams = {k: v for k, v in config.items()
                        if isinstance(v, (int, float, str, bool))}
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        name = tag if tag else Path(tl["path"]).stem
-        runs[run_id] = {
-            "id": run_id,
-            "name": name,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": hyperparams,
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": [tl["path"]],
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": int(data.get("total_time", 0) / 60)
-                               if data.get("total_time") else 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(tl["path"]).stem,
+            hyperparameters=hyperparams,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=[tl["path"]],
+            duration_minutes=(int(data.get("total_time", 0) / 60)
+                              if data.get("total_time") else 0),
+        )
+        run_id = run["id"]
+        runs[run_id] = run
 
         # Try matching result files by tag
         for rf in result_files:
@@ -380,7 +417,9 @@ def scan_project(path: Path) -> dict:
         data = hf["data"]
         tag = hf["tag"]
         # Skip if already covered by a training log with same tag
-        if any(r.get("tags", [None])[0] == tag for r in runs.values() if tag):
+        if tag and any(
+            (r.get("tags") or [None])[0] == tag for r in runs.values()
+        ):
             continue
 
         # Extract last-row metrics
@@ -399,22 +438,13 @@ def scan_project(path: Path) -> dict:
             if isinstance(v, list) and len(v) == n and v and isinstance(v[-1], (int, float)):
                 metrics[k] = v[-1]
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        runs[run_id] = {
-            "id": run_id,
-            "name": tag if tag else Path(hf["path"]).stem,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": {},
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": [hf["path"]],
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(hf["path"]).stem,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=[hf["path"]],
+        )
+        runs[run["id"]] = run
 
     # Build runs from standalone result files (not yet covered by a training log)
     used_result_paths = {f for r in runs.values() for f in r["files_created"]}
@@ -441,26 +471,17 @@ def scan_project(path: Path) -> dict:
                 config_path = cf["path"]
                 break
 
-        run_id = f"exp-{uuid.uuid4().hex[:6]}"
-        name = tag if tag else Path(rf["path"]).stem
         files = [rf["path"]]
         if config_path:
             files.append(config_path)
-        runs[run_id] = {
-            "id": run_id,
-            "name": name,
-            "status": "completed",
-            "hypothesis": "",
-            "hyperparameters": hyperparams,
-            "results": metrics,
-            "tags": [tag] if tag else [],
-            "git_commits": [],
-            "files_created": files,
-            "started_at": "",
-            "completed_at": "",
-            "duration_minutes": 0,
-            "notes": [],
-        }
+        run = _create_run(
+            name=tag if tag else Path(rf["path"]).stem,
+            hyperparameters=hyperparams,
+            results=metrics,
+            tags=[tag] if tag else [],
+            files_created=files,
+        )
+        runs[run["id"]] = run
 
     # Assign timestamps from file mtimes
     for run in runs.values():
@@ -788,7 +809,7 @@ def extract_runs_from_claude_logs(project_path: Path) -> list[dict]:
         try:
             session_runs = _parse_claude_session(jsonl_file)
             runs.extend(session_runs)
-        except Exception:
+        except (json.JSONDecodeError, OSError, KeyError, ValueError, IndexError):
             log.debug("Failed to parse Claude session %s", jsonl_file, exc_info=True)
             continue
 
@@ -861,25 +882,18 @@ def _parse_claude_session(jsonl_path: Path) -> list[dict]:
                         if not name:
                             name = Path(pending["parsed"]["script"]).stem
 
-                        run_id = f"claude-{uuid.uuid4().hex[:6]}"
-                        runs.append({
-                            "id": run_id,
-                            "name": name,
-                            "status": "completed",
-                            "hypothesis": "",
-                            "hyperparameters": hp,
-                            "results": metrics,
-                            "tags": [name] if name else [],
-                            "git_commits": [],
-                            "files_created": [],
-                            "started_at": pending["timestamp"],
-                            "completed_at": timestamp,
-                            "duration_minutes": 0,
-                            "notes": [],
-                            "source": "claude_logs",
-                            "session_file": jsonl_path.name,
-                            "command": pending["command"],
-                        })
+                        runs.append(_create_run(
+                            prefix="claude",
+                            name=name,
+                            hyperparameters=hp,
+                            results=metrics,
+                            tags=[name] if name else [],
+                            started_at=pending["timestamp"],
+                            completed_at=timestamp,
+                            source="claude_logs",
+                            session_file=jsonl_path.name,
+                            command=pending["command"],
+                        ))
 
     return runs
 
@@ -896,7 +910,7 @@ def _runs_fingerprint(runs: dict) -> str:
         hp = json.dumps(r.get("hyperparameters", {}), sort_keys=True)
         mt = json.dumps(r.get("results", {}), sort_keys=True)
         items.append(f"{rid}:{hp}:{mt}")
-    return hashlib.sha256("|".join(items).encode()).hexdigest()[:16]
+    return hashlib.sha256("|".join(items).encode()).hexdigest()[:_FINGERPRINT_HEX_LENGTH]
 
 
 def _load_enrichment_cache(project_path: Path) -> dict:
@@ -955,7 +969,7 @@ def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
         desc += f"  Metrics: {metric_str}\n"
         desc += f"  Changes from previous: {diff_str}\n"
         if command:
-            desc += f"  Command: {command[:200]}\n"
+            desc += f"  Command: {command[:_COMMAND_DISPLAY_CHARS]}\n"
 
         run_descriptions.append(desc)
         prev_hp = hp
@@ -976,16 +990,18 @@ For each experiment, generate:
 3. approach: What was done differently from the previous experiment (1-2 sentences).
 4. analysis: What the results mean — interpret the metrics by name, note failure modes, explain surprising outcomes (2-3 sentences). Be specific: say "loss dropped from 13.0 to 0.0" not just "improved". If no metrics were reported, say so explicitly and speculate why (e.g. incomplete run, setup step, utility script).
 5. next_steps: What to try next based on these results (1 sentence).
+6. params: Estimated total trainable parameter count as a SHORT string (e.g. "~98K", "~1.5K", "~350"). ALWAYS estimate this from the architecture hyperparameters — for a transformer, consider embeddings, attention projections, feedforward layers, and layer norms. If a run's hyperparameters are incomplete, infer the architecture from adjacent experiments in the series (e.g. the first run likely used the same architecture as the next run that has full hyperparameters). NEVER use "N/A" — every training run had a model, estimate its size.
+7. validation: The key quality metric result as a SHORT string. Use the most important evaluation metric (e.g. "100%", "99.8%", "converged", "loss=0.0"). If the experiment has no reported results but the architecture was later re-run successfully with the same or similar hyperparameters, infer the likely outcome. If the experiment genuinely failed or was too small to learn, say "failed" or "did not converge". NEVER say "no metrics" — always make a judgment call based on context.
 
 Also generate project-level insights:
-6. key_breakthrough: Which experiment was the biggest improvement and why (1-2 sentences). Reference specific metric values.
-7. lessons_learned: 3-5 bullets of deeper insights connecting the experiments. Reference concrete numbers, not vague claims.
+8. key_breakthrough: Which experiment was the biggest improvement and why (1-2 sentences). Reference specific metric values.
+9. lessons_learned: 3-5 bullets of deeper insights connecting the experiments. Reference concrete numbers, not vague claims.
 
 Output ONLY valid JSON in this exact format (no markdown, no code blocks):
 {{"runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}, "project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}}}
 
 The "runs" object must have keys matching these exact run IDs: {run_ids_json}
-Each run value: {{"name": "...", "hypothesis": "...", "approach": "...", "analysis": "...", "next_steps": "..."}}"""
+Each run value: {{"name": "...", "hypothesis": "...", "approach": "...", "analysis": "...", "next_steps": "...", "params": "...", "validation": "..."}}"""
 
 
 def enrich_runs_with_llm(runs: dict, project_name: str,
@@ -1030,16 +1046,20 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
+        if not response.content or not hasattr(response.content[0], "text"):
+            log.error("Unexpected API response: no content blocks")
+            return None
         text = response.content[0].text.strip()
         log.info("LLM enrichment response: %d chars", len(text))
-    except Exception:
-        log.exception("Failed to call Claude for LLM enrichment")
+    except (anthropic.APIError, anthropic.APIConnectionError) as e:
+        log.error("Claude API error during LLM enrichment: %s", e)
         return None
 
     # Parse JSON response (handle markdown code blocks)
-    if text.startswith("```"):
+    if text.startswith("```") and "\n" in text:
         text = text.split("\n", 1)[1]
-        text = text.rsplit("```", 1)[0]
+        if "```" in text:
+            text = text.rsplit("```", 1)[0]
     try:
         enrichment = json.loads(text)
     except json.JSONDecodeError:
@@ -1359,7 +1379,8 @@ def generate_notebook(project: dict, section: str = "main",
         for i, run in enumerate(runs, 1):
             status_icon = _status_icon(run.get("status", "planned"))
             duration = _fmt_duration(run.get("duration_minutes", 0))
-            key_metric = _pick_key_metric(run.get("results", {}))
+            run_enr = run_enrichments.get(run.get("id", ""), {})
+            key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
             display_name = _enrich(run, "name") or run.get("name", "?")
             parts.append(
                 f"| {i} | {display_name} | {status_icon} | "
@@ -1522,11 +1543,24 @@ def _fmt_metric(name: str, val: Any) -> str:
     return str(val)
 
 
-def _pick_key_metric(results: dict) -> str:
+def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
     """Pick the most important metric from results for the timeline table.
 
+    If *enrichment* is available, combine params + validation from it.
+    Otherwise falls back to heuristic priority ordering.
     Returns a labeled string like 'loss=0.0012' or 'accuracy=98.50%'.
     """
+    if enrichment:
+        parts = []
+        if enrichment.get("params"):
+            parts.append(enrichment["params"])
+        if enrichment.get("validation"):
+            parts.append(enrichment["validation"])
+        # Fallback to legacy key_metric if new fields missing
+        if not parts and enrichment.get("key_metric"):
+            return enrichment["key_metric"]
+        if parts:
+            return ", ".join(parts)
     if not results:
         return "-"
     # Priority order for key metrics

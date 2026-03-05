@@ -287,7 +287,7 @@ class TestInitWizardZoteroReader:
 
         # Should NOT show Step 2 (reMarkable)
         output = capsys.readouterr().out
-        assert "Step 2 of 5" not in output
+        assert "Step 2 of 6" not in output
         assert "Zotero" in output
 
     def test_remarkable_default_shows_step2(self, tmp_path, monkeypatch, capsys):
@@ -329,7 +329,7 @@ class TestInitWizardZoteroReader:
 
         # Should show Step 2 (reMarkable)
         output = capsys.readouterr().out
-        assert "Step 2 of 5" in output
+        assert "Step 2 of 6" in output
 
 
 # ---------------------------------------------------------------------------

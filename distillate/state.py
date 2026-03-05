@@ -249,28 +249,37 @@ class State:
         return 0
 
     def find_project(self, query: str) -> Optional[Dict[str, Any]]:
-        """Find a project by id, 1-based index, or name substring."""
+        """Find a project by id, 1-based index, or name substring.
+
+        Returns the first match.  Use ``find_all_projects`` when you need
+        to detect ambiguous queries.
+        """
+        matches = self.find_all_projects(query)
+        return matches[0] if matches else None
+
+    def find_all_projects(self, query: str) -> List[Dict[str, Any]]:
+        """Return all projects matching *query* (id, index, or name substring)."""
         if not query:
-            return None
-        # Try index number
+            return []
+        # Try index number (always unique)
         try:
             idx = int(query)
             keys = list(self.projects.keys())
             if 1 <= idx <= len(keys):
-                return self.projects[keys[idx - 1]]
+                return [self.projects[keys[idx - 1]]]
         except ValueError:
             pass
-        # Try exact id
+        # Try exact id (always unique)
         if query in self.projects:
-            return self.projects[query]
-        # Try name substring (case-insensitive)
+            return [self.projects[query]]
+        # Substring search (may match multiple)
         query_lower = query.lower()
+        matches: List[Dict[str, Any]] = []
         for proj in self.projects.values():
-            if query_lower in proj.get("name", "").lower():
-                return proj
-            if query_lower in proj.get("id", "").lower():
-                return proj
-        return None
+            if (query_lower in proj.get("name", "").lower()
+                    or query_lower in proj.get("id", "").lower()):
+                matches.append(proj)
+        return matches
 
     def add_project(
         self,
@@ -283,10 +292,11 @@ class State:
         goals: Optional[List[Dict[str, Any]]] = None,
         notebook_sections: Optional[List[str]] = None,
     ) -> None:
+        resolved_path = str(Path(path).expanduser().resolve()) if path else path
         self.projects[project_id] = {
             "id": project_id,
             "name": name,
-            "path": path,
+            "path": resolved_path,
             "description": description,
             "status": status,
             "added_at": datetime.now(timezone.utc).isoformat(),
@@ -330,6 +340,17 @@ class State:
         if run:
             for key, val in kwargs.items():
                 run[key] = val
+
+    def remove_run(self, project_id: str, run_id: str) -> bool:
+        """Remove a run from a project. Returns True if found and removed."""
+        proj = self.projects.get(project_id)
+        if not proj:
+            return False
+        runs = proj.get("runs", {})
+        if run_id not in runs:
+            return False
+        del runs[run_id]
+        return True
 
     # -- Promoted papers --
 
