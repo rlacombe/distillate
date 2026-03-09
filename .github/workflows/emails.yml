@@ -37,8 +37,10 @@ jobs:
 
       - name: Fetch state from gist
         run: |
-          curl -sL "https://api.github.com/gists/${{ secrets.STATE_GIST_ID }}" \
-            | jq -r '.files["state.json"].content' > state.json
+          # Fetch raw URL first (API truncates files >1MB), then download full content
+          RAW_URL=$(curl -sL "https://api.github.com/gists/${{ secrets.STATE_GIST_ID }}" \
+            | jq -r '.files["state.json"].raw_url')
+          curl -sL "$RAW_URL" > state.json
 
       - name: Determine command
         id: cmd
