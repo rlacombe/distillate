@@ -699,13 +699,13 @@ def _get_todays_suggestions(state: State) -> str | None:
 
     # Check local state first
     local = state._data.get("last_suggestion", {})
-    if local.get("timestamp", "")[:10] == today:
+    if (local.get("timestamp") or "")[:10] == today:
         log.info("Reusing today's suggestions (cached locally)")
         return local["text"]
 
     # Check Gist (for GH Actions runs that wrote to Gist but not local state)
     gist = fetch_pending_from_gist()
-    if gist and gist.get("timestamp", "")[:10] == today:
+    if gist and (gist.get("timestamp") or "")[:10] == today:
         text = gist.get("suggestion_text", "")
         if text:
             log.info("Reusing today's suggestions (cached in Gist)")

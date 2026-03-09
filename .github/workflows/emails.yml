@@ -64,3 +64,4 @@ jobs:
           STATE_GIST_ID: ${{ secrets.STATE_GIST_ID }}
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
           OBSIDIAN_VAULT_NAME: ${{ secrets.OBSIDIAN_VAULT_NAME }}
+          READING_SOURCE: ${{ secrets.READING_SOURCE }}
