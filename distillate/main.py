@@ -1402,7 +1402,7 @@ def _suggest() -> None:
     from distillate.state import State, acquire_lock, release_lock
 
     if not config.is_zotero_reader():
-        from distillate import remarkable_client
+        from distillate import remarkable_client  # noqa: F401
 
     config.setup_logging()
 
@@ -1945,7 +1945,7 @@ def _schedule() -> None:
         print("  Automatic scheduling on Windows uses Task Scheduler.")
         print()
         print("  Open Task Scheduler and create a task that runs:")
-        print(f"    distillate --sync")
+        print("    distillate --sync")
         print()
         print("  Or from PowerShell:")
         print('    schtasks /create /tn "Distillate" /tr "distillate --sync" /sc MINUTE /mo 15')
