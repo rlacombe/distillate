@@ -2017,11 +2017,15 @@ def _init_step6_extras(save_to_env) -> None:
                 scan_now = input("  Scan them now? [Y/n] ").strip().lower()
                 if scan_now not in ("n", "no"):
                     from distillate.experiments import (
+                        generate_html_notebook,
                         generate_notebook,
                         scan_project,
                         slugify,
                     )
-                    from distillate.obsidian import write_experiment_notebook
+                    from distillate.obsidian import (
+                        write_experiment_html_notebook,
+                        write_experiment_notebook,
+                    )
                     from distillate.state import State
                     state = State()
                     for repo_path in repos:
@@ -2045,11 +2049,13 @@ def _init_step6_extras(save_to_env) -> None:
                             )
                             runs = result.get("runs", {})
                             print(f"      {len(runs)} run(s) discovered")
-                            # Generate notebook
+                            # Generate notebooks (MD + HTML)
                             proj = state.get_project(pid)
                             if proj:
                                 nb = generate_notebook(proj)
                                 write_experiment_notebook(proj, nb)
+                                nb_html = generate_html_notebook(proj)
+                                write_experiment_html_notebook(proj, nb_html)
                     state.save()
                     print(f"\n  Tracking {len(repos)} project(s).")
             else:

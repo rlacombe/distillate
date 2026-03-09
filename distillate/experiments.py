@@ -6,6 +6,7 @@ markdown lab notebooks.  Works with or without git.
 """
 
 import hashlib
+import html as html_mod
 import json
 import logging
 import os
@@ -1033,6 +1034,15 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
     # Build prompt and call Sonnet
     prompt = _build_enrichment_prompt(runs, project_name)
 
+    # Guard against overly large prompts (rough estimate: ~4 chars per token)
+    _MAX_ENRICHMENT_CHARS = 400_000  # ~100K tokens, well under 200K limit
+    if len(prompt) > _MAX_ENRICHMENT_CHARS:
+        log.warning(
+            "Enrichment prompt too large (%d chars) for %s — skipping",
+            len(prompt), project_name,
+        )
+        return None
+
     try:
         import anthropic
     except ImportError:
@@ -1422,8 +1432,8 @@ def generate_notebook(project: dict, section: str = "main",
         if run.get("completed_at"):
             parts.append(f"**Completed:** {run['completed_at']}")
 
-        # Narrative sections from enrichment
-        hypothesis = _enrich(run, "hypothesis") or run.get("hypothesis", "")
+        # Narrative sections — user-provided hypothesis takes precedence
+        hypothesis = run.get("hypothesis", "") or _enrich(run, "hypothesis")
         if hypothesis:
             parts.append("")
             parts.append("#### Hypothesis")
@@ -1616,6 +1626,518 @@ def _render_diff(diff: dict, run_a: dict, run_b: dict) -> str:
                 )
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# HTML notebook generation
+# ---------------------------------------------------------------------------
+
+_HTML_NOTEBOOK_CSS = """\
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --text-dim: #8b949e;
+  --accent: #6366f1; --accent-dim: rgba(99,102,241,0.15);
+  --green: #3fb950; --green-dim: rgba(63,185,80,0.15);
+  --red: #f85149; --yellow: #d29922; --cyan: #58a6ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.6;
+  padding: 2rem; max-width: 960px; margin: 0 auto;
+}
+h1 {
+  font-size: 2rem; margin-bottom: 0.25rem;
+  background: linear-gradient(135deg, #6366f1, #3b82f6);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.subtitle code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
+.stats-bar {
+  display: flex; gap: 1.5rem; padding: 1rem 1.25rem;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: 2rem; flex-wrap: wrap;
+}
+.stat { text-align: center; }
+.stat-value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+h2 {
+  font-size: 1.25rem; color: var(--accent); margin: 2rem 0 1rem;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+}
+.insights {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 1.5rem; margin-bottom: 2rem;
+  border-left: 4px solid var(--accent);
+}
+.insights h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin-bottom: 0.5rem; }
+.breakthrough { font-size: 1rem; line-height: 1.7; margin-bottom: 1.25rem; }
+.lessons { list-style: none; padding: 0; }
+.lessons li { position: relative; padding: 0.4rem 0 0.4rem 1.5rem; font-size: 0.9rem; line-height: 1.5; }
+.lessons li::before { content: ""; position: absolute; left: 0; top: 0.75rem; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+.lessons li + li { border-top: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.9rem; }
+thead th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 2px solid var(--border); color: var(--text-dim); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+tbody td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+tbody tr:hover { background: rgba(99,102,241,0.05); }
+tbody tr { cursor: pointer; }
+.status-ok { color: var(--green); }
+.metric-val { font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; }
+.metric-good { color: var(--green); }
+.exp-name-enriched { color: var(--text-dim); font-size: 0.8rem; display: block; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem; margin-bottom: 1.5rem; }
+.config-item { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; justify-content: space-between; align-items: center; }
+.config-key { color: var(--text-dim); font-size: 0.85rem; }
+.config-val { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--accent); }
+details.run-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; transition: border-color 0.2s; }
+details.run-card[open] { border-color: var(--accent); }
+details.run-card summary { padding: 1rem 1.25rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; list-style: none; user-select: none; }
+details.run-card summary::-webkit-details-marker { display: none; }
+details.run-card summary::after { content: "\\25B6"; font-size: 0.7rem; color: var(--text-dim); transition: transform 0.2s; flex-shrink: 0; margin-left: 0.75rem; }
+details.run-card[open] summary::after { transform: rotate(90deg); }
+details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radius: 10px; }
+.run-summary-left { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0; }
+.run-index { color: var(--text-dim); font-size: 0.8rem; font-weight: 600; flex-shrink: 0; }
+.run-name { font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-enriched-name { color: var(--text-dim); font-size: 0.82rem; font-weight: 400; margin-left: 0.25rem; }
+.run-summary-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+.run-metric-pill { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem; padding: 2px 8px; border-radius: 4px; background: var(--green-dim); color: var(--green); }
+.run-metric-pill.none { background: transparent; color: var(--text-dim); }
+.run-time { color: var(--text-dim); font-size: 0.78rem; white-space: nowrap; }
+.run-body { padding: 0 1.25rem 1.25rem; }
+.narrative { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem; }
+.narrative-block { background: var(--bg); border-radius: 8px; padding: 0.75rem 1rem; border-left: 3px solid var(--border); }
+.narrative-block.hypothesis { border-left-color: var(--cyan); }
+.narrative-block.approach { border-left-color: var(--accent); }
+.narrative-block.analysis { border-left-color: var(--green); }
+.narrative-block.next-steps { border-left-color: var(--yellow); }
+.narrative-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-bottom: 0.25rem; }
+.narrative-block.hypothesis .narrative-label { color: var(--cyan); }
+.narrative-block.approach .narrative-label { color: var(--accent); }
+.narrative-block.analysis .narrative-label { color: var(--green); }
+.narrative-block.next-steps .narrative-label { color: var(--yellow); }
+.narrative-text { font-size: 0.85rem; line-height: 1.55; color: var(--text); }
+.tag { display: inline-block; background: var(--accent-dim); color: var(--accent); font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; margin-right: 0.25rem; font-weight: 500; }
+.run-section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin: 0.75rem 0 0.4rem; }
+.params-row, .results-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.param-chip, .result-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 0.82rem; font-family: 'SF Mono', 'Fira Code', monospace; }
+.param-chip .pk { color: var(--text-dim); }
+.param-chip .pv { color: var(--text); }
+.result-chip .rk { color: var(--text-dim); }
+.result-chip .rv { font-weight: 600; }
+.diff-section { margin-top: 0.75rem; padding: 0.6rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 0.82rem; }
+.diff-title { color: var(--accent); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.3rem; }
+.diff-item { margin: 0.15rem 0; }
+.diff-param { color: var(--yellow); }
+.diff-improved { color: var(--green); }
+.diff-regressed { color: var(--red); }
+.diff-arrow { color: var(--text-dim); }
+.notes-block { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--cyan); font-size: 0.85rem; }
+.notes-block .notes-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--cyan); margin-bottom: 0.25rem; }
+.toolbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.toolbar button { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
+.toolbar button:hover { border-color: var(--accent); color: var(--text); }
+.footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
+@media (max-width: 640px) { .narrative { grid-template-columns: 1fr; } .run-enriched-name { display: none; } }
+"""
+
+
+def _h(text: str) -> str:
+    """HTML-escape text for safe embedding."""
+    return html_mod.escape(str(text))
+
+
+def generate_html_notebook(project: dict,
+                           enrichment: Optional[dict] = None) -> str:
+    """Generate a self-contained HTML lab notebook for a project.
+
+    Mirrors ``generate_notebook()`` but outputs rich HTML with a dark theme,
+    collapsible experiment cards, and color-coded metrics.
+    """
+    name = project.get("name", "Untitled Project")
+    runs_dict = project.get("runs", {})
+    runs = list(runs_dict.values())
+    run_enrichments = (enrichment or {}).get("runs", {})
+    project_insights = (enrichment or {}).get("project", {})
+
+    runs.sort(key=_run_sort_key)
+    common_params, varying_keys = _factorize_hyperparams(runs)
+
+    def _enrich(run: dict, field: str) -> str:
+        e = run_enrichments.get(run.get("id", ""), {})
+        return e.get(field, "")
+
+    parts: list[str] = []
+
+    # --- Header ---
+    parts.append("<!DOCTYPE html>")
+    parts.append('<html lang="en"><head><meta charset="utf-8">')
+    parts.append(f"<title>{_h(name)} — Lab Notebook</title>")
+    parts.append(f"<style>{_HTML_NOTEBOOK_CSS}</style>")
+    parts.append("</head><body>")
+    parts.append(f"<h1>{_h(name)}</h1>")
+    subtitle = (
+        f'Lab Notebook &mdash; Generated {datetime.now().strftime("%Y-%m-%d")}'
+        f'<br><code>{_h(project.get("path", ""))}</code>'
+    )
+    parts.append(f'<div class="subtitle">{subtitle}</div>')
+
+    # --- Stats bar ---
+    completed = sum(1 for r in runs if r.get("status") == "completed")
+    running = sum(1 for r in runs if r.get("status") == "running")
+    unique_configs = len({
+        tuple(sorted(r.get("hyperparameters", {}).items()))
+        for r in runs if r.get("hyperparameters")
+    })
+    parts.append('<div class="stats-bar">')
+    parts.append(f'<div class="stat"><div class="stat-value">{len(runs)}</div>'
+                 '<div class="stat-label">Experiments</div></div>')
+    parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--green)">'
+                 f'{completed}</div><div class="stat-label">Completed</div></div>')
+    parts.append(f'<div class="stat"><div class="stat-value">{running}</div>'
+                 '<div class="stat-label">Running</div></div>')
+    parts.append(f'<div class="stat"><div class="stat-value">{unique_configs}</div>'
+                 '<div class="stat-label">Configs Tested</div></div>')
+    parts.append("</div>")
+
+    # --- Research Insights ---
+    breakthrough = project_insights.get("key_breakthrough", "")
+    lessons = project_insights.get("lessons_learned", [])
+    if breakthrough or lessons:
+        parts.append("<h2>Research Insights</h2>")
+        parts.append('<div class="insights">')
+        if breakthrough:
+            parts.append('<h3>Key Breakthrough</h3>')
+            parts.append(f'<p class="breakthrough">{_h(breakthrough)}</p>')
+        if lessons:
+            parts.append('<h3>Lessons Learned</h3>')
+            parts.append('<ul class="lessons">')
+            for lesson in lessons:
+                parts.append(f"<li>{_h(lesson)}</li>")
+            parts.append("</ul>")
+        parts.append("</div>")
+
+    # --- Goals ---
+    goals = project.get("goals", [])
+    if goals:
+        parts.append("<h2>Success Criteria</h2>")
+        parts.append('<ul class="lessons">')
+        for g in goals:
+            direction = g.get("direction", "maximize")
+            threshold = g.get("threshold")
+            label = f"{_h(g['metric'])}: {direction}"
+            if threshold is not None:
+                label += f" (target: {_h(_fmt_metric(g['metric'], threshold))})"
+            parts.append(f"<li>{label}</li>")
+        parts.append("</ul>")
+
+    # --- Timeline table ---
+    if runs:
+        parts.append("<h2>Experiment Timeline</h2>")
+        parts.append("<table><thead><tr>")
+        parts.append("<th>#</th><th>Experiment</th><th>Params</th><th>Validation</th>")
+        parts.append("</tr></thead><tbody>")
+        for i, run in enumerate(runs, 1):
+            run_enr = run_enrichments.get(run.get("id", ""), {})
+            key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
+            display_name = _enrich(run, "name") or run.get("name", "?")
+            raw_name = run.get("name", "?")
+            enriched_label = _enrich(run, "name")
+
+            # Split key_metric into params/validation columns
+            params_col = _h(run_enr.get("params", ""))
+            val_col = _h(run_enr.get("validation", ""))
+            if not params_col and not val_col:
+                params_col = _h(key_metric)
+
+            onclick = (
+                f"document.getElementById('run-{i}').open=true;"
+                f"document.getElementById('run-{i}').scrollIntoView("
+                "{behavior:'smooth',block:'center'})"
+            )
+            enriched_span = ""
+            if enriched_label and enriched_label != raw_name:
+                enriched_span = f'<span class="exp-name-enriched">{_h(enriched_label)}</span>'
+            status = run.get("status", "planned")
+            val_style = ""
+            if status == "completed":
+                val_style = ' class="metric-val metric-good"'
+            elif status == "failed":
+                val_style = ' style="color:var(--red)"'
+
+            parts.append(f'<tr onclick="{onclick}">')
+            parts.append(f"<td>{i}</td>")
+            parts.append(f"<td>{_h(raw_name)}{enriched_span}</td>")
+            parts.append(f'<td class="metric-val">{params_col}</td>')
+            parts.append(f"<td{val_style}>{val_col}</td>")
+            parts.append("</tr>")
+        parts.append("</tbody></table>")
+
+    # --- Common Configuration ---
+    if common_params:
+        parts.append("<h2>Common Configuration</h2>")
+        parts.append('<div class="config-grid">')
+        for k, v in sorted(common_params.items()):
+            parts.append(
+                f'<div class="config-item">'
+                f'<span class="config-key">{_h(k)}</span>'
+                f'<span class="config-val">{_h(str(v))}</span></div>'
+            )
+        parts.append("</div>")
+
+    # --- Experiment Details ---
+    if runs:
+        parts.append("<h2>Experiment Details</h2>")
+        parts.append('<div class="toolbar">')
+        parts.append(
+            "<button onclick=\"document.querySelectorAll('details.run-card')"
+            ".forEach(d=>d.open=true)\">Expand All</button>"
+        )
+        parts.append(
+            "<button onclick=\"document.querySelectorAll('details.run-card')"
+            ".forEach(d=>d.open=false)\">Collapse All</button>"
+        )
+        parts.append("</div>")
+
+    for i, run in enumerate(runs, 1):
+        raw_name = run.get("name", "Untitled")
+        enriched_label = _enrich(run, "name")
+        run_enr = run_enrichments.get(run.get("id", ""), {})
+        key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
+        duration = _fmt_duration(run.get("duration_minutes", 0))
+
+        # Timestamp for summary line
+        ts = run.get("completed_at") or run.get("started_at") or ""
+        ts_short = ""
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                ts_short = dt.strftime("%b %d, %H:%M")
+            except (ValueError, TypeError):
+                ts_short = ts[:10]
+
+        # Metric pill class
+        status = run.get("status", "planned")
+        pill_cls = ""
+        if status == "failed":
+            pill_cls = ' style="background:rgba(248,81,73,0.15);color:var(--red)"'
+        elif not run.get("results"):
+            pill_cls = ' class="run-metric-pill none"'
+
+        enriched_span = ""
+        if enriched_label and enriched_label != raw_name:
+            enriched_span = f'<span class="run-enriched-name">&mdash; {_h(enriched_label)}</span>'
+
+        pill_tag = f'<span class="run-metric-pill"{pill_cls}>{_h(key_metric)}</span>' if pill_cls else f'<span class="run-metric-pill">{_h(key_metric)}</span>'
+
+        parts.append(f'<details class="run-card" id="run-{i}">')
+        parts.append("<summary>")
+        parts.append(f'<div class="run-summary-left">')
+        parts.append(f'<span class="run-index">#{i}</span>')
+        parts.append(f'<span class="run-name">{_h(raw_name)}</span>')
+        parts.append(enriched_span)
+        parts.append("</div>")
+        parts.append(f'<div class="run-summary-right">')
+        parts.append(pill_tag)
+        if ts_short:
+            parts.append(f'<span class="run-time">{_h(ts_short)}</span>')
+        if duration != "-":
+            parts.append(f'<span class="run-time">{_h(duration)}</span>')
+        parts.append("</div>")
+        parts.append("</summary>")
+        parts.append('<div class="run-body">')
+
+        # Narrative blocks (2x2 grid)
+        hypothesis = run.get("hypothesis", "") or _enrich(run, "hypothesis")
+        approach = _enrich(run, "approach")
+        analysis = _enrich(run, "analysis")
+        next_steps = _enrich(run, "next_steps")
+        if any([hypothesis, approach, analysis, next_steps]):
+            parts.append('<div class="narrative">')
+            for cls, label, text in [
+                ("hypothesis", "Hypothesis", hypothesis),
+                ("approach", "Approach", approach),
+                ("analysis", "Analysis", analysis),
+                ("next-steps", "Next Steps", next_steps),
+            ]:
+                if text:
+                    parts.append(f'<div class="narrative-block {cls}">')
+                    parts.append(f'<div class="narrative-label">{label}</div>')
+                    parts.append(f'<div class="narrative-text">{_h(text)}</div>')
+                    parts.append("</div>")
+            parts.append("</div>")
+
+        # Tags
+        tags = run.get("tags", [])
+        if tags:
+            for tag in tags:
+                parts.append(f'<span class="tag">{_h(tag)}</span>')
+
+        # Config chips (varying params)
+        hyperparams = run.get("hyperparameters", {})
+        if hyperparams:
+            delta = {k: v for k, v in hyperparams.items()
+                     if k in varying_keys or not common_params}
+            if delta:
+                label = "Configuration (changes)" if common_params else "Hyperparameters"
+                parts.append(f'<div class="run-section-title">{label}</div>')
+                parts.append('<div class="params-row">')
+                for k, v in delta.items():
+                    parts.append(
+                        f'<span class="param-chip">'
+                        f'<span class="pk">{_h(k)}=</span>'
+                        f'<span class="pv">{_h(str(v))}</span></span>'
+                    )
+                parts.append("</div>")
+
+        # Result chips
+        results = run.get("results", {})
+        if results:
+            parts.append('<div class="run-section-title">Results</div>')
+            parts.append('<div class="results-row">')
+            for k, v in results.items():
+                parts.append(
+                    f'<span class="result-chip">'
+                    f'<span class="rk">{_h(k)}=</span>'
+                    f'<span class="rv">{_h(_fmt_metric(k, v))}</span></span>'
+                )
+            parts.append("</div>")
+
+        # User notes
+        notes = run.get("notes", [])
+        if notes:
+            parts.append('<div class="notes-block">')
+            parts.append('<div class="notes-label">Notes</div>')
+            for note in notes:
+                parts.append(f"<p>{_h(note)}</p>")
+            parts.append("</div>")
+
+        # Diff with previous run
+        if i > 1:
+            prev = runs[i - 2]
+            diff = diff_runs(prev, run)
+            diff_html = _render_diff_html(diff, prev, run)
+            if diff_html:
+                parts.append(diff_html)
+
+        parts.append("</div>")  # run-body
+        parts.append("</details>")
+
+    # --- Linked papers ---
+    linked = project.get("linked_papers", [])
+    if linked:
+        parts.append("<h2>Linked Papers</h2>")
+        parts.append('<ul class="lessons">')
+        for citekey in linked:
+            parts.append(f"<li><code>{_h(citekey)}</code></li>")
+        parts.append("</ul>")
+
+    # --- Footer ---
+    parts.append('<div class="footer">')
+    parts.append("Generated by <strong>Distillate</strong> &mdash; Lab Notebook")
+    parts.append("</div>")
+    parts.append("</body></html>")
+
+    return "\n".join(parts)
+
+
+def _render_diff_html(diff: dict, run_a: dict, run_b: dict) -> str:
+    """Render a diff section between two runs as HTML."""
+    param_diffs = [d for d in diff.get("param_diffs", []) if d.get("change") == "changed"]
+    metric_diffs = [d for d in diff.get("metric_diffs", []) if d.get("change") == "changed"]
+
+    if not param_diffs and not metric_diffs:
+        return ""
+
+    lines = ['<div class="diff-section">']
+    prev_name = _h(run_a.get("name", "previous"))
+    lines.append(f'<div class="diff-title">What Changed (vs {prev_name})</div>')
+
+    for d in param_diffs:
+        pct = d.get("pct_change")
+        if pct is not None:
+            sign = "+" if pct > 0 else ""
+            lines.append(
+                f'<div class="diff-item"><span class="diff-param">{_h(d["key"])}</span> '
+                f'<span class="diff-arrow">{_h(str(d["old"]))} &rarr; '
+                f'{_h(str(d["new"]))} ({sign}{pct:.0f}%)</span></div>'
+            )
+        else:
+            lines.append(
+                f'<div class="diff-item"><span class="diff-param">{_h(d["key"])}</span> '
+                f'<span class="diff-arrow">{_h(str(d["old"]))} &rarr; '
+                f'{_h(str(d["new"]))}</span></div>'
+            )
+
+    for d in metric_diffs:
+        arrow = "improved" if d.get("improved") else "regressed"
+        cls = "diff-improved" if d.get("improved") else "diff-regressed"
+        delta = d.get("delta")
+        if delta is not None:
+            sign = "+" if delta > 0 else ""
+            lines.append(
+                f'<div class="diff-item"><span class="{cls}">'
+                f'{_h(d["key"])}: {_h(_fmt_metric(d["key"], d["old"]))} &rarr; '
+                f'{_h(_fmt_metric(d["key"], d["new"]))} '
+                f'({sign}{delta:.4g}, {arrow})</span></div>'
+            )
+        else:
+            lines.append(
+                f'<div class="diff-item"><span class="{cls}">'
+                f'{_h(d["key"])}: {_h(str(d["old"]))} &rarr; '
+                f'{_h(str(d["new"]))} ({arrow})</span></div>'
+            )
+
+    lines.append("</div>")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection: check tracked projects for new commits
+# ---------------------------------------------------------------------------
+
+def check_projects_for_updates(projects: dict) -> list[dict]:
+    """Check tracked projects for new commits since last scan.
+
+    For each project with a valid git repo, compares HEAD against the
+    stored ``last_commit_hash``.  Returns a list of dicts:
+    ``{"project": proj, "new_commits": N, "current_hash": hash}``.
+
+    Read-only — no scanning or state mutation.
+    """
+    updates = []
+    for proj in projects.values():
+        proj_path = proj.get("path", "")
+        if not proj_path:
+            continue
+        p = Path(proj_path)
+        if not p.is_dir() or not (p / ".git").exists():
+            continue
+
+        current_hash = _git_head_hash(p)
+        if not current_hash:
+            continue
+
+        last_hash = proj.get("last_commit_hash", "")
+        if current_hash == last_hash:
+            continue
+
+        # Count new commits
+        new_commits = 0
+        if last_hash:
+            commits = _git_log(p, since_hash=last_hash)
+            new_commits = len(commits)
+        else:
+            new_commits = 1  # first scan — just flag it
+
+        if new_commits > 0:
+            updates.append({
+                "project": proj,
+                "new_commits": new_commits,
+                "current_hash": current_hash,
+            })
+
+    return updates
 
 
 # ---------------------------------------------------------------------------

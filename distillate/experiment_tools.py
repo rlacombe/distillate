@@ -104,11 +104,15 @@ def _resolve_run(runs: dict, query: str, project_name: str) -> tuple[dict | None
 
 
 def _regen_notebook(proj: dict) -> None:
-    """Regenerate the Obsidian lab notebook for a project."""
+    """Regenerate the Obsidian lab notebook (MD + HTML) for a project."""
     from pathlib import Path as _Path
 
-    from distillate.experiments import enrich_runs_with_llm, generate_notebook
-    from distillate.obsidian import write_experiment_notebook
+    from distillate.experiments import (
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+    )
+    from distillate.obsidian import (
+        write_experiment_html_notebook, write_experiment_notebook,
+    )
 
     proj_path = proj.get("path", "")
     enrichment = None
@@ -118,6 +122,8 @@ def _regen_notebook(proj: dict) -> None:
         )
     notebook_md = generate_notebook(proj, enrichment=enrichment)
     write_experiment_notebook(proj, notebook_md)
+    notebook_html = generate_html_notebook(proj, enrichment=enrichment)
+    write_experiment_html_notebook(proj, notebook_html)
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +442,36 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project", "goals"],
         },
     },
+    {
+        "name": "annotate_run",
+        "description": (
+            "Add a note or hypothesis to an experiment run. User-provided "
+            "hypotheses take precedence over LLM-generated ones in notebooks. "
+            "Notes are appended (not replaced)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id or name substring",
+                },
+                "hypothesis": {
+                    "type": "string",
+                    "description": "Hypothesis for this run (replaces any existing)",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "A note to append to this run's notes list",
+                },
+            },
+            "required": ["project", "run"],
+        },
+    },
 ]
 
 
@@ -526,20 +562,79 @@ def compare_runs(*, state, project: str, run_a: str, run_b: str) -> dict:
     return diff_runs(a, b)
 
 
+def _discover_git_repos(root) -> list:
+    """Find git repos under root (1 level deep). Returns list of Paths."""
+    from pathlib import Path as _Path
+
+    root = _Path(root)
+    repos = []
+    try:
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if (child / ".git").exists():
+                repos.append(child)
+    except PermissionError:
+        pass
+    return repos
+
+
 def scan_project_tool(*, state, path: str) -> dict:
     """Scan a git repo and track it as a project."""
     from datetime import datetime, timezone
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        enrich_runs_with_llm, generate_notebook, scan_project, slugify,
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+        scan_project, slugify,
     )
-    from distillate.obsidian import write_experiment_notebook
+    from distillate.obsidian import (
+        write_experiment_html_notebook, write_experiment_notebook,
+    )
     from distillate.state import acquire_lock, release_lock
 
     repo_path = _Path(path).expanduser().resolve()
     if not repo_path.is_dir():
         return {"success": False, "error": f"Directory not found: {path}"}
+
+    # If path has no .git, discover individual repos in subdirectories
+    if not (repo_path / ".git").exists():
+        sub_repos = _discover_git_repos(repo_path)
+        if not sub_repos:
+            return {
+                "success": False,
+                "error": (
+                    f"No git repository found at '{path}'. "
+                    "Point to a directory with a .git folder, or a parent "
+                    "directory containing git repos."
+                ),
+            }
+        # Scan each discovered repo as a separate project
+        results = []
+        for sub in sub_repos:
+            r = scan_project_tool(state=state, path=str(sub))
+            if r.get("success"):
+                results.append(r)
+        if not results:
+            return {
+                "success": False,
+                "error": f"Found {len(sub_repos)} repo(s) under '{path}' but none had ML experiments.",
+            }
+        return {
+            "success": True,
+            "multi": True,
+            "projects": [
+                {"name": r["name"], "runs": r["runs_discovered"]}
+                for r in results
+            ],
+            "message": (
+                f"Discovered {len(results)} project(s) under '{path}': "
+                + ", ".join(
+                    f"{r['name']} ({r['runs_discovered']} runs)"
+                    for r in results
+                )
+            ),
+        }
 
     result = scan_project(repo_path)
     if "error" in result:
@@ -589,7 +684,7 @@ def scan_project_tool(*, state, path: str) -> dict:
     finally:
         release_lock()
 
-    # LLM enrichment + generate notebook
+    # LLM enrichment + generate notebooks (MD + HTML)
     proj = state.get_project(project_id)
     if proj:
         enrichment = enrich_runs_with_llm(
@@ -597,6 +692,8 @@ def scan_project_tool(*, state, path: str) -> dict:
         )
         notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
+        notebook_html = generate_html_notebook(proj, enrichment=enrichment)
+        write_experiment_html_notebook(proj, notebook_html)
 
     return {
         "success": True,
@@ -967,6 +1064,45 @@ def update_goals_tool(*, state, project: str, goals: list[dict]) -> dict:
     }
 
 
+def annotate_run_tool(*, state, project: str, run: str,
+                      hypothesis: str = "", note: str = "") -> dict:
+    """Add a note or hypothesis to an experiment run."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    if not hypothesis and not note:
+        return {"error": "Provide at least one of 'hypothesis' or 'note'."}
+
+    changes = []
+    if hypothesis:
+        run_obj["hypothesis"] = hypothesis
+        changes.append("hypothesis")
+    if note:
+        if "notes" not in run_obj:
+            run_obj["notes"] = []
+        run_obj["notes"].append(note)
+        changes.append("note")
+
+    state.save()
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "run": run_obj.get("name", ""),
+        "updated": changes,
+        "message": (
+            f"Updated {' and '.join(changes)} on run "
+            f"'{run_obj.get('name', '')}' in '{proj.get('name', '')}'."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -988,3 +1124,9 @@ def _remove_notebook(project_id: str) -> None:
     # Remove main notebook and any section notebooks
     for md_file in nb_dir.glob(f"{project_id}*.md"):
         md_file.unlink(missing_ok=True)
+
+    # Remove HTML notebook
+    html_dir = nb_dir / "html"
+    if html_dir.is_dir():
+        html_file = html_dir / f"{project_id}.html"
+        html_file.unlink(missing_ok=True)

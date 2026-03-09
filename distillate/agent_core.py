@@ -59,6 +59,7 @@ TOOL_LABELS = {
     "update_project": "\U0001F4DD Updating project details",
     "link_paper": "\U0001F517 Linking paper to project",
     "update_goals": "\U0001F3AF Setting project goals",
+    "annotate_run": "\U0001F4DD Adding note to run",
 }
 
 
@@ -151,26 +152,39 @@ def format_past_sessions(sessions: list[dict]) -> str:
     return "## Recent Conversations\n" + "\n".join(lines) + "\n\n"
 
 
-def _experiments_section(state: State) -> str:
+def _experiments_section(state: State, updates: list[dict] | None = None) -> str:
     """Build the experiments section of the system prompt."""
     if not config.EXPERIMENTS_ENABLED:
         return ""
     projects = state.projects
     if not projects:
         return ""
+
+    # Index updates by project id for easy lookup
+    update_map: dict[str, int] = {}
+    for u in (updates or []):
+        pid = u["project"].get("id", "")
+        if pid:
+            update_map[pid] = u["new_commits"]
+
     lines = ["## Experiments"]
     for proj in projects.values():
         runs = proj.get("runs", {})
         completed = sum(1 for r in runs.values() if r.get("status") == "completed")
-        lines.append(
+        line = (
             f"- {proj.get('name', '?')}: {len(runs)} runs "
             f"({completed} completed)"
         )
+        n_new = update_map.get(proj.get("id", ""), 0)
+        if n_new:
+            line += f" — {n_new} new commit{'s' if n_new != 1 else ''} since last scan"
+        lines.append(line)
     return "\n".join(lines) + "\n\n"
 
 
 def build_system_prompt(
     state: State, past_sessions: list[dict] | None = None,
+    experiment_updates: list[dict] | None = None,
 ) -> str:
     """Build a context-rich system prompt from current library state."""
     now = datetime.now(timezone.utc)
@@ -232,7 +246,7 @@ def build_system_prompt(
         f"{recent_section}\n\n"
         "## Research Interests\n"
         f"{tags_section}\n\n"
-        f"{_experiments_section(state)}"
+        f"{_experiments_section(state, updates=experiment_updates)}"
         f"{format_past_sessions(past_sessions or [])}"
         "## Personality\n"
         "You're warm, witty, and genuinely curious about the user's research. "
@@ -273,6 +287,8 @@ def build_system_prompt(
             "- Use compare_runs to show what changed between experiments.\n"
             "- Use rename_project, rename_run, update_project, update_goals, "
             "link_paper to manage projects.\n"
+            "- Use annotate_run to add a hypothesis or note to a run — "
+            "user-provided hypotheses take precedence over LLM enrichment.\n"
             "- Use delete_project/delete_run with confirm=false first, then "
             "confirm=true after user approval.\n"
             if config.EXPERIMENTS_ENABLED else ""
@@ -339,6 +355,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "update_project": et.update_project_tool,
             "link_paper": et.link_paper_tool,
             "update_goals": et.update_goals_tool,
+            "annotate_run": et.annotate_run_tool,
         })
 
     fn = dispatch.get(name)
@@ -382,7 +399,8 @@ def trim_conversation(conversation: list[dict]) -> None:
 # Core conversation generator
 # ---------------------------------------------------------------------------
 
-def stream_turn(client, state, conversation, user_input, past_sessions=None):
+def stream_turn(client, state, conversation, user_input, past_sessions=None,
+                experiment_updates=None):
     """Yield event dicts for one conversation turn.
 
     Appends messages to *conversation* in place (user message, assistant
@@ -409,7 +427,10 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None):
     conversation.append({"role": "user", "content": user_input})
     state.reload()
 
-    system_prompt = build_system_prompt(state, past_sessions=past_sessions)
+    system_prompt = build_system_prompt(
+        state, past_sessions=past_sessions,
+        experiment_updates=experiment_updates,
+    )
     tools = _build_tool_schemas()
 
     for _step in range(MAX_TOOL_STEPS):

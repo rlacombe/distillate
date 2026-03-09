@@ -244,7 +244,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
     # Interactive REPL — clear screen for full-screen feel
     if _is_tty():
         print("\033[2J\033[H", end="", flush=True)
-    _print_welcome(state)
+    experiment_updates = _print_welcome(state)
 
     while True:
         try:
@@ -273,6 +273,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         _render_turn(
             client, state, conversation, user_input,
             past_sessions=all_sessions, stream=True,
+            experiment_updates=experiment_updates,
         )
 
         # Log this exchange
@@ -302,8 +303,11 @@ def _term_width() -> int:
         return 60
 
 
-def _print_welcome(state: State) -> None:
-    """Print a compact welcome banner."""
+def _print_welcome(state: State) -> list[dict]:
+    """Print a compact welcome banner.
+
+    Returns experiment update dicts (for later use in the system prompt).
+    """
     processed = state.documents_with_status("processed")
     _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
     queue = state.documents_with_status(_q_status)
@@ -320,6 +324,25 @@ def _print_welcome(state: State) -> None:
     print(header_prefix + header_tail)
     print(f"  {_dim('Your research alchemist.')}")
     print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 {_dim('Type /help or /quit.')}")
+
+    experiment_updates: list[dict] = []
+    if config.EXPERIMENTS_ENABLED and state.projects:
+        n_proj = len(state.projects)
+        n_runs = sum(len(p.get("runs", {})) for p in state.projects.values())
+        print(f"  \U0001F9EA {n_proj} project{'s' if n_proj != 1 else ''} tracked \u00b7 {n_runs} experiment{'s' if n_runs != 1 else ''}")
+
+        # Check for new commits in tracked projects
+        from distillate.experiments import check_projects_for_updates
+        experiment_updates = check_projects_for_updates(state.projects)
+        for u in experiment_updates[:3]:
+            proj_name = u["project"].get("name", "?")
+            slug = u["project"].get("id", proj_name)
+            n = u["new_commits"]
+            s = "s" if n != 1 else ""
+            hint = f'try "scan {slug}"'
+            line = f"  \u21b3 {proj_name} has {n} new commit{s} \u2014 {hint}"
+            print(f"  {_dim(line)}")
+
     print(footer)
 
     # Contextual suggestions
@@ -329,8 +352,12 @@ def _print_welcome(state: State) -> None:
     if n_read > 0:
         hints.append("Summarize my last read")
     hints.append("What's trending in AI?")
+    if config.EXPERIMENTS_ENABLED and state.projects:
+        hints.append("Compare my last experiments")
     sep = " \u00b7 "
     print(f"\n  {_dim('Try:')} {_dim(sep.join(hints))}")
+
+    return experiment_updates
 
 
 def _run_init() -> None:
@@ -371,6 +398,7 @@ def _render_turn(
     user_input: str,
     past_sessions: list[dict] | None = None,
     stream: bool = True,
+    experiment_updates: list[dict] | None = None,
 ) -> None:
     """Handle one user turn by consuming agent_core events."""
     fmt = _StreamFormatter()
@@ -388,6 +416,7 @@ def _render_turn(
         for event in stream_turn(
             client, state, conversation, user_input,
             past_sessions=past_sessions,
+            experiment_updates=experiment_updates,
         ):
             etype = event["type"]
 

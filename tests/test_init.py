@@ -19,6 +19,9 @@ def _run_wizard(inputs, tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     monkeypatch.setattr(config, "ENV_PATH", env_file)
 
+    # Isolate state file so wizard scans don't pollute the real state
+    monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+
     # Clear all wizard-related env vars for isolation
     for key in _WIZARD_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)

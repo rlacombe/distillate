@@ -802,7 +802,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 13
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 14
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -817,7 +817,7 @@ class TestExperimentToolSchemas:
             "scan_project", "get_experiment_notebook",
             "add_project", "rename_project", "rename_run",
             "delete_project", "delete_run", "update_project",
-            "link_paper", "update_goals",
+            "link_paper", "update_goals", "annotate_run",
         }
 
 
@@ -1761,3 +1761,510 @@ class TestUpdateGoalsTool:
         from distillate.experiment_tools import update_goals_tool
         result = update_goals_tool(state=state, project="nope", goals=[])
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# HTML notebook generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestHtmlNotebook:
+    def _make_project(self):
+        return {
+            "id": "test-proj",
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "description": "A test project",
+            "status": "tracking",
+            "goals": [{"metric": "accuracy", "direction": "maximize", "threshold": 0.95}],
+            "linked_papers": ["smith2026"],
+            "runs": {
+                "run-1": {
+                    "id": "run-1", "name": "Baseline",
+                    "status": "completed",
+                    "hyperparameters": {"lr": 0.01, "batch_size": 32},
+                    "results": {"accuracy": 0.8, "loss": 0.5},
+                    "tags": ["v1"], "notes": ["initial run"],
+                    "started_at": "2026-01-01T00:00:00+00:00",
+                    "completed_at": "2026-01-01T01:00:00+00:00",
+                    "duration_minutes": 60,
+                },
+                "run-2": {
+                    "id": "run-2", "name": "Improved",
+                    "status": "completed",
+                    "hyperparameters": {"lr": 0.005, "batch_size": 32},
+                    "results": {"accuracy": 0.9, "loss": 0.3},
+                    "tags": ["v2"], "notes": [],
+                    "started_at": "2026-01-02T00:00:00+00:00",
+                    "completed_at": "2026-01-02T01:00:00+00:00",
+                    "duration_minutes": 45,
+                },
+            },
+        }
+
+    def test_html_contains_structure(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "<!DOCTYPE html>" in html
+        assert "<title>Test Project" in html
+        assert "stats-bar" in html
+        assert "run-card" in html
+        assert "Baseline" in html
+        assert "Improved" in html
+        assert "</html>" in html
+
+    def test_html_escapes_special_chars(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        proj["name"] = "Test <script>alert('xss')</script>"
+        html = generate_html_notebook(proj)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_html_includes_stats(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Experiments" in html
+        assert "Completed" in html
+        assert "stat-value" in html
+
+    def test_html_includes_common_config(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        # batch_size=32 is shared across both runs
+        assert "config-grid" in html
+        assert "batch_size" in html
+
+    def test_html_includes_diff(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "diff-section" in html
+        assert "What Changed" in html
+
+    def test_html_includes_notes(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "initial run" in html
+        assert "notes-block" in html
+
+    def test_html_includes_enrichment(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        enrichment = {
+            "runs": {
+                "run-1": {
+                    "hypothesis": "Lower LR should help",
+                    "approach": "Standard training",
+                    "analysis": "Good results",
+                    "next_steps": "Try more epochs",
+                    "name": "Baseline Experiment",
+                },
+            },
+            "project": {
+                "key_breakthrough": "Found optimal LR",
+                "lessons_learned": ["Batch size matters", "LR decay helps"],
+            },
+        }
+        html = generate_html_notebook(proj, enrichment=enrichment)
+        assert "Research Insights" in html
+        assert "Found optimal LR" in html
+        assert "Batch size matters" in html
+        assert "narrative-block" in html
+        assert "Lower LR should help" in html
+
+    def test_html_includes_goals(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Success Criteria" in html
+        assert "accuracy" in html
+
+    def test_html_includes_linked_papers(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Linked Papers" in html
+        assert "smith2026" in html
+
+    def test_html_empty_project(self):
+        from distillate.experiments import generate_html_notebook
+        proj = {"id": "empty", "name": "Empty", "path": "", "runs": {}}
+        html = generate_html_notebook(proj)
+        assert "<!DOCTYPE html>" in html
+        assert "Empty" in html
+
+
+class TestWriteHtmlNotebook:
+    def test_writes_to_html_subdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_PAPERS_FOLDER", "Distillate")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        from distillate.obsidian import write_experiment_html_notebook
+        proj = {"id": "my-project", "name": "My Project"}
+        path = write_experiment_html_notebook(proj, "<html>test</html>")
+        assert path is not None
+        assert path.exists()
+        assert path.name == "my-project.html"
+        assert "html" in str(path.parent.name)
+        assert path.read_text(encoding="utf-8") == "<html>test</html>"
+
+    def test_returns_none_unconfigured(self, monkeypatch):
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        from distillate.obsidian import write_experiment_html_notebook
+        proj = {"id": "my-project"}
+        assert write_experiment_html_notebook(proj, "html") is None
+
+
+# ---------------------------------------------------------------------------
+# annotate_run tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotateRunTool:
+    def test_add_hypothesis(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            hypothesis="Smaller LR converges better",
+        )
+        assert result["success"] is True
+        assert "hypothesis" in result["updated"]
+        run = state.get_run("test-proj", "run-1")
+        assert run["hypothesis"] == "Smaller LR converges better"
+
+    def test_add_note(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            note="Ran on A100 GPU",
+        )
+        assert result["success"] is True
+        assert "note" in result["updated"]
+        run = state.get_run("test-proj", "run-1")
+        assert "Ran on A100 GPU" in run["notes"]
+
+    def test_add_both(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            hypothesis="Test hypothesis", note="Test note",
+        )
+        assert result["success"] is True
+        assert "hypothesis" in result["updated"]
+        assert "note" in result["updated"]
+
+    def test_requires_at_least_one_field(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+        )
+        assert "error" in result
+
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="nope", run="run-1",
+            hypothesis="Test",
+        )
+        assert "error" in result
+
+    def test_run_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="nope",
+            hypothesis="Test",
+        )
+        assert "error" in result
+
+    def test_hypothesis_precedence_in_notebook(self, tmp_path, monkeypatch):
+        """User-provided hypothesis should appear in the notebook."""
+        from distillate.experiments import generate_notebook
+        proj = {
+            "id": "test", "name": "Test", "path": "",
+            "runs": {
+                "r1": {
+                    "id": "r1", "name": "Run 1", "status": "completed",
+                    "hypothesis": "User's own hypothesis",
+                    "hyperparameters": {}, "results": {},
+                    "tags": [], "notes": [],
+                    "started_at": "", "completed_at": "", "duration_minutes": 0,
+                },
+            },
+        }
+        enrichment = {
+            "runs": {"r1": {"hypothesis": "LLM generated hypothesis"}},
+            "project": {},
+        }
+        md = generate_notebook(proj, enrichment=enrichment)
+        # User hypothesis takes precedence
+        assert "User's own hypothesis" in md
+
+    def test_hypothesis_precedence_in_html(self, tmp_path, monkeypatch):
+        """User-provided hypothesis should appear in HTML notebook too."""
+        from distillate.experiments import generate_html_notebook
+        proj = {
+            "id": "test", "name": "Test", "path": "",
+            "runs": {
+                "r1": {
+                    "id": "r1", "name": "Run 1", "status": "completed",
+                    "hypothesis": "User hypothesis here",
+                    "hyperparameters": {}, "results": {},
+                    "tags": [], "notes": [],
+                    "started_at": "", "completed_at": "", "duration_minutes": 0,
+                },
+            },
+        }
+        enrichment = {
+            "runs": {"r1": {"hypothesis": "LLM hypothesis"}},
+            "project": {},
+        }
+        html = generate_html_notebook(proj, enrichment=enrichment)
+        assert "User hypothesis here" in html
+
+    def test_notes_append(self, tmp_path, monkeypatch):
+        """Multiple annotate calls should accumulate notes."""
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        annotate_run_tool(state=state, project="test-proj", run="run-1", note="First")
+        annotate_run_tool(state=state, project="test-proj", run="run-1", note="Second")
+        run = state.get_run("test-proj", "run-1")
+        assert len(run["notes"]) == 2
+        assert run["notes"][0] == "First"
+        assert run["notes"][1] == "Second"
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckProjectsForUpdates:
+    def test_no_projects(self):
+        from distillate.experiments import check_projects_for_updates
+        assert check_projects_for_updates({}) == []
+
+    def test_nonexistent_path(self):
+        from distillate.experiments import check_projects_for_updates
+        projects = {
+            "p1": {"id": "p1", "path": "/nonexistent/path", "last_commit_hash": "abc123"},
+        }
+        assert check_projects_for_updates(projects) == []
+
+    def test_detects_new_commits(self, tmp_path):
+        """Test detection when HEAD differs from stored hash."""
+        from distillate.experiments import check_projects_for_updates
+        # Create a git repo with one commit
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        # Get initial hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True,
+        )
+        first_hash = result.stdout.strip()
+
+        # Add another commit
+        (repo / "file2.txt").write_text("world")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "second"], cwd=repo, capture_output=True)
+
+        projects = {
+            "test": {
+                "id": "test", "name": "Test",
+                "path": str(repo),
+                "last_commit_hash": first_hash,
+            },
+        }
+        updates = check_projects_for_updates(projects)
+        assert len(updates) == 1
+        assert updates[0]["new_commits"] == 1
+        assert updates[0]["project"]["name"] == "Test"
+
+    def test_no_updates_when_hash_matches(self, tmp_path):
+        from distillate.experiments import check_projects_for_updates
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True,
+        )
+        current_hash = result.stdout.strip()
+
+        projects = {
+            "test": {
+                "id": "test", "path": str(repo),
+                "last_commit_hash": current_hash,
+            },
+        }
+        assert check_projects_for_updates(projects) == []
+
+    def test_first_scan_no_stored_hash(self, tmp_path):
+        from distillate.experiments import check_projects_for_updates
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        projects = {
+            "test": {"id": "test", "path": str(repo), "last_commit_hash": ""},
+        }
+        updates = check_projects_for_updates(projects)
+        assert len(updates) == 1
+        assert updates[0]["new_commits"] == 1
+
+
+class TestDiscoverGitRepos:
+    """Test _discover_git_repos and multi-repo scan_project_tool."""
+
+    def test_discovers_child_repos(self, tmp_path):
+        from distillate.experiment_tools import _discover_git_repos
+
+        # Create two child repos and one non-repo dir
+        (tmp_path / "repo-a" / ".git").mkdir(parents=True)
+        (tmp_path / "repo-b" / ".git").mkdir(parents=True)
+        (tmp_path / "not-a-repo").mkdir()
+        (tmp_path / ".hidden" / ".git").mkdir(parents=True)
+
+        repos = _discover_git_repos(tmp_path)
+        names = [r.name for r in repos]
+        assert "repo-a" in names
+        assert "repo-b" in names
+        assert "not-a-repo" not in names
+        assert ".hidden" not in names  # hidden dirs skipped
+
+    def test_returns_empty_for_no_repos(self, tmp_path):
+        from distillate.experiment_tools import _discover_git_repos
+
+        (tmp_path / "plain-dir").mkdir()
+        assert _discover_git_repos(tmp_path) == []
+
+    def test_scan_tool_no_git_no_subrepos(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        plain = tmp_path / "empty"
+        plain.mkdir()
+        result = scan_project_tool(state=State(), path=str(plain))
+        assert not result["success"]
+        assert "No git repository" in result["error"]
+
+    def test_scan_tool_multi_repo(self, tmp_path, monkeypatch):
+        """Scanning a parent dir discovers child git repos."""
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+
+        parent = tmp_path / "projects"
+        parent.mkdir()
+
+        # Create two git repos with ML artifacts
+        for name in ("alpha", "beta"):
+            repo = parent / name
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
+            # Write a training log JSON
+            log_data = {
+                "config": {"lr": 0.01, "epochs": 10, "batch_size": 32},
+                "epochs": [{"epoch": 1, "loss": 0.5}],
+            }
+            (repo / "training_log.json").write_text(json.dumps(log_data))
+            subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        result = scan_project_tool(state=State(), path=str(parent))
+        assert result["success"]
+        assert result.get("multi")
+        assert len(result["projects"]) == 2
+        project_names = {p["name"] for p in result["projects"]}
+        assert "Alpha" in project_names
+        assert "Beta" in project_names
+
+    def test_scan_tool_single_git_repo_still_works(self, tmp_path, monkeypatch):
+        """A path with .git at root is scanned directly (no discovery)."""
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+
+        repo = tmp_path / "my-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
+        log_data = {
+            "config": {"lr": 0.01, "epochs": 10, "batch_size": 32},
+            "epochs": [{"epoch": 1, "loss": 0.5}],
+        }
+        (repo / "training_log.json").write_text(json.dumps(log_data))
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        result = scan_project_tool(state=State(), path=str(repo))
+        assert result["success"]
+        assert "multi" not in result
+        assert result["runs_discovered"] >= 1
+
+
+class TestExperimentsSection:
+    """Test _experiments_section in agent_core."""
+
+    def test_includes_new_commits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.EXPERIMENTS_ENABLED", True)
+        from distillate.state import State
+        state = State()
+        state.add_project("proj-1", "Test Project", str(tmp_path))
+        from distillate.agent_core import _experiments_section
+        updates = [{"project": {"id": "proj-1", "name": "Test Project"}, "new_commits": 3, "current_hash": "abc"}]
+        section = _experiments_section(state, updates=updates)
+        assert "3 new commits" in section
+
+    def test_no_updates(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.EXPERIMENTS_ENABLED", True)
+        from distillate.state import State
+        state = State()
+        state.add_project("proj-1", "Test Project", str(tmp_path))
+        from distillate.agent_core import _experiments_section
+        section = _experiments_section(state)
+        assert "new commit" not in section
+        assert "Test Project" in section
