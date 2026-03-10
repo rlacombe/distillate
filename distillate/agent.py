@@ -322,14 +322,23 @@ def _print_welcome(state: State) -> list[dict]:
 
     print()
     print(header_prefix + header_tail)
-    print(f"  {_dim('Your research alchemist.')}")
-    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 {_dim('Type /help or /quit.')}")
+    print(f"  {_dim('Your research command center.')}")
 
     experiment_updates: list[dict] = []
+
+    # Experiments first
     if config.EXPERIMENTS_ENABLED and state.projects:
         n_proj = len(state.projects)
         n_runs = sum(len(p.get("runs", {})) for p in state.projects.values())
-        print(f"  \U0001F9EA {n_proj} project{'s' if n_proj != 1 else ''} tracked \u00b7 {n_runs} experiment{'s' if n_runs != 1 else ''}")
+        active = sum(
+            1 for p in state.projects.values()
+            for s in p.get("sessions", {}).values()
+            if s.get("status") == "running"
+        )
+        exp_line = f"{n_proj} experiment{'s' if n_proj != 1 else ''} \u00b7 {n_runs} runs"
+        if active:
+            exp_line += f" \u00b7 {active} running"
+        print(f"  \U0001F9EA {exp_line}")
 
         # Check for new commits in tracked projects
         from distillate.experiments import check_projects_for_updates
@@ -343,17 +352,20 @@ def _print_welcome(state: State) -> list[dict]:
             line = f"  \u21b3 {proj_name} has {n} new commit{s} \u2014 {hint}"
             print(f"  {_dim(line)}")
 
+    # Papers second
+    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 {_dim('Type /help or /quit.')}")
+
     print(footer)
 
-    # Contextual suggestions
+    # Contextual suggestions — experiments first
     hints = []
+    if config.EXPERIMENTS_ENABLED and state.projects:
+        hints.append("How are my experiments?")
     if n_queue > 0:
         hints.append("What's in my queue?")
     if n_read > 0:
         hints.append("Summarize my last read")
     hints.append("What's trending in AI?")
-    if config.EXPERIMENTS_ENABLED and state.projects:
-        hints.append("Compare my last experiments")
     sep = " \u00b7 "
     print(f"\n  {_dim('Try:')} {_dim(sep.join(hints))}")
 

@@ -1308,7 +1308,7 @@ def _status() -> None:
 
     from distillate.state import STATE_PATH
     if not STATE_PATH.exists() and not config.ENV_PATH.exists():
-        print("\n  No papers tracked yet. Run 'distillate --init' to get started.\n")
+        print("\n  No experiments or papers tracked yet. Run 'distillate --init' to get started.\n")
         return
 
     state = State()
@@ -1317,6 +1317,36 @@ def _status() -> None:
     print()
     print("  Distillate")
     print("  " + "\u2500" * 40)
+
+    # Experiments (shown first)
+    projects = state.projects
+    if projects:
+        from distillate.launcher import refresh_session_statuses
+        changed = refresh_session_statuses(state)
+        if changed:
+            state.save()
+
+        n_proj = len(projects)
+        total_runs = sum(len(p.get("runs", {})) for p in projects.values())
+        active = sum(
+            1 for p in projects.values()
+            for s in p.get("sessions", {}).values()
+            if s.get("status") == "running"
+        )
+        exp_line = f"{n_proj} experiment{'s' if n_proj != 1 else ''} \u00b7 {total_runs} runs"
+        if active:
+            exp_line += f" \u00b7 {active} running"
+        print(f"  Lab:       {exp_line}")
+
+        for proj in list(projects.values())[:5]:
+            runs = proj.get("runs", {})
+            sessions = proj.get("sessions", {})
+            sess_active = sum(1 for s in sessions.values() if s.get("status") == "running")
+            status = "\U0001F7E2 running" if sess_active else proj.get("status", "tracking")
+            print(f"    {proj.get('name', '?')} \u2014 {len(runs)} runs, {status}")
+        if len(projects) > 5:
+            print(f"    {_dim(f'... and {len(projects) - 5} more')}")
+        print()
 
     # Queue
     _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
@@ -3343,35 +3373,33 @@ Usage: distillate [question]
   distillate              Open the interactive agent (requires API key)
   distillate "question"   Ask a single question, then exit
 
-Commands:
-  --sync                  Sync papers: Zotero -> reMarkable -> notes
-  --import                Import existing papers from Zotero
-  --status                Show queue health and reading stats
-  --list                  List all tracked papers
-  --suggest               Pick papers for your queue and promote to tablet
-  --digest                Show your reading digest
-  --schedule              Set up automatic syncing (launchd/cron)
-  --init                  Run the setup wizard
-
-Management:
-  --remove "Title"        Remove a paper from tracking
-  --reprocess "Title"     Re-extract highlights and regenerate note
-
 Experiments:
   --new-experiment [tmpl] Scaffold a new experiment from a template
   --launch <name>         Launch an auto-research session (tmux)
   --experiments           List all tracked experiments with status
   --attach <name>         Attach to a running experiment session
   --stop <name>           Stop a running experiment session
+  --scan-projects         Scan tracked projects for new experiments
+  --install-hooks <path>  Install Claude Code hooks for experiment capture
+  --watch <path>          Watch an experiment repo and regenerate notebooks
+
+Papers:
+  --sync                  Sync papers: Zotero -> reMarkable -> notes
+  --import                Import existing papers from Zotero
+  --status                Show experiment and reading status
+  --list                  List all tracked papers
+  --suggest               Pick papers for your queue and promote to tablet
+  --digest                Show your reading digest
+  --schedule              Set up automatic syncing (launchd/cron)
+  --init                  Run the setup wizard
+  --remove "Title"        Remove a paper from tracking
+  --reprocess "Title"     Re-extract highlights and regenerate note
 
 Advanced:
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
-  --scan-projects         Scan tracked ML projects for new experiments
-  --install-hooks <path>  Install Claude Code hooks for experiment capture
-  --watch <path>          Watch an experiment repo and regenerate notebooks
 
 Options:
   -h, --help              Show this help
