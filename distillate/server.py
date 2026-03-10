@@ -9,6 +9,33 @@ only installed in the bundled Electron venv.
 Usage::
 
     python -m distillate.server [port]
+
+REST API Endpoints
+------------------
+
+General:
+    GET  /status                              App version, paper/experiment counts.
+    POST /sync                                Trigger cloud sync (pull + push).
+
+Papers (Papers tab):
+    GET  /papers                              List all papers (truncated summaries).
+                                              Optional ``?status=processed`` filter.
+                                              Includes ``promoted`` boolean per paper.
+    GET  /papers/{paper_key}                  Full paper details: all authors, full
+                                              summary, highlights, venue, DOI, etc.
+    POST /papers/{paper_key}/promote          Add paper to promoted list.
+    POST /papers/{paper_key}/unpromote        Remove paper from promoted list.
+    POST /papers/{paper_key}/refresh-metadata Re-fetch metadata from Zotero + S2.
+
+Experiments (Live tab):
+    GET  /experiments/list                    All tracked projects with run summaries.
+    GET  /experiments/{project_id}/notebook   Self-contained HTML lab notebook.
+    GET  /experiments/stream                  SSE stream of experiment events.
+    POST /experiments/attach                  Open terminal attached to tmux session.
+                                              Body: ``{"project": "id"}``.
+
+Chat:
+    WS   /ws                                  Agent chat (Nicolas REPL over WebSocket).
 """
 
 import asyncio
@@ -201,6 +228,192 @@ def _create_app():
                 "Connection": "keep-alive",
             },
         )
+
+    # -------------------------------------------------------------------
+    # Data endpoints for desktop app tabs
+    # -------------------------------------------------------------------
+
+    def _run_summary(run: dict) -> dict:
+        """Build a concise run summary dict."""
+        results = run.get("results", {})
+        key_metric = ""
+        for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                  "best_val_acc", "f1", "loss"):
+            if k in results:
+                key_metric = f"{k}={results[k]}"
+                break
+        if not key_metric and results:
+            k, v = next(iter(results.items()))
+            if isinstance(v, (int, float)):
+                key_metric = f"{k}={v}"
+        return {
+            "id": run.get("id", ""),
+            "name": run.get("name", ""),
+            "status": run.get("status", ""),
+            "decision": run.get("decision", ""),
+            "key_metric": key_metric,
+            "started_at": run.get("started_at", ""),
+            "duration_minutes": run.get("duration_minutes", 0),
+            "tags": run.get("tags", []),
+        }
+
+    @app.get("/experiments/list")
+    async def list_experiments():
+        _state.reload()
+        projects = _state.projects
+        result = []
+        for proj_id, proj in projects.items():
+            runs = proj.get("runs", {})
+            sessions = proj.get("sessions", {})
+            active = sum(1 for s in sessions.values() if s.get("status") == "running")
+            result.append({
+                "id": proj_id,
+                "name": proj.get("name", ""),
+                "path": proj.get("path", ""),
+                "status": proj.get("status", ""),
+                "description": proj.get("description", ""),
+                "tags": proj.get("tags", []),
+                "run_count": len(runs),
+                "active_sessions": active,
+                "last_scanned_at": proj.get("last_scanned_at", ""),
+                "runs": [_run_summary(r) for r in sorted(
+                    runs.values(), key=lambda r: r.get("started_at", ""),
+                )],
+            })
+        return JSONResponse({"ok": True, "projects": result})
+
+    @app.get("/experiments/{project_id}/notebook")
+    async def experiment_notebook(project_id: str):
+        from pathlib import Path
+
+        from starlette.responses import HTMLResponse
+
+        from distillate.experiments import generate_html_notebook, load_enrichment_cache
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        proj_path = Path(proj.get("path", ""))
+        enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
+
+        html = generate_html_notebook(proj, enrichment=enrichment)
+        return HTMLResponse(html)
+
+    @app.get("/papers")
+    async def list_papers(status: str = None):
+        _state.reload()
+        docs = _state.documents
+        promoted_set = set(_state.promoted_papers)
+        results = []
+        for key, doc in docs.items():
+            if status and doc.get("status") != status:
+                continue
+            meta = doc.get("metadata", {})
+            idx = _state.index_of(key)
+            summary_text = doc.get("summary", "") or ""
+            results.append({
+                "index": idx,
+                "key": key,
+                "title": doc.get("title", ""),
+                "citekey": meta.get("citekey", ""),
+                "status": doc.get("status", ""),
+                "authors": doc.get("authors", [])[:3],
+                "summary": summary_text[:200] + ("..." if len(summary_text) > 200 else ""),
+                "engagement": doc.get("engagement", 0),
+                "promoted": key in promoted_set,
+                "promoted_at": doc.get("promoted_at", ""),
+                "tags": meta.get("tags", [])[:5],
+                "citation_count": meta.get("citation_count", 0),
+                "publication_date": meta.get("publication_date", ""),
+                "uploaded_at": doc.get("uploaded_at", ""),
+                "processed_at": doc.get("processed_at", ""),
+                "page_count": meta.get("numPages") or meta.get("page_count", 0),
+            })
+        return JSONResponse({"ok": True, "papers": results, "total": len(results)})
+
+    @app.post("/papers/{paper_key}/promote")
+    async def promote_paper(paper_key: str):
+        """Add a paper to the promoted list."""
+        _state.reload()
+        doc = _state.documents.get(paper_key)
+        if not doc:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        promoted = _state.promoted_papers
+        if paper_key not in promoted:
+            promoted.append(paper_key)
+            doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
+            _state.save()
+        return JSONResponse({"ok": True, "promoted": True})
+
+    @app.post("/papers/{paper_key}/unpromote")
+    async def unpromote_paper(paper_key: str):
+        """Remove a paper from the promoted list."""
+        _state.reload()
+        doc = _state.documents.get(paper_key)
+        if not doc:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        promoted = _state.promoted_papers
+        if paper_key in promoted:
+            promoted.remove(paper_key)
+            doc.pop("promoted_at", None)
+            _state.save()
+        return JSONResponse({"ok": True, "promoted": False})
+
+    @app.post("/papers/{paper_key}/refresh-metadata")
+    async def refresh_paper_metadata(paper_key: str):
+        """Re-fetch metadata from Zotero + Semantic Scholar for a single paper."""
+        _state.reload()
+        doc = _state.documents.get(paper_key)
+        if not doc:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        from distillate.tools import refresh_metadata
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _executor, lambda: refresh_metadata(state=_state, identifier=paper_key)
+        )
+        return JSONResponse({"ok": True, "result": result})
+
+    @app.get("/papers/{paper_key}")
+    async def paper_detail(paper_key: str):
+        _state.reload()
+        doc = _state.get_document(paper_key)
+        if not doc:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        meta = doc.get("metadata", {})
+        idx = _state.index_of(paper_key)
+
+        # Read highlights from Obsidian note if available
+        highlights = ""
+        try:
+            from distillate.tools import _read_note_content, _extract_highlights_from_note
+            note = _read_note_content(meta.get("citekey", ""), doc.get("title", ""))
+            if note:
+                highlights = _extract_highlights_from_note(note)
+        except Exception:
+            pass
+
+        return JSONResponse({"ok": True, "paper": {
+            "index": idx,
+            "key": paper_key,
+            "title": doc.get("title", ""),
+            "citekey": meta.get("citekey", ""),
+            "status": doc.get("status", ""),
+            "authors": doc.get("authors", []),
+            "summary": doc.get("summary", "") or "",
+            "engagement": doc.get("engagement", 0),
+            "tags": meta.get("tags", []),
+            "citation_count": meta.get("citation_count", 0),
+            "publication_date": meta.get("publication_date", ""),
+            "venue": meta.get("venue", ""),
+            "doi": meta.get("doi", ""),
+            "arxiv_id": meta.get("arxiv_id", ""),
+            "uploaded_at": doc.get("uploaded_at", ""),
+            "processed_at": doc.get("processed_at", ""),
+            "promoted_at": doc.get("promoted_at", ""),
+            "highlights": highlights,
+        }})
 
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):
