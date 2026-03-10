@@ -811,3 +811,249 @@ class TestListExperimentsCLI:
 
         output = capsys.readouterr().out
         assert "Tiny Gene Code" in output
+
+
+# ---------------------------------------------------------------------------
+# Server endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestServerEndpoints:
+    """Tests for the desktop-app REST endpoints in server.py."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "12345")
+        monkeypatch.setenv("ZOTERO_API_KEY", "fake")
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path / "vault"))
+        self.tmp_path = tmp_path
+
+    def _make_client(self):
+        from starlette.testclient import TestClient
+        from distillate.server import _create_app
+        app = _create_app()
+        return TestClient(app)
+
+    def test_papers_empty(self):
+        client = self._make_client()
+        resp = client.get("/papers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["papers"] == []
+        assert data["total"] == 0
+
+    def test_papers_returns_documents(self):
+        from distillate.state import State
+        state = State()
+        state._data["documents"] = {
+            "ABC123": {
+                "title": "Test Paper",
+                "status": "processed",
+                "authors": ["Alice", "Bob", "Charlie", "Dave"],
+                "summary": "A great paper about testing.",
+                "engagement": 75,
+                "metadata": {
+                    "citekey": "alice2025test",
+                    "tags": ["ml", "testing"],
+                    "citation_count": 42,
+                    "publication_date": "2025-01-15",
+                },
+                "uploaded_at": "2025-01-10T00:00:00Z",
+                "processed_at": "2025-01-12T00:00:00Z",
+            },
+        }
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/papers")
+        data = resp.json()
+        assert data["total"] == 1
+        paper = data["papers"][0]
+        assert paper["key"] == "ABC123"
+        assert paper["title"] == "Test Paper"
+        assert paper["citekey"] == "alice2025test"
+        assert paper["authors"] == ["Alice", "Bob", "Charlie"]  # truncated to 3
+        assert paper["engagement"] == 75
+        assert paper["citation_count"] == 42
+
+    def test_papers_status_filter(self):
+        from distillate.state import State
+        state = State()
+        state._data["documents"] = {
+            "A1": {"title": "Read", "status": "processed", "metadata": {}},
+            "A2": {"title": "Queued", "status": "on_remarkable", "metadata": {}},
+        }
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/papers?status=processed")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["papers"][0]["key"] == "A1"
+
+    def test_experiments_list_empty(self):
+        client = self._make_client()
+        resp = client.get("/experiments/list")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["projects"] == []
+
+    def test_experiments_list_with_projects(self):
+        from distillate.state import State
+        state = State()
+        state.add_project("tiny-gene", "Tiny Gene Code", str(self.tmp_path))
+        state._data["projects"]["tiny-gene"]["runs"] = {
+            "run-1": {
+                "id": "run-1",
+                "name": "baseline",
+                "status": "completed",
+                "decision": "keep",
+                "results": {"accuracy": 0.95},
+                "started_at": "2025-01-01T00:00:00Z",
+                "duration_minutes": 10,
+                "tags": ["baseline"],
+            },
+        }
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/experiments/list")
+        data = resp.json()
+        assert len(data["projects"]) == 1
+        proj = data["projects"][0]
+        assert proj["id"] == "tiny-gene"
+        assert proj["name"] == "Tiny Gene Code"
+        assert proj["run_count"] == 1
+        assert len(proj["runs"]) == 1
+        assert proj["runs"][0]["key_metric"] == "accuracy=0.95"
+
+    def test_notebook_not_found(self):
+        client = self._make_client()
+        resp = client.get("/experiments/nonexistent/notebook")
+        assert resp.status_code == 404
+        assert resp.json()["reason"] == "not_found"
+
+    def test_notebook_returns_html(self):
+        from distillate.state import State
+        state = State()
+        state.add_project("proj1", "My Project", str(self.tmp_path))
+        state._data["projects"]["proj1"]["runs"] = {
+            "r1": {
+                "id": "r1", "name": "run1", "status": "completed",
+                "started_at": "2025-01-01T00:00:00Z",
+                "results": {"accuracy": 0.9},
+            },
+        }
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/experiments/proj1/notebook")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "<html" in resp.text
+
+    def test_paper_detail_not_found(self):
+        client = self._make_client()
+        resp = client.get("/papers/NONEXIST")
+        assert resp.status_code == 404
+        assert resp.json()["reason"] == "not_found"
+
+    def test_paper_detail_returns_full_data(self):
+        from distillate.state import State
+        state = State()
+        state._data["documents"] = {
+            "XYZ789": {
+                "title": "Attention Is All You Need",
+                "status": "processed",
+                "authors": ["Vaswani", "Shazeer", "Parmar", "Uszkoreit"],
+                "summary": "This paper introduces the Transformer architecture.",
+                "engagement": 95,
+                "metadata": {
+                    "citekey": "vaswani2017attention",
+                    "tags": ["transformers", "attention", "nlp"],
+                    "citation_count": 100000,
+                    "publication_date": "2017-06-12",
+                    "venue": "NeurIPS",
+                    "doi": "10.5555/3295222.3295349",
+                    "arxiv_id": "1706.03762",
+                },
+                "uploaded_at": "2025-01-01T00:00:00Z",
+                "processed_at": "2025-01-05T00:00:00Z",
+                "promoted_at": "2025-01-03T00:00:00Z",
+            },
+        }
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/papers/XYZ789")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        paper = data["paper"]
+        assert paper["key"] == "XYZ789"
+        assert paper["title"] == "Attention Is All You Need"
+        # Full authors list (not truncated)
+        assert len(paper["authors"]) == 4
+        # Full summary (not truncated)
+        assert paper["summary"] == "This paper introduces the Transformer architecture."
+        assert paper["venue"] == "NeurIPS"
+        assert paper["doi"] == "10.5555/3295222.3295349"
+        assert paper["arxiv_id"] == "1706.03762"
+        assert paper["promoted_at"] == "2025-01-03T00:00:00Z"
+
+    def test_papers_list_includes_promoted_flag(self):
+        from distillate.state import State
+        state = State()
+        state._data["documents"] = {
+            "K1": {"title": "A", "status": "processed", "metadata": {}},
+            "K2": {"title": "B", "status": "processed", "metadata": {}},
+        }
+        state._data["promoted_papers"] = ["K1"]
+        state.save()
+
+        client = self._make_client()
+        resp = client.get("/papers")
+        papers = {p["key"]: p for p in resp.json()["papers"]}
+        assert papers["K1"]["promoted"] is True
+        assert papers["K2"]["promoted"] is False
+
+    def test_promote_and_unpromote(self):
+        from distillate.state import State
+        state = State()
+        state._data["documents"] = {
+            "P1": {"title": "Paper One", "status": "on_remarkable", "metadata": {}},
+        }
+        state.save()
+
+        client = self._make_client()
+
+        # Promote
+        resp = client.post("/papers/P1/promote")
+        assert resp.status_code == 200
+        assert resp.json()["promoted"] is True
+
+        # Verify persisted
+        state.reload()
+        assert "P1" in state.promoted_papers
+
+        # Unpromote
+        resp = client.post("/papers/P1/unpromote")
+        assert resp.status_code == 200
+        assert resp.json()["promoted"] is False
+
+        state.reload()
+        assert "P1" not in state.promoted_papers
+
+    def test_promote_not_found(self):
+        client = self._make_client()
+        assert client.post("/papers/NOPE/promote").status_code == 404
+        assert client.post("/papers/NOPE/unpromote").status_code == 404
+
+    def test_refresh_metadata_not_found(self):
+        client = self._make_client()
+        resp = client.post("/papers/NOPE/refresh-metadata")
+        assert resp.status_code == 404

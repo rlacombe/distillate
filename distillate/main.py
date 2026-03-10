@@ -1709,17 +1709,28 @@ def _print_digest() -> None:
     print()
 
 
-def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: bool = True) -> None:
+def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: bool = True) -> dict:
     """Demote old promoted papers, promote new picks on reMarkable.
 
     Shared logic used by both _suggest() (manual) and _auto_promote() (sync).
     Caller must hold the lock and pass a loaded State.
     In Zotero reader mode, only updates state (no RM folder moves).
     If demote=False, skip demotion and just add to existing promoted list.
+
+    Returns a result dict with counts of what actually happened.
     """
     from datetime import datetime, timezone
 
     from distillate import config
+
+    result = {
+        "promoted": [],       # titles actually promoted
+        "demoted": [],        # titles actually demoted
+        "kept": [],           # titles kept (user started reading)
+        "skipped": [],        # titles skipped (not found on device)
+        "already_promoted": [],  # titles already in promoted list
+        "total_promoted": 0,  # total papers in promoted list after operation
+    }
 
     if config.is_zotero_reader():
         # In Zotero mode, just track promoted keys in state (no RM moves)
@@ -1730,12 +1741,17 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: b
                 if doc and doc["status"] == "tracked":
                     doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
                     promoted_keys.append(key)
+                    result["promoted"].append(doc["title"])
                     if verbose:
                         print(f"  Promoted: {doc['title']}")
+            else:
+                doc = state.get_document(key)
+                result["already_promoted"].append(doc["title"] if doc else key)
         state.promoted_papers = promoted_keys
         state.pending_promotions = []
         state.save()
-        return
+        result["total_promoted"] = len(promoted_keys)
+        return result
 
     from distillate import remarkable_client
 
@@ -1752,22 +1768,26 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: b
             rm_name = doc["remarkable_doc_name"]
             if rm_name not in papers_root_docs:
                 log.info("Skipping demotion (not at Papers root): %s", doc["title"])
+                result["skipped"].append(doc["title"])
                 continue
 
             stat = remarkable_client.stat_document(config.RM_FOLDER_PAPERS, rm_name)
             if stat and stat.get("current_page", 0) > 0:
                 log.info("User started reading, not demoting: %s", doc["title"])
                 remaining_promoted.append(key)
+                result["kept"].append(doc["title"])
                 continue
 
             if stat is None:
                 log.info("Could not stat document, skipping demotion: %s", doc["title"])
                 remaining_promoted.append(key)
+                result["kept"].append(doc["title"])
                 continue
 
             remarkable_client.move_document(
                 rm_name, config.RM_FOLDER_PAPERS, config.RM_FOLDER_INBOX,
             )
+            result["demoted"].append(doc["title"])
             log.info("Demoted: %s", doc["title"])
         state.promoted_papers = remaining_promoted
         state.save()
@@ -1778,9 +1798,12 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: b
 
     for key in pick_keys:
         if key in promoted_keys:
+            doc = state.get_document(key)
+            result["already_promoted"].append(doc["title"] if doc else key)
             continue
         doc = state.get_document(key)
         if not doc or doc["status"] != "on_remarkable":
+            result["skipped"].append(doc["title"] if doc else key)
             continue
         rm_name = doc["remarkable_doc_name"]
         if rm_name in inbox_docs:
@@ -1789,13 +1812,19 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: b
             )
             doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
             promoted_keys.append(key)
+            result["promoted"].append(doc["title"])
             if verbose:
                 print(f"  Promoted: {doc['title']}")
             log.info("Promoted: %s", doc["title"])
+        else:
+            result["skipped"].append(doc["title"])
+            log.warning("Paper not found in Inbox on reMarkable: %s", doc["title"])
 
     state.promoted_papers = promoted_keys
     state.pending_promotions = []
     state.save()
+    result["total_promoted"] = len(promoted_keys)
+    return result
 
 
 def _auto_promote(state) -> None:

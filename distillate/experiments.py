@@ -1166,7 +1166,7 @@ def _runs_fingerprint(runs: dict) -> str:
     return hashlib.sha256("|".join(items).encode()).hexdigest()[:_FINGERPRINT_HEX_LENGTH]
 
 
-def _load_enrichment_cache(project_path: Path) -> dict:
+def load_enrichment_cache(project_path: Path) -> dict:
     """Load LLM enrichment cache from .distillate/llm_enrichment.json."""
     cache_file = project_path / ".distillate" / "llm_enrichment.json"
     if not cache_file.exists():
@@ -1278,7 +1278,7 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
 
     # Check cache
     fingerprint = _runs_fingerprint(runs)
-    cache = _load_enrichment_cache(project_path)
+    cache = load_enrichment_cache(project_path)
     if cache.get("fingerprint") == fingerprint and cache.get("enrichment"):
         log.info("Using cached LLM enrichment for %s", project_name)
         return cache["enrichment"]

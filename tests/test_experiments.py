@@ -1236,7 +1236,7 @@ class TestLLMEnrichment:
 
     def test_enrichment_cache_round_trip(self, tmp_path):
         from distillate.experiments import (
-            _load_enrichment_cache,
+            load_enrichment_cache,
             _save_enrichment_cache,
         )
 
@@ -1244,14 +1244,14 @@ class TestLLMEnrichment:
             "fingerprint": "abc123",
             "enrichment": _SAMPLE_ENRICHMENT,
         })
-        loaded = _load_enrichment_cache(tmp_path)
+        loaded = load_enrichment_cache(tmp_path)
         assert loaded["fingerprint"] == "abc123"
         assert loaded["enrichment"]["project"]["key_breakthrough"].startswith("Scaling")
 
     def test_enrichment_cache_missing(self, tmp_path):
-        from distillate.experiments import _load_enrichment_cache
+        from distillate.experiments import load_enrichment_cache
 
-        assert _load_enrichment_cache(tmp_path) == {}
+        assert load_enrichment_cache(tmp_path) == {}
 
     def test_build_enrichment_prompt(self):
         from distillate.experiments import _build_enrichment_prompt
@@ -1433,8 +1433,8 @@ class TestLLMEnrichment:
         assert result["runs"]["exp-001"]["name"] == "Baseline Small Transformer"
 
         # Check cache was written
-        from distillate.experiments import _load_enrichment_cache
-        cache = _load_enrichment_cache(tmp_path)
+        from distillate.experiments import load_enrichment_cache
+        cache = load_enrichment_cache(tmp_path)
         assert cache.get("enrichment") is not None
 
 

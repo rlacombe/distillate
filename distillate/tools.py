@@ -808,11 +808,16 @@ def promote_papers(*, state, identifiers: List[str], demote: bool = False) -> di
 
     try:
         from distillate.main import _demote_and_promote
-        _demote_and_promote(state, pick_keys, verbose=False, demote=demote)
+        result = _demote_and_promote(state, pick_keys, verbose=False, demote=demote)
         state.reload()
         return {
             "success": True,
-            "promoted": resolved_titles,
+            "promoted": result["promoted"],
+            "demoted": result["demoted"],
+            "kept": result["kept"],
+            "skipped": result["skipped"],
+            "already_promoted": result["already_promoted"],
+            "total_promoted": result["total_promoted"],
             "errors": errors if errors else [],
         }
     except Exception as e:
