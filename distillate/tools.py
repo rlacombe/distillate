@@ -235,7 +235,8 @@ TOOL_SCHEMAS = [
         "name": "promote_papers",
         "description": (
             "Promote papers to the top of the reading queue so they're "
-            "easy to find and read next. Demotes previously promoted papers. "
+            "easy to find and read next. By default, previously promoted "
+            "papers are kept. Set demote=true to demote unstarted ones. "
             "This is a write operation — ask the user to confirm first."
         ),
         "input_schema": {
@@ -247,6 +248,13 @@ TOOL_SCHEMAS = [
                     "description": (
                         "List of paper identifiers (index numbers, citekeys, "
                         "or titles) to promote"
+                    ),
+                },
+                "demote": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, demote previously promoted papers that "
+                        "haven't been started yet. Defaults to false."
                     ),
                 },
             },
@@ -768,7 +776,7 @@ def reprocess_paper(*, state, identifier: str) -> dict:
         return {"success": False, "error": str(e), "title": title}
 
 
-def promote_papers(*, state, identifiers: List[str]) -> dict:
+def promote_papers(*, state, identifiers: List[str], demote: bool = False) -> dict:
     """Promote papers to the top of the reading queue."""
     from distillate import config as _cfg
     from distillate.state import acquire_lock, release_lock
@@ -800,7 +808,7 @@ def promote_papers(*, state, identifiers: List[str]) -> dict:
 
     try:
         from distillate.main import _demote_and_promote
-        _demote_and_promote(state, pick_keys, verbose=False)
+        _demote_and_promote(state, pick_keys, verbose=False, demote=demote)
         state.reload()
         return {
             "success": True,

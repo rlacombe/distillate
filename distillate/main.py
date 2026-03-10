@@ -842,6 +842,138 @@ def _scan_projects() -> None:
         print("  No changes detected.")
 
 
+def _install_hooks(args: list[str]) -> None:
+    """Install Claude Code hooks for experiment capture into a project."""
+    import json as json_mod
+    import shutil
+    from pathlib import Path
+
+    if not args:
+        print("Usage: distillate --install-hooks <path>")
+        return
+
+    project_path = Path(args[0]).resolve()
+    if not project_path.is_dir():
+        print(f"Not a directory: {project_path}")
+        return
+
+    # 1. Create .distillate/ directory
+    distillate_dir = project_path / ".distillate"
+    distillate_dir.mkdir(exist_ok=True)
+    print(f"  Created {distillate_dir}/")
+
+    # 2. Copy REPORTING.md
+    reporting_src = Path(__file__).parent / "autoresearch" / "REPORTING.md"
+    if reporting_src.exists():
+        reporting_dst = distillate_dir / "REPORTING.md"
+        shutil.copy2(reporting_src, reporting_dst)
+        print(f"  Copied REPORTING.md to {reporting_dst}")
+
+    # 3. Merge hook config into .claude/settings.json
+    hooks_src = Path(__file__).parent / "autoresearch" / "hooks.json"
+    if not hooks_src.exists():
+        print("  Warning: hooks.json template not found")
+        return
+
+    hook_config = json_mod.loads(hooks_src.read_text(encoding="utf-8"))
+
+    claude_dir = project_path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_file = claude_dir / "settings.json"
+
+    existing: dict = {}
+    if settings_file.exists():
+        try:
+            existing = json_mod.loads(settings_file.read_text(encoding="utf-8"))
+        except json_mod.JSONDecodeError:
+            pass
+
+    # Merge hooks (don't overwrite existing hooks)
+    existing_hooks = existing.setdefault("hooks", {})
+    for event_type, hook_list in hook_config.get("hooks", {}).items():
+        existing_entries = existing_hooks.setdefault(event_type, [])
+        existing_commands = {e.get("command", "") for e in existing_entries}
+        for hook in hook_list:
+            if hook.get("command", "") not in existing_commands:
+                existing_entries.append(hook)
+
+    settings_file.write_text(
+        json_mod.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    print(f"  Updated {settings_file}")
+    print("  Done! Hooks will capture experiments in this directory.")
+
+
+def _watch(args: list[str]) -> None:
+    """Watch an experiment repo and regenerate notebooks on changes."""
+    import time
+    import webbrowser
+    from pathlib import Path
+
+    from distillate import config
+    from distillate.experiments import (
+        generate_html_notebook,
+        generate_notebook,
+        scan_project,
+        watch_project_artifacts,
+    )
+
+    config.setup_logging()
+
+    if not args:
+        print("Usage: distillate --watch <path>")
+        return
+
+    project_path = Path(args[0]).resolve()
+    if not project_path.is_dir():
+        print(f"Not a directory: {project_path}")
+        return
+
+    print(f"  Watching {project_path}...")
+
+    # Initial scan
+    project = scan_project(project_path)
+    if "error" in project:
+        print(f"  Error: {project['error']}")
+        return
+
+    runs_count = len(project.get("runs", {}))
+    print(f"  Found {runs_count} experiment(s)")
+
+    # Generate initial notebook
+    html = generate_html_notebook(project)
+    html_path = project_path / ".distillate" / "notebook.html"
+    html_path.parent.mkdir(exist_ok=True)
+    html_path.write_text(html, encoding="utf-8")
+
+    md = generate_notebook(project)
+    md_path = project_path / ".distillate" / "notebook.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    print(f"  Generated notebook: {html_path}")
+    webbrowser.open(f"file://{html_path}")
+
+    # Watch loop
+    print("  Watching for changes (Ctrl+C to stop)...")
+    try:
+        while True:
+            time.sleep(5)
+            new_data = watch_project_artifacts(project_path)
+            if new_data:
+                print(f"  Detected {len(new_data)} new event(s), regenerating...")
+                project = scan_project(project_path)
+                if "error" not in project:
+                    html = generate_html_notebook(project)
+                    html_path.write_text(html, encoding="utf-8")
+                    md = generate_notebook(project)
+                    md_path.write_text(md, encoding="utf-8")
+                    new_runs = len(project.get("runs", {}))
+                    print(f"  Updated: {new_runs} experiment(s)")
+    except KeyboardInterrupt:
+        print("\n  Stopped watching.")
+
+
 def _status() -> None:
     """Print a quick status overview to the terminal."""
     from datetime import datetime, timedelta, timezone
@@ -1224,12 +1356,13 @@ def _print_digest() -> None:
     print()
 
 
-def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
+def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: bool = True) -> None:
     """Demote old promoted papers, promote new picks on reMarkable.
 
     Shared logic used by both _suggest() (manual) and _auto_promote() (sync).
     Caller must hold the lock and pass a loaded State.
     In Zotero reader mode, only updates state (no RM folder moves).
+    If demote=False, skip demotion and just add to existing promoted list.
     """
     from datetime import datetime, timezone
 
@@ -1255,8 +1388,9 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False) -> None:
 
     # Demote old promoted papers back to Inbox (skip if user started reading)
     old_promoted = state.promoted_papers
-    remaining_promoted = []
-    if old_promoted:
+    remaining_promoted = list(old_promoted)
+    if demote and old_promoted:
+        remaining_promoted = []
         papers_root_docs = remarkable_client.list_folder(config.RM_FOLDER_PAPERS)
         for key in old_promoted:
             doc = state.get_document(key)
@@ -2906,6 +3040,8 @@ Advanced:
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
   --scan-projects         Scan tracked ML projects for new experiments
+  --install-hooks <path>  Install Claude Code hooks for experiment capture
+  --watch <path>          Watch an experiment repo and regenerate notebooks
 
 Options:
   -h, --help              Show this help
@@ -2918,7 +3054,7 @@ _KNOWN_FLAGS = {
     "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
-    "--scan-projects",
+    "--scan-projects", "--install-hooks", "--watch",
 }
 
 
@@ -3013,6 +3149,16 @@ def main():
 
     if "--scan-projects" in sys.argv:
         _scan_projects()
+        return
+
+    if "--install-hooks" in sys.argv:
+        idx = sys.argv.index("--install-hooks")
+        _install_hooks(sys.argv[idx + 1:])
+        return
+
+    if "--watch" in sys.argv:
+        idx = sys.argv.index("--watch")
+        _watch(sys.argv[idx + 1:])
         return
 
     # Catch unknown flags before falling through
