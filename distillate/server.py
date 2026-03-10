@@ -50,12 +50,54 @@ def _create_app():
         from distillate import config
         q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
         queue = _state.documents_with_status(q_status)
-        return JSONResponse({
+
+        # Experiment stats
+        experiment_stats = None
+        projects = _state.projects
+        if projects:
+            total_runs = 0
+            runs_kept = 0
+            runs_discarded = 0
+            active_sessions = 0
+            session_details = []
+            for proj in projects.values():
+                for run in proj.get("runs", {}).values():
+                    total_runs += 1
+                    decision = run.get("decision", "")
+                    if decision == "keep":
+                        runs_kept += 1
+                    elif decision == "discard":
+                        runs_discarded += 1
+                    if run.get("status") == "running":
+                        active_sessions += 1
+                # Launcher sessions
+                for sess in proj.get("sessions", {}).values():
+                    if sess.get("status") == "running":
+                        session_details.append({
+                            "name": proj.get("name", proj.get("id", "")),
+                            "status": "running",
+                            "runs": len(proj.get("runs", {})),
+                            "since": sess.get("started_at", ""),
+                        })
+            if total_runs > 0 or session_details:
+                experiment_stats = {
+                    "active_sessions": active_sessions + len(session_details),
+                    "total_runs": total_runs,
+                    "runs_kept": runs_kept,
+                    "runs_discarded": runs_discarded,
+                }
+                if session_details:
+                    experiment_stats["sessions"] = session_details
+
+        resp = {
             "ok": True,
             "version": ver,
             "papers_read": len(processed),
             "papers_queued": len(queue),
-        })
+        }
+        if experiment_stats:
+            resp["experiments"] = experiment_stats
+        return JSONResponse(resp)
 
     @app.post("/sync")
     async def sync_to_cloud():
@@ -68,6 +110,97 @@ def _create_app():
         loop = asyncio.get_event_loop()
         ok = await loop.run_in_executor(_executor, sync_state, _state)
         return JSONResponse({"ok": ok})
+
+    @app.post("/experiments/attach")
+    async def attach_experiment(body: dict):
+        """Open a new Terminal window attached to the experiment's tmux session.
+
+        Called by desktop app's 'Attach' button in Lab tab.
+        Body: {"project": "tiny-gene-code"}
+        """
+        from distillate.launcher import attach_session
+
+        project_query = body.get("project", "")
+        if not project_query:
+            return JSONResponse({"ok": False, "reason": "missing_project"}, status_code=400)
+
+        _state.reload()
+        proj = _state.find_project(project_query)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        sessions = proj.get("sessions", {})
+        running = [s for s in sessions.values() if s.get("status") == "running"]
+        if not running:
+            return JSONResponse({"ok": False, "reason": "no_running_session"}, status_code=404)
+
+        sess = running[-1]
+        tmux_name = sess.get("tmux_session", "")
+        host = sess.get("host")
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(_executor, attach_session, tmux_name, host)
+            return JSONResponse({"ok": True, "session": tmux_name})
+        except RuntimeError as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
+
+    @app.get("/experiments/stream")
+    async def experiments_stream():
+        """SSE endpoint that tails experiment events from tracked projects."""
+        from pathlib import Path
+
+        from starlette.responses import StreamingResponse
+
+        async def _event_generator():
+            """Yield SSE events from .distillate/events.jsonl files."""
+            # Track file offsets per project
+            offsets: dict[str, int] = {}
+
+            _state.reload()
+            projects = _state.projects
+
+            while True:
+                for proj in projects.values():
+                    proj_path = proj.get("path", "")
+                    if not proj_path:
+                        continue
+                    events_file = Path(proj_path) / ".distillate" / "events.jsonl"
+                    if not events_file.exists():
+                        continue
+
+                    key = str(events_file)
+                    last_offset = offsets.get(key, 0)
+                    try:
+                        file_size = events_file.stat().st_size
+                    except OSError:
+                        continue
+
+                    if file_size <= last_offset:
+                        continue
+
+                    try:
+                        with open(events_file, encoding="utf-8") as f:
+                            f.seek(last_offset)
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                yield f"data: {line}\n\n"
+                        offsets[key] = file_size
+                    except OSError:
+                        continue
+
+                await asyncio.sleep(2)
+
+        return StreamingResponse(
+            _event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):

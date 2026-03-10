@@ -521,6 +521,12 @@ def scan_project(path: Path) -> dict:
     # Save scan state for incremental updates
     _save_scan_state(path, file_mtimes)
 
+    # Ingest structured reports + hook events
+    ingested = ingest_runs(path)
+    for run in ingested:
+        if not _is_duplicate_run(runs, run):
+            runs[run["id"]] = run
+
     return {
         "name": project_name,
         "path": str(path),
@@ -530,6 +536,252 @@ def scan_project(path: Path) -> dict:
         "total_commits": len(commits),
         "artifact_files": len(classified),
     }
+
+
+# ---------------------------------------------------------------------------
+# Structured reporting + hook event ingestion
+# ---------------------------------------------------------------------------
+
+# Valid status values in runs.jsonl
+_STRUCTURED_STATUSES = {"keep", "discard", "crash", "running"}
+
+
+def _parse_runs_jsonl(path: Path) -> list[dict]:
+    """Parse .distillate/runs.jsonl into run dicts."""
+    runs_file = path / ".distillate" / "runs.jsonl"
+    if not runs_file.exists():
+        return []
+
+    runs = []
+    try:
+        with open(runs_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("$schema") != "distillate/run/v1":
+                    continue
+
+                # Map structured report to internal run schema
+                run_id = entry.get("id", "")
+                if not run_id:
+                    continue
+
+                status = entry.get("status", "completed")
+                # Map keep/discard/crash to internal status + decision
+                decision = status if status in _STRUCTURED_STATUSES else None
+                internal_status = "completed"
+                if status == "crash":
+                    internal_status = "failed"
+                elif status == "running":
+                    internal_status = "running"
+
+                ts = entry.get("timestamp", "")
+                duration_secs = entry.get("duration_seconds", 0)
+                duration_mins = int(duration_secs / 60) if duration_secs else 0
+
+                run = _create_run(
+                    prefix="sr",
+                    name=run_id,
+                    hyperparameters=entry.get("hyperparameters", {}),
+                    results=entry.get("results", {}),
+                    started_at=ts,
+                    completed_at=ts,
+                    duration_minutes=duration_mins,
+                    source="structured",
+                    decision=decision,
+                    agent_reasoning=entry.get("reasoning", ""),
+                    hypothesis=entry.get("hypothesis", ""),
+                    changes=entry.get("changes", ""),
+                    commit=entry.get("commit", ""),
+                    baseline_comparison=entry.get("baseline_comparison"),
+                )
+                run["status"] = internal_status
+                runs.append(run)
+    except OSError:
+        pass
+
+    return runs
+
+
+def _parse_events_jsonl(path: Path) -> list[dict]:
+    """Parse .distillate/events.jsonl (hook events) into run dicts."""
+    events_file = path / ".distillate" / "events.jsonl"
+    if not events_file.exists():
+        return []
+
+    runs = []
+    try:
+        with open(events_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+
+                if event.get("type") != "run_completed":
+                    continue
+
+                hp = event.get("hyperparameters", {})
+                metrics = event.get("results", {})
+                if not hp and not metrics:
+                    continue
+
+                ts = event.get("ts", "")
+                command = event.get("command", "")
+                session_id = event.get("session_id", "")
+
+                # Build name from command or session
+                name = ""
+                if command:
+                    m = re.search(r"python[3]?\s+(\S+\.py)", command)
+                    if m:
+                        name = Path(m.group(1)).stem
+
+                run = _create_run(
+                    prefix="hook",
+                    name=name or f"hook-{session_id[:8]}",
+                    hyperparameters=hp,
+                    results=metrics,
+                    started_at=ts,
+                    completed_at=ts,
+                    source="hooks",
+                    command=command,
+                    session_id=session_id,
+                )
+                runs.append(run)
+    except OSError:
+        pass
+
+    return runs
+
+
+def ingest_runs(project_path: Path) -> list[dict]:
+    """Ingest runs from structured reports + hook events.
+
+    Reads ``.distillate/runs.jsonl`` (structured, primary) and
+    ``.distillate/events.jsonl`` (hooks, secondary).  Correlates by
+    timestamp proximity + hyperparameter fingerprint.  Structured
+    wins on conflicts; hooks fill gaps.
+
+    Returns a list of run dicts.
+    """
+    structured = _parse_runs_jsonl(project_path)
+    hook_runs = _parse_events_jsonl(project_path)
+
+    if not structured and not hook_runs:
+        return []
+
+    # Index structured runs by fingerprint for correlation
+    structured_fps: dict[str, dict] = {}
+    for run in structured:
+        hp = run.get("hyperparameters", {})
+        if hp:
+            structured_fps[_hyperparam_fingerprint(hp)] = run
+
+    # Correlate hook runs with structured reports
+    result = list(structured)  # structured runs are primary
+    for hook_run in hook_runs:
+        hp = hook_run.get("hyperparameters", {})
+        if hp:
+            fp = _hyperparam_fingerprint(hp)
+            if fp in structured_fps:
+                # Merge hook data into structured run (fill gaps)
+                target = structured_fps[fp]
+                if hook_run.get("command") and not target.get("command"):
+                    target["command"] = hook_run["command"]
+                if hook_run.get("session_id") and not target.get("session_id"):
+                    target["session_id"] = hook_run["session_id"]
+                continue
+
+        # No match — create run from hook data alone
+        hook_run["source"] = "hooks"
+        result.append(hook_run)
+
+    return result
+
+
+def watch_project_artifacts(project_path: Path) -> list[dict]:
+    """Check for new data since last scan.
+
+    Polls ``.distillate/scan_state.json`` manifest and watches
+    ``runs.jsonl`` / ``events.jsonl`` for new lines.
+
+    Returns list of new events detected.
+    """
+    project_path = Path(project_path).resolve()
+    distillate_dir = project_path / ".distillate"
+
+    new_data: list[dict] = []
+
+    # Check for new JSONL lines (runs.jsonl + events.jsonl)
+    watch_state_file = distillate_dir / "watch_state.json"
+    watch_state: dict = {}
+    if watch_state_file.exists():
+        try:
+            watch_state = json.loads(watch_state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for jsonl_name in ("runs.jsonl", "events.jsonl"):
+        jsonl_path = distillate_dir / jsonl_name
+        if not jsonl_path.exists():
+            continue
+
+        last_offset = watch_state.get(f"{jsonl_name}_offset", 0)
+        try:
+            file_size = jsonl_path.stat().st_size
+        except OSError:
+            continue
+
+        if file_size <= last_offset:
+            continue
+
+        # Read new lines from offset
+        try:
+            with open(jsonl_path, encoding="utf-8") as f:
+                f.seek(last_offset)
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        entry["_source_file"] = jsonl_name
+                        new_data.append(entry)
+                    except json.JSONDecodeError:
+                        continue
+            watch_state[f"{jsonl_name}_offset"] = file_size
+        except OSError:
+            continue
+
+    # Check for new artifact files
+    artifact_changes = _has_changed_files(project_path)
+    if artifact_changes:
+        new_data.append({"type": "artifacts_changed", "path": str(project_path)})
+
+    # Save watch state
+    if new_data:
+        distillate_dir.mkdir(exist_ok=True)
+        try:
+            watch_state_file.write_text(
+                json.dumps(watch_state, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    return new_data
 
 
 # ---------------------------------------------------------------------------
@@ -1372,30 +1624,54 @@ def generate_notebook(project: dict, section: str = "main",
         completed = sum(1 for r in runs if r.get("status") == "completed")
         running = sum(1 for r in runs if r.get("status") == "running")
         failed = sum(1 for r in runs if r.get("status") == "failed")
+        kept = sum(1 for r in runs if r.get("decision") == "keep")
+        discarded = sum(1 for r in runs if r.get("decision") == "discard")
+        crashed = sum(1 for r in runs if r.get("decision") == "crash")
+        has_decisions = kept + discarded + crashed > 0
 
         parts.append("")
         parts.append("## Experiment Timeline")
         parts.append("")
-        parts.append(
-            f"> **{len(runs)}** experiments | "
-            f"**{completed}** completed | "
-            f"**{running}** running | "
-            f"**{failed}** failed"
-        )
+        if has_decisions:
+            parts.append(
+                f"> **{len(runs)}** experiments | "
+                f"**{kept}** kept | "
+                f"**{discarded}** discarded | "
+                f"**{crashed}** crashed"
+            )
+        else:
+            parts.append(
+                f"> **{len(runs)}** experiments | "
+                f"**{completed}** completed | "
+                f"**{running}** running | "
+                f"**{failed}** failed"
+            )
         parts.append("")
-        parts.append("| # | Experiment | Status | Duration | Result |")
-        parts.append("|---|-----------|--------|----------|--------|")
+        if has_decisions:
+            parts.append("| # | Experiment | Decision | Duration | Result |")
+            parts.append("|---|-----------|----------|----------|--------|")
+        else:
+            parts.append("| # | Experiment | Status | Duration | Result |")
+            parts.append("|---|-----------|--------|----------|--------|")
 
         for i, run in enumerate(runs, 1):
-            status_icon = _status_icon(run.get("status", "planned"))
             duration = _fmt_duration(run.get("duration_minutes", 0))
             run_enr = run_enrichments.get(run.get("id", ""), {})
             key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
             display_name = _enrich(run, "name") or run.get("name", "?")
-            parts.append(
-                f"| {i} | {display_name} | {status_icon} | "
-                f"{duration} | {key_metric} |"
-            )
+            if has_decisions:
+                decision = run.get("decision", "")
+                decision_md = {"keep": "✓", "discard": "✗", "crash": "⚠"}.get(decision, "-")
+                parts.append(
+                    f"| {i} | {display_name} | {decision_md} {decision} | "
+                    f"{duration} | {key_metric} |"
+                )
+            else:
+                status_icon = _status_icon(run.get("status", "planned"))
+                parts.append(
+                    f"| {i} | {display_name} | {status_icon} | "
+                    f"{duration} | {key_metric} |"
+                )
 
     # Common hyperparameters table
     if common_params:
@@ -1477,6 +1753,13 @@ def generate_notebook(project: dict, section: str = "main",
             parts.append("")
             parts.append("#### Analysis")
             parts.append(analysis)
+
+        # Agent reasoning (from structured reports)
+        reasoning = run.get("agent_reasoning", "")
+        if reasoning:
+            parts.append("")
+            parts.append("#### Agent Reasoning")
+            parts.append(f"> {reasoning}")
 
         if run.get("notes"):
             parts.append("")
@@ -1738,6 +2021,13 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .toolbar button { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
 .toolbar button:hover { border-color: var(--accent); color: var(--text); }
 .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
+.decision-keep { color: var(--green); font-weight: 600; }
+.decision-discard { color: var(--red); font-weight: 600; }
+.decision-crash { color: var(--yellow); font-weight: 600; }
+.reasoning-block { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 0.85rem; }
+.reasoning-block .reasoning-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; }
+.metric-chart { margin: 1.5rem 0; }
+.metric-chart svg { width: 100%; height: auto; }
 @media (max-width: 640px) { .narrative { grid-template-columns: 1fr; } .run-enriched-name { display: none; } }
 """
 
@@ -1745,6 +2035,113 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 def _h(text: str) -> str:
     """HTML-escape text for safe embedding."""
     return html_mod.escape(str(text))
+
+
+def _decision_icon(decision: str | None) -> str:
+    """Return an HTML-styled decision indicator."""
+    if decision == "keep":
+        return '<span class="decision-keep">&#10003; keep</span>'
+    if decision == "discard":
+        return '<span class="decision-discard">&#10007; discard</span>'
+    if decision == "crash":
+        return '<span class="decision-crash">&#9888; crash</span>'
+    return '<span style="color:var(--text-dim)">&mdash;</span>'
+
+
+def _render_metric_chart(runs: list[dict]) -> str:
+    """Render an inline SVG polyline chart of the primary metric over time.
+
+    Each point is colored by decision (green=keep, red=discard, yellow=crash).
+    Pure SVG — no JS library needed.
+    """
+    # Find the primary metric across runs
+    metric_name = ""
+    for run in runs:
+        results = run.get("results", {})
+        if not results:
+            continue
+        priority = ["val_bpb", "val_loss", "loss", "accuracy", "val_accuracy",
+                     "test_accuracy", "exact_match", "f1"]
+        for key in priority:
+            if key in results:
+                metric_name = key
+                break
+        if metric_name:
+            break
+    if not metric_name:
+        # Fallback: first numeric metric
+        for run in runs:
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    metric_name = k
+                    break
+            if metric_name:
+                break
+    if not metric_name:
+        return ""
+
+    # Collect data points
+    points = []
+    for i, run in enumerate(runs):
+        val = run.get("results", {}).get(metric_name)
+        if val is not None and isinstance(val, (int, float)):
+            decision = run.get("decision", "")
+            points.append((i, val, decision))
+
+    if len(points) < 2:
+        return ""
+
+    # SVG dimensions
+    w, h = 900, 200
+    pad_x, pad_y = 50, 25
+    chart_w = w - 2 * pad_x
+    chart_h = h - 2 * pad_y
+
+    indices = [p[0] for p in points]
+    values = [p[1] for p in points]
+    min_val = min(values)
+    max_val = max(values)
+    val_range = max_val - min_val or 1.0
+    min_idx = min(indices)
+    max_idx = max(indices)
+    idx_range = max_idx - min_idx or 1
+
+    def _x(idx: int) -> float:
+        return pad_x + (idx - min_idx) / idx_range * chart_w
+
+    def _y(val: float) -> float:
+        return pad_y + chart_h - (val - min_val) / val_range * chart_h
+
+    # Build SVG
+    svg = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+
+    # Grid lines
+    for frac in (0, 0.25, 0.5, 0.75, 1.0):
+        y = pad_y + chart_h * (1 - frac)
+        label_val = min_val + val_range * frac
+        svg.append(f'<line x1="{pad_x}" y1="{y}" x2="{w - pad_x}" y2="{y}" '
+                   f'stroke="#30363d" stroke-dasharray="4,4"/>')
+        svg.append(f'<text x="{pad_x - 8}" y="{y + 4}" text-anchor="end" '
+                   f'fill="#8b949e" font-size="11">{label_val:.4g}</text>')
+
+    # Polyline
+    line_points = " ".join(f"{_x(idx)},{_y(val)}" for idx, val, _ in points)
+    svg.append(f'<polyline points="{line_points}" fill="none" stroke="#6366f1" '
+               f'stroke-width="2"/>')
+
+    # Decision markers
+    colors = {"keep": "#3fb950", "discard": "#f85149", "crash": "#d29922"}
+    for idx, val, decision in points:
+        color = colors.get(decision, "#8b949e")
+        cx, cy = _x(idx), _y(val)
+        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="{color}" stroke="#0d1117" stroke-width="2"/>')
+
+    # Axis label
+    svg.append(f'<text x="{w / 2}" y="{h - 2}" text-anchor="middle" '
+               f'fill="#8b949e" font-size="12">{_h(metric_name)}</text>')
+
+    svg.append("</svg>")
+    return "\n".join(svg)
 
 
 def generate_html_notebook(project: dict,
@@ -1785,6 +2182,10 @@ def generate_html_notebook(project: dict,
     # --- Stats bar ---
     completed = sum(1 for r in runs if r.get("status") == "completed")
     running = sum(1 for r in runs if r.get("status") == "running")
+    kept = sum(1 for r in runs if r.get("decision") == "keep")
+    discarded = sum(1 for r in runs if r.get("decision") == "discard")
+    crashed = sum(1 for r in runs if r.get("decision") == "crash")
+    has_decisions = kept + discarded + crashed > 0
     unique_configs = len({
         tuple(sorted(r.get("hyperparameters", {}).items()))
         for r in runs if r.get("hyperparameters")
@@ -1792,10 +2193,19 @@ def generate_html_notebook(project: dict,
     parts.append('<div class="stats-bar">')
     parts.append(f'<div class="stat"><div class="stat-value">{len(runs)}</div>'
                  '<div class="stat-label">Experiments</div></div>')
-    parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--green)">'
-                 f'{completed}</div><div class="stat-label">Completed</div></div>')
-    parts.append(f'<div class="stat"><div class="stat-value">{running}</div>'
-                 '<div class="stat-label">Running</div></div>')
+    if has_decisions:
+        parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--green)">'
+                     f'{kept}</div><div class="stat-label">Kept</div></div>')
+        parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--red)">'
+                     f'{discarded}</div><div class="stat-label">Discarded</div></div>')
+        if crashed:
+            parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--yellow)">'
+                         f'{crashed}</div><div class="stat-label">Crashed</div></div>')
+    else:
+        parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--green)">'
+                     f'{completed}</div><div class="stat-label">Completed</div></div>')
+        parts.append(f'<div class="stat"><div class="stat-value">{running}</div>'
+                     '<div class="stat-label">Running</div></div>')
     parts.append(f'<div class="stat"><div class="stat-value">{unique_configs}</div>'
                  '<div class="stat-label">Configs Tested</div></div>')
     parts.append("</div>")
@@ -1831,16 +2241,25 @@ def generate_html_notebook(project: dict,
             parts.append(f"<li>{label}</li>")
         parts.append("</ul>")
 
+    # --- Metric progression chart ---
+    if has_decisions and len(runs) >= 2:
+        chart_svg = _render_metric_chart(runs)
+        if chart_svg:
+            parts.append("<h2>Metric Progression</h2>")
+            parts.append(f'<div class="metric-chart">{chart_svg}</div>')
+
     # --- Timeline table ---
     if runs:
         parts.append("<h2>Experiment Timeline</h2>")
         parts.append("<table><thead><tr>")
-        parts.append("<th>#</th><th>Experiment</th><th>Params</th><th>Validation</th>")
+        if has_decisions:
+            parts.append("<th>#</th><th>Experiment</th><th>Decision</th><th>Params</th><th>Validation</th>")
+        else:
+            parts.append("<th>#</th><th>Experiment</th><th>Params</th><th>Validation</th>")
         parts.append("</tr></thead><tbody>")
         for i, run in enumerate(runs, 1):
             run_enr = run_enrichments.get(run.get("id", ""), {})
             key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
-            display_name = _enrich(run, "name") or run.get("name", "?")
             raw_name = run.get("name", "?")
             enriched_label = _enrich(run, "name")
 
@@ -1868,6 +2287,10 @@ def generate_html_notebook(project: dict,
             parts.append(f'<tr onclick="{onclick}">')
             parts.append(f"<td>{i}</td>")
             parts.append(f"<td>{_h(raw_name)}{enriched_span}</td>")
+            if has_decisions:
+                decision = run.get("decision", "")
+                decision_html = _decision_icon(decision)
+                parts.append(f"<td>{decision_html}</td>")
             parts.append(f'<td class="metric-val">{params_col}</td>')
             parts.append(f"<td{val_style}>{val_col}</td>")
             parts.append("</tr>")
@@ -2001,6 +2424,14 @@ def generate_html_notebook(project: dict,
                     f'<span class="rk">{_h(k)}=</span>'
                     f'<span class="rv">{_h(_fmt_metric(k, v))}</span></span>'
                 )
+            parts.append("</div>")
+
+        # Agent reasoning
+        reasoning = run.get("agent_reasoning", "")
+        if reasoning:
+            parts.append('<div class="reasoning-block">')
+            parts.append('<div class="reasoning-label">Agent Reasoning</div>')
+            parts.append(f"<p>{_h(reasoning)}</p>")
             parts.append("</div>")
 
         # User notes

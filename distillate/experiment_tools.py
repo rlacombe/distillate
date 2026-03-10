@@ -472,6 +472,71 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project", "run"],
         },
     },
+    # -- Launcher tools --
+    {
+        "name": "launch_experiment",
+        "description": (
+            "Launch an auto-research experiment session in a tmux window. "
+            "Spawns a Claude Code session with the project's PROMPT.md. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns for the session (default: 100)",
+                },
+                "host": {
+                    "type": "string",
+                    "description": "SSH host for remote launch (optional — local by default)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "experiment_status",
+        "description": (
+            "Check status of running experiment sessions. Shows active "
+            "tmux sessions, run counts, and how long they've been running. "
+            "If no project specified, shows all experiments."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index (optional — shows all if omitted)",
+                },
+            },
+        },
+    },
+    {
+        "name": "stop_experiment",
+        "description": (
+            "Stop a running experiment session by sending C-c to its tmux window. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+            },
+            "required": ["project"],
+        },
+    },
 ]
 
 
@@ -1106,6 +1171,163 @@ def annotate_run_tool(*, state, project: str, run: str,
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def launch_experiment_tool(*, state, project: str,
+                           model: str = "claude-sonnet-4-5-20250929",
+                           max_turns: int = 100,
+                           host: str | None = None) -> dict:
+    """Launch an auto-research experiment session."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_experiment
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    try:
+        session_data = launch_experiment(
+            _Path(proj_path),
+            host=host,
+            model=model,
+            max_turns=max_turns,
+            project=proj,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    # Save session to state
+    acquire_lock()
+    try:
+        state.reload()
+        state.add_session(proj["id"], session_data["session_id"], session_data)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "tmux_session": session_data["tmux_session"],
+        "model": model,
+        "max_turns": max_turns,
+        "host": host,
+        "message": (
+            f"Launched session '{session_data['tmux_session']}' for "
+            f"'{proj.get('name', '')}'. Use experiment_status to monitor."
+        ),
+    }
+
+
+def experiment_status_tool(*, state, project: str = "") -> dict:
+    """Check status of running experiment sessions."""
+    from distillate.launcher import refresh_session_statuses
+
+    changed = refresh_session_statuses(state)
+    if changed:
+        state.save()
+
+    if project:
+        proj, err = _resolve_project(state, project)
+        if err:
+            return err
+        projects = {proj["id"]: proj}
+    else:
+        projects = state.projects
+
+    results = []
+    for proj_id, proj in projects.items():
+        sessions = proj.get("sessions", {})
+        runs = proj.get("runs", {})
+        active = [s for s in sessions.values() if s.get("status") == "running"]
+
+        proj_info = {
+            "name": proj.get("name", ""),
+            "status": proj.get("status", ""),
+            "total_runs": len(runs),
+            "active_sessions": len(active),
+            "sessions": [],
+        }
+
+        for sess in sessions.values():
+            started = sess.get("started_at", "")
+            proj_info["sessions"].append({
+                "tmux_session": sess.get("tmux_session", ""),
+                "status": sess.get("status", ""),
+                "started_at": started,
+                "model": sess.get("model", ""),
+                "host": sess.get("host"),
+            })
+
+        results.append(proj_info)
+
+    total_active = sum(p["active_sessions"] for p in results)
+    return {
+        "experiments": results,
+        "total_active_sessions": total_active,
+    }
+
+
+def stop_experiment_tool(*, state, project: str) -> dict:
+    """Stop a running experiment session."""
+    from datetime import datetime, timezone
+
+    from distillate.launcher import stop_session
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    sessions = proj.get("sessions", {})
+    running = [(sid, s) for sid, s in sessions.items() if s.get("status") == "running"]
+
+    if not running:
+        return {"error": f"No running sessions for '{proj.get('name', '')}'."}
+
+    stopped = []
+    failed = []
+    for sess_id, sess in running:
+        tmux_name = sess.get("tmux_session", "")
+        host = sess.get("host")
+        ok = stop_session(tmux_name, host)
+        if ok:
+            stopped.append(tmux_name)
+        else:
+            failed.append(tmux_name)
+
+    # Update state
+    acquire_lock()
+    try:
+        state.reload()
+        now = datetime.now(timezone.utc).isoformat()
+        for sess_id, sess in running:
+            tmux_name = sess.get("tmux_session", "")
+            if tmux_name in stopped:
+                state.update_session(proj["id"], sess_id,
+                                     status="completed", completed_at=now)
+        state.save()
+    finally:
+        release_lock()
+
+    if failed:
+        return {
+            "success": False,
+            "stopped": stopped,
+            "failed": failed,
+            "message": f"Stopped {len(stopped)}, failed {len(failed)} session(s).",
+        }
+
+    return {
+        "success": True,
+        "stopped": stopped,
+        "message": f"Stopped {len(stopped)} session(s) for '{proj.get('name', '')}'.",
+    }
+
 
 def _remove_notebook(project_id: str) -> None:
     """Remove the Obsidian notebook file for a project."""

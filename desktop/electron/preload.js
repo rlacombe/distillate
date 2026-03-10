@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld("nicolas", {
 
   // Shell
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
+
+  // Notifications
+  showNotification: (title, body) =>
+    ipcRenderer.invoke("show-notification", title, body),
 });
 
 // Expose hljs separately (functions can't be passed through contextBridge directly,

@@ -356,6 +356,9 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "link_paper": et.link_paper_tool,
             "update_goals": et.update_goals_tool,
             "annotate_run": et.annotate_run_tool,
+            "launch_experiment": et.launch_experiment_tool,
+            "experiment_status": et.experiment_status_tool,
+            "stop_experiment": et.stop_experiment_tool,
         })
 
     fn = dispatch.get(name)

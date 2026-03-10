@@ -1,4 +1,4 @@
-/* ───── Nicolas Desktop — Chat UI ───── */
+/* ───── Nicolas Desktop — Chat + Lab UI ───── */
 
 let ws = null;
 let serverPort = null;
@@ -6,6 +6,9 @@ let isStreaming = false;
 let currentAssistantEl = null;
 let currentText = "";
 let turnHadMutation = false;
+let sseSource = null;
+let hasExperiments = false;
+let currentTab = "chat";
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -14,6 +17,10 @@ const formEl = document.getElementById("input-form");
 const sendBtn = document.getElementById("send-btn");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
+const tabBar = document.getElementById("tab-bar");
+const labContainer = document.getElementById("lab-container");
+const notebookContainer = document.getElementById("notebook-container");
+const chatContainer = document.getElementById("chat-container");
 
 /* ───── marked.js config ───── */
 if (typeof marked !== "undefined") {
@@ -437,3 +444,207 @@ if (window.nicolas) {
   const port = new URLSearchParams(window.location.search).get("port") || 8742;
   connect(port);
 }
+
+/* ───── Tab switching ───── */
+
+function switchTab(tabName) {
+  currentTab = tabName;
+
+  // Update tab buttons
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.tab === tabName);
+  });
+
+  // Update tab content visibility
+  const containers = {
+    lab: labContainer,
+    notebook: notebookContainer,
+    chat: chatContainer,
+  };
+  for (const [name, el] of Object.entries(containers)) {
+    if (el) {
+      el.classList.toggle("active", name === tabName);
+      el.classList.toggle("hidden", name !== tabName);
+    }
+  }
+
+  // Show/hide input area for chat tab
+  const inputArea = document.getElementById("input-area");
+  if (inputArea) {
+    inputArea.style.display = tabName === "chat" ? "" : "none";
+  }
+}
+
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+});
+
+/* ───── Lab tab: SSE + experiment cards ───── */
+
+function startExperimentSSE() {
+  if (!serverPort || sseSource) return;
+
+  sseSource = new EventSource(
+    `http://127.0.0.1:${serverPort}/experiments/stream`
+  );
+
+  sseSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      addLabCard(data);
+      notifyExperimentEvent(data);
+    } catch (e) {
+      console.warn("SSE parse error:", e);
+    }
+  };
+
+  sseSource.onerror = () => {
+    console.warn("SSE connection error, will retry...");
+  };
+}
+
+function addLabCard(event) {
+  const timeline = document.getElementById("lab-timeline");
+  if (!timeline) return;
+
+  if (event.type === "session_end") return; // skip session end events
+
+  const card = document.createElement("div");
+  card.className = "lab-card";
+
+  const header = document.createElement("div");
+  header.className = "lab-card-header";
+
+  const id = document.createElement("span");
+  id.className = "lab-card-id";
+  id.textContent = event.ts ? new Date(event.ts).toLocaleTimeString() : "";
+  header.appendChild(id);
+
+  if (event.status) {
+    const decision = document.createElement("span");
+    decision.className = `lab-card-decision ${event.status}`;
+    decision.textContent = event.status;
+    header.appendChild(decision);
+  }
+
+  card.appendChild(header);
+
+  // Metric
+  if (event.results) {
+    const metricEl = document.createElement("div");
+    metricEl.className = "lab-card-metric";
+    const entries = Object.entries(event.results);
+    if (entries.length) {
+      metricEl.textContent = entries.map(([k, v]) => `${k}=${v}`).join(", ");
+      card.appendChild(metricEl);
+    }
+  }
+
+  // Hypothesis
+  if (event.hypothesis) {
+    const hyp = document.createElement("div");
+    hyp.className = "lab-card-hypothesis";
+    hyp.textContent = event.hypothesis;
+    card.appendChild(hyp);
+  }
+
+  // Command (for hook events)
+  if (event.command && !event.hypothesis) {
+    const cmd = document.createElement("div");
+    cmd.className = "lab-card-hypothesis";
+    cmd.textContent = event.command;
+    card.appendChild(cmd);
+  }
+
+  timeline.prepend(card); // newest first
+}
+
+function updateLabStats(data) {
+  const statsEl = document.getElementById("lab-stats");
+  if (!statsEl || !data.experiments) return;
+
+  const exp = data.experiments;
+  statsEl.innerHTML = [
+    `<div class="lab-stat"><div class="lab-stat-value">${exp.total_runs}</div><div class="lab-stat-label">Experiments</div></div>`,
+    `<div class="lab-stat"><div class="lab-stat-value" style="color:var(--green)">${exp.runs_kept}</div><div class="lab-stat-label">Kept</div></div>`,
+    `<div class="lab-stat"><div class="lab-stat-value" style="color:var(--error)">${exp.runs_discarded}</div><div class="lab-stat-label">Discarded</div></div>`,
+    `<div class="lab-stat"><div class="lab-stat-value">${exp.active_sessions}</div><div class="lab-stat-label">Active</div></div>`,
+  ].join("");
+}
+
+/* ───── Experiment notifications ───── */
+
+let consecutiveDiscards = 0;
+
+function notifyExperimentEvent(data) {
+  if (!window.nicolas || !window.nicolas.showNotification) return;
+  if (document.hasFocus()) return; // don't notify if app is focused
+
+  if (data.type === "run_completed" || data.$schema === "distillate/run/v1") {
+    const status = data.status || "";
+
+    if (status === "keep" && data.results) {
+      const metric = Object.entries(data.results)[0];
+      if (metric) {
+        window.nicolas.showNotification(
+          "New baseline",
+          `${metric[0]} improved to ${metric[1]}`
+        );
+      }
+      consecutiveDiscards = 0;
+    } else if (status === "discard") {
+      consecutiveDiscards++;
+      if (consecutiveDiscards >= 5) {
+        window.nicolas.showNotification(
+          "Agent may be stuck",
+          `${consecutiveDiscards} consecutive discards`
+        );
+      }
+    } else if (status === "crash") {
+      window.nicolas.showNotification(
+        "Experiment crashed",
+        data.reasoning || data.hypothesis || "Check logs"
+      );
+      consecutiveDiscards = 0;
+    }
+  }
+}
+
+/* ───── Enhanced welcome stats (with experiment awareness) ───── */
+
+const origFetchWelcomeStats = fetchWelcomeStats;
+fetchWelcomeStats = function () {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/status`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data.ok) return;
+
+      // Papers stats
+      if (welcomeStatsEl) {
+        const parts = [];
+        if (data.papers_read != null)
+          parts.push(
+            `${data.papers_read} paper${data.papers_read !== 1 ? "s" : ""} read`
+          );
+        if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+        if (parts.length) {
+          welcomeStatsEl.textContent = "\uD83D\uDCDA " + parts.join(" \u00B7 ");
+        }
+      }
+
+      // Experiment awareness — show tabs if experiments exist
+      if (data.experiments && data.experiments.total_runs > 0) {
+        hasExperiments = true;
+        tabBar.classList.remove("hidden");
+        updateLabStats(data);
+        startExperimentSSE();
+
+        // Default to lab tab when experiments are active
+        if (data.experiments.active_sessions > 0 && currentTab === "chat") {
+          switchTab("lab");
+        }
+      }
+    })
+    .catch(() => {});
+};

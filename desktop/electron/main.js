@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { PythonManager } = require("./python-manager");
@@ -101,6 +101,12 @@ ipcMain.handle("get-server-port", () => {
 
 ipcMain.handle("open-external", (_event, url) => {
   shell.openExternal(url);
+});
+
+ipcMain.handle("show-notification", (_event, title, body) => {
+  if (Notification.isSupported()) {
+    new Notification({ title, body }).show();
+  }
 });
 
 // Settings — read/write the distillate .env file

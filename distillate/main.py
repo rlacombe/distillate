@@ -905,6 +905,329 @@ def _install_hooks(args: list[str]) -> None:
     print("  Done! Hooks will capture experiments in this directory.")
 
 
+# ---------------------------------------------------------------------------
+# Experiment launcher commands
+# ---------------------------------------------------------------------------
+
+def _opt(flag: str) -> str | None:
+    """Extract the value for a --flag <value> pair from sys.argv, or None."""
+    if flag not in sys.argv:
+        return None
+    idx = sys.argv.index(flag)
+    if idx + 1 < len(sys.argv):
+        return sys.argv[idx + 1]
+    return None
+
+
+def _new_experiment(args: list[str]) -> None:
+    """Scaffold a new experiment from a template (interactive wizard)."""
+    from pathlib import Path
+
+    from distillate import config
+    from distillate.experiments import slugify
+    from distillate.launcher import (
+        import_template,
+        list_templates,
+        scaffold_experiment,
+    )
+    from distillate.state import State
+
+    templates = list_templates()
+
+    # If template name given as argument, use it
+    template_name = None
+    if args and not args[0].startswith("-"):
+        template_name = args[0]
+        # Check if it exists
+        if not any(t["name"] == template_name for t in templates):
+            # Maybe it's a path to import as a template
+            candidate = Path(args[0]).expanduser().resolve()
+            if candidate.is_dir() and (candidate / "PROMPT.md").exists():
+                print(f"  Importing {candidate.name} as a template...")
+                template_name = import_template(candidate)
+                templates = list_templates()
+            else:
+                print(f"  Template '{template_name}' not found.")
+                if templates:
+                    print("  Available templates:")
+                    for t in templates:
+                        data = " (has data/)" if t["has_data"] else ""
+                        print(f"    {t['name']}{data} — {t['prompt_lines']} lines")
+                else:
+                    print("  No templates available. Import one:")
+                    print("    distillate --new-experiment /path/to/experiment")
+                return
+
+    if not template_name:
+        if not templates:
+            print("  No templates available yet.")
+            print("  Import an experiment directory as a template:")
+            print("    distillate --new-experiment /path/to/experiment")
+            return
+
+        print("\n  Available templates:")
+        for i, t in enumerate(templates, 1):
+            data = " (has data/)" if t["has_data"] else ""
+            print(f"    {i}. {t['name']}{data} — {t['prompt_lines']} lines")
+
+        try:
+            choice = input("\n  Select template (number): ").strip()
+            idx = int(choice) - 1
+            if 0 <= idx < len(templates):
+                template_name = templates[idx]["name"]
+            else:
+                print("  Invalid choice.")
+                return
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print()
+            return
+
+    # Name
+    name = _opt("--name")
+    if not name:
+        try:
+            default = template_name
+            name = input(f"  Experiment name [{default}]: ").strip() or default
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+    # Target directory
+    target = _opt("--target")
+    if not target:
+        if config.EXPERIMENTS_ROOT:
+            default_target = str(Path(config.EXPERIMENTS_ROOT) / slugify(name))
+        else:
+            default_target = str(Path.home() / "experiments" / slugify(name))
+        try:
+            target = input(f"  Target directory [{default_target}]: ").strip() or default_target
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+    target_path = Path(target).expanduser().resolve()
+
+    try:
+        result = scaffold_experiment(template_name, target_path, name=name)
+        print(f"\n  Scaffolded experiment at {result}")
+        print(f"  - PROMPT.md copied from template")
+        print(f"  - .distillate/ created with REPORTING.md")
+        print(f"  - Claude Code hooks installed")
+        print(f"  - git initialized")
+
+        # Register in state
+        state = State()
+        project_id = slugify(name)
+        if not state.has_project(project_id):
+            state.add_project(
+                project_id=project_id,
+                name=name.replace("-", " ").title() if name == slugify(name) else name,
+                path=str(result),
+            )
+            state.update_project(project_id, template=template_name)
+            state.save()
+            print(f"  - Registered as project '{project_id}'")
+
+        print(f"\n  Launch it:")
+        print(f"    distillate --launch {project_id}")
+
+    except (FileNotFoundError, FileExistsError) as e:
+        print(f"  Error: {e}")
+
+
+def _launch_experiment(args: list[str]) -> None:
+    """Launch an auto-research session for an experiment."""
+    from pathlib import Path
+
+    from distillate.launcher import launch_experiment
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --launch <name|path> [--host <ssh_host>] [--model <model>] [--turns <N>]")
+        return
+
+    query = args[0]
+    host = _opt("--host")
+    model = _opt("--model") or "claude-sonnet-4-5-20250929"
+    turns = int(_opt("--turns") or "100")
+
+    state = State()
+
+    # Resolve: try project name/ID first, then path
+    proj = state.find_project(query)
+    if proj:
+        project_path = Path(proj["path"])
+    else:
+        project_path = Path(query).expanduser().resolve()
+        if not project_path.is_dir():
+            print(f"  No project found matching '{query}' and path doesn't exist.")
+            return
+
+    try:
+        session_data = launch_experiment(
+            project_path,
+            host=host,
+            model=model,
+            max_turns=turns,
+            project=proj,
+        )
+
+        # Save session in state
+        if proj:
+            state.add_session(proj["id"], session_data["session_id"], session_data)
+            state.save()
+
+        tmux_name = session_data["tmux_session"]
+        print(f"\n  Launched experiment session: {tmux_name}")
+        print(f"  Model: {model} | Max turns: {turns}")
+        if host:
+            print(f"  Host: {host}")
+        print(f"\n  Attach to session:")
+        print(f"    distillate --attach {query}")
+        print(f"\n  Stop session:")
+        print(f"    distillate --stop {query}")
+
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"  Error: {e}")
+
+
+def _list_experiments() -> None:
+    """List all tracked experiments with status."""
+    from distillate.launcher import refresh_session_statuses
+    from distillate.state import State
+
+    state = State()
+    projects = state.projects
+
+    if not projects:
+        print("  No experiments tracked yet.")
+        print("  Scaffold one: distillate --new-experiment")
+        return
+
+    # Refresh session statuses
+    changed = refresh_session_statuses(state)
+    if changed:
+        state.save()
+
+    # Print table header
+    print()
+    print(f"  {'#':>3}  {'Name':<22} {'Status':<12} {'Runs':>5}  {'Best Metric':<20} {'Sessions'}")
+    print(f"  {'─' * 3}  {'─' * 22} {'─' * 12} {'─' * 5}  {'─' * 20} {'─' * 12}")
+
+    for proj_id, proj in projects.items():
+        idx = state.project_index_of(proj_id)
+        name = proj.get("name", proj_id)[:22]
+        status = proj.get("status", "tracking")
+        runs = proj.get("runs", {})
+        run_count = len(runs)
+
+        # Find best metric
+        best_metric = ""
+        for run in runs.values():
+            results = run.get("results", {})
+            for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                       "best_val_acc", "f1", "loss", "val_bpb", "rmse"):
+                if k in results:
+                    val = results[k]
+                    if isinstance(val, float):
+                        best_metric = f"{k}: {val:.4f}"
+                    else:
+                        best_metric = f"{k}: {val}"
+                    break
+            if best_metric:
+                break
+
+        # Count active sessions
+        sessions = proj.get("sessions", {})
+        active = sum(1 for s in sessions.values() if s.get("status") == "running")
+        sess_str = f"{active} active" if active else "0 active"
+
+        print(f"  {idx:>3}  {name:<22} {status:<12} {run_count:>5}  {best_metric:<20} {sess_str}")
+
+    print()
+
+
+def _attach_experiment(args: list[str]) -> None:
+    """Attach to a running experiment session."""
+    from distillate.launcher import attach_session
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --attach <name>")
+        return
+
+    query = args[0]
+    state = State()
+
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    # Find running session
+    sessions = proj.get("sessions", {})
+    running = [(sid, s) for sid, s in sessions.items() if s.get("status") == "running"]
+
+    if not running:
+        print(f"  No running sessions for '{proj.get('name', query)}'.")
+        return
+
+    # Attach to the most recent running session
+    sess_id, sess = running[-1]
+    tmux_name = sess.get("tmux_session", "")
+    host = sess.get("host")
+
+    try:
+        attach_session(tmux_name, host)
+        print(f"  Opened terminal attached to {tmux_name}")
+    except RuntimeError as e:
+        print(f"  Error: {e}")
+
+
+def _stop_experiment(args: list[str]) -> None:
+    """Stop a running experiment session."""
+    from datetime import datetime, timezone
+
+    from distillate.launcher import stop_session
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --stop <name>")
+        return
+
+    query = args[0]
+    state = State()
+
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    # Find running sessions
+    sessions = proj.get("sessions", {})
+    running = [(sid, s) for sid, s in sessions.items() if s.get("status") == "running"]
+
+    if not running:
+        print(f"  No running sessions for '{proj.get('name', query)}'.")
+        return
+
+    for sess_id, sess in running:
+        tmux_name = sess.get("tmux_session", "")
+        host = sess.get("host")
+        ok = stop_session(tmux_name, host)
+        if ok:
+            state.update_session(
+                proj["id"], sess_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            print(f"  Stopped session {tmux_name}")
+        else:
+            print(f"  Failed to stop session {tmux_name}")
+
+    state.save()
+
+
 def _watch(args: list[str]) -> None:
     """Watch an experiment repo and regenerate notebooks on changes."""
     import time
@@ -3034,6 +3357,13 @@ Management:
   --remove "Title"        Remove a paper from tracking
   --reprocess "Title"     Re-extract highlights and regenerate note
 
+Experiments:
+  --new-experiment [tmpl] Scaffold a new experiment from a template
+  --launch <name>         Launch an auto-research session (tmux)
+  --experiments           List all tracked experiments with status
+  --attach <name>         Attach to a running experiment session
+  --stop <name>           Stop a running experiment session
+
 Advanced:
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
@@ -3055,6 +3385,8 @@ _KNOWN_FLAGS = {
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
     "--scan-projects", "--install-hooks", "--watch",
+    "--new-experiment", "--launch", "--experiments", "--attach", "--stop",
+    "--host", "--model", "--turns", "--target", "--name",
 }
 
 
@@ -3145,6 +3477,30 @@ def main():
             cloud_sync(State())
         else:
             _sync_state()
+        return
+
+    if "--new-experiment" in sys.argv:
+        idx = sys.argv.index("--new-experiment")
+        _new_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--launch" in sys.argv:
+        idx = sys.argv.index("--launch")
+        _launch_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--experiments" in sys.argv:
+        _list_experiments()
+        return
+
+    if "--attach" in sys.argv:
+        idx = sys.argv.index("--attach")
+        _attach_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--stop" in sys.argv:
+        idx = sys.argv.index("--stop")
+        _stop_experiment(sys.argv[idx + 1:])
         return
 
     if "--scan-projects" in sys.argv:

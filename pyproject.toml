@@ -44,5 +44,13 @@ Changelog = "https://github.com/rlacombe/distillate/blob/main/CHANGELOG.md"
 [project.scripts]
 distillate = "distillate.main:_main_wrapper"
 
+[tool.hatch.build.targets.wheel]
+packages = ["distillate"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"distillate/autoresearch/REPORTING.md" = "distillate/autoresearch/REPORTING.md"
+"distillate/autoresearch/hooks.json" = "distillate/autoresearch/hooks.json"
+"distillate/autoresearch/skills/experiment/SKILL.md" = "distillate/autoresearch/skills/experiment/SKILL.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

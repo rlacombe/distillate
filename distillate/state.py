@@ -352,6 +352,33 @@ class State:
         del runs[run_id]
         return True
 
+    # -- Session tracking (experiment launcher) --
+
+    def add_session(self, project_id: str, session_id: str, session_data: dict) -> None:
+        """Add a launcher session to a project."""
+        proj = self.projects.get(project_id)
+        if proj:
+            proj.setdefault("sessions", {})[session_id] = session_data
+
+    def update_session(self, project_id: str, session_id: str, **kwargs) -> None:
+        """Update fields on a launcher session."""
+        proj = self.projects.get(project_id)
+        if not proj:
+            return
+        sess = proj.get("sessions", {}).get(session_id)
+        if sess:
+            for key, val in kwargs.items():
+                sess[key] = val
+
+    def active_sessions(self) -> list[tuple[str, str, dict]]:
+        """Return [(project_id, session_id, session_dict)] for all running sessions."""
+        result = []
+        for proj_id, proj in self.projects.items():
+            for sess_id, sess in proj.get("sessions", {}).items():
+                if sess.get("status") == "running":
+                    result.append((proj_id, sess_id, sess))
+        return result
+
     # -- Promoted papers --
 
     @property

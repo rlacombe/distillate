@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "python3 -m distillate.hooks.post_bash"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "python3 -m distillate.hooks.on_stop"
+      }
+    ]
+  }
+}
