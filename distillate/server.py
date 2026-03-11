@@ -435,7 +435,6 @@ def _create_app():
         # Per-connection conversation state
         conversation: list[dict] = []
         all_sessions: list[dict] = _load_sessions()
-        session_model: str | None = None  # per-session model override
 
         try:
             while True:
@@ -452,17 +451,18 @@ def _create_app():
                     conversation = []
                     continue
 
-                # Handle model change
+                # Handle model change — update the module-level default
                 if msg.get("type") == "set_model":
-                    session_model = msg.get("model") or None
+                    new_model = msg.get("model")
+                    if new_model:
+                        from distillate import agent_core
+                        agent_core._AGENT_MODEL = new_model
+                        log.info("Model changed to %s", new_model)
                     continue
 
                 user_input = msg.get("text", "").strip()
                 if not user_input:
                     continue
-
-                # Accept per-message model override
-                msg_model = msg.get("model") or session_model
 
                 # Run the synchronous generator in a thread, relay events
                 queue: asyncio.Queue = asyncio.Queue()
@@ -472,7 +472,6 @@ def _create_app():
                         for event in stream_turn(
                             client, _state, conversation, user_input,
                             past_sessions=all_sessions,
-                            model_override=msg_model,
                         ):
                             loop.call_soon_threadsafe(queue.put_nowait, event)
                     except Exception as exc:

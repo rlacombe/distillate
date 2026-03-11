@@ -414,7 +414,7 @@ def trim_conversation(conversation: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def stream_turn(client, state, conversation, user_input, past_sessions=None,
-                experiment_updates=None, model_override=None):
+                experiment_updates=None):
     """Yield event dicts for one conversation turn.
 
     Appends messages to *conversation* in place (user message, assistant
@@ -451,7 +451,7 @@ def stream_turn(client, state, conversation, user_input, past_sessions=None,
         # --- API call (streaming) ---
         try:
             with client.messages.stream(
-                model=model_override or get_model(),
+                model=get_model(),
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=conversation,
