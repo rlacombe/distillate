@@ -16,7 +16,7 @@ from distillate import config
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.semanticscholar.org"
-_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year,fieldsOfStudy,authors"
+_PAPER_FIELDS = "citationCount,influentialCitationCount,url,publicationDate,venue,year,fieldsOfStudy,authors,tldr"
 
 # Delay between API calls to avoid rate limits (free tier: ~1 req/sec)
 _REQUEST_DELAY = 1.5
@@ -56,6 +56,10 @@ def lookup_paper(
     influential = paper.get("influentialCitationCount") or 0
     s2_url = paper.get("url") or ""
 
+    # Extract TLDR summary if available
+    tldr_obj = paper.get("tldr") or {}
+    tldr_text = tldr_obj.get("text", "") if isinstance(tldr_obj, dict) else ""
+
     # Extract author names (S2 returns [{"authorId": ..., "name": "First Last"}, ...])
     s2_authors = [a["name"] for a in (paper.get("authors") or []) if a.get("name")]
 
@@ -63,6 +67,7 @@ def lookup_paper(
         "citation_count": citation_count,
         "influential_citation_count": influential,
         "s2_url": s2_url,
+        "tldr": tldr_text,
         "publication_date": paper.get("publicationDate") or "",
         "venue": paper.get("venue") or "",
         "year": paper.get("year") or 0,
@@ -82,6 +87,10 @@ def enrich_metadata(meta: Dict[str, Any], s2_data: Dict[str, Any]) -> Dict[str, 
     meta["citation_count"] = s2_data["citation_count"]
     meta["influential_citation_count"] = s2_data["influential_citation_count"]
     meta["s2_url"] = s2_data["s2_url"]
+
+    # Store TLDR if not already present
+    if s2_data.get("tldr") and not meta.get("s2_tldr"):
+        meta["s2_tldr"] = s2_data["tldr"]
 
     # Fill missing or unknown authors
     existing_authors = meta.get("authors") or []

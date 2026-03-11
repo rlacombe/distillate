@@ -14,6 +14,64 @@ import requests
 log = logging.getLogger("distillate")
 
 
+def _fetch_pdf_bytes(
+    att_key: str,
+    item_key: str = "",
+    paper_url: str = "",
+    title: str = "",
+    check_fresh_attachment: bool = False,
+) -> tuple[bytes | None, str]:
+    """Download PDF with fallback: Zotero cloud -> WebDAV -> URL.
+
+    When *check_fresh_attachment* is True and the initial download fails,
+    re-queries Zotero children for a newer PDF attachment before trying
+    WebDAV and URL fallbacks.
+
+    Returns (pdf_bytes, possibly_updated_att_key).
+    """
+    from distillate import zotero_client
+
+    pdf_bytes = None
+
+    # 1. Try Zotero cloud download
+    if att_key:
+        try:
+            pdf_bytes = zotero_client.download_pdf(att_key)
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                log.info("PDF not synced to Zotero cloud for '%s'", title)
+            else:
+                raise
+
+    # 2. Optionally re-check for a newer PDF attachment
+    if pdf_bytes is None and check_fresh_attachment and item_key:
+        fresh_att = zotero_client.get_pdf_attachment(item_key)
+        if fresh_att and fresh_att["key"] != att_key:
+            att_key = fresh_att["key"]
+            log.info("Found new PDF attachment for '%s'", title)
+            try:
+                pdf_bytes = zotero_client.download_pdf(att_key)
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    log.info("New attachment also has no file for '%s'", title)
+                else:
+                    raise
+
+    # 3. Fall back to WebDAV
+    if pdf_bytes is None and att_key:
+        pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+        if pdf_bytes:
+            log.info("Downloaded PDF from WebDAV for '%s'", title)
+
+    # 4. Fall back to direct URL download
+    if pdf_bytes is None and paper_url:
+        pdf_bytes = zotero_client.download_pdf_from_url(paper_url)
+        if pdf_bytes:
+            log.info("Downloaded PDF from URL for '%s'", title)
+
+    return pdf_bytes, att_key
+
+
 def _find_papers(query: str, state) -> list[tuple[str, dict]]:
     """Resolve a query to a list of (item_key, doc) matches.
 
@@ -121,14 +179,7 @@ def _reprocess(args: list[str]) -> None:
                 typed_notes = {}
                 handwritten_notes = {}
                 # Download PDF for rendering
-                pdf_bytes = None
-                if att_key:
-                    try:
-                        pdf_bytes = zotero_client.download_pdf(att_key)
-                    except Exception:
-                        pdf_bytes = None
-                if pdf_bytes is None and att_key:
-                    pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+                pdf_bytes, att_key = _fetch_pdf_bytes(att_key, title=title)
                 if pdf_bytes:
                     raw_anns = zotero_client.get_raw_annotations(att_key)
                     render_ok = renderer.render_annotated_pdf_from_annotations(
@@ -230,6 +281,7 @@ def _reprocess(args: list[str]) -> None:
                 key_learnings=learnings,
                 reader_notes=flat_notes,
                 hf_summary=meta.get("hf_summary", ""),
+                s2_tldr=meta.get("s2_tldr", ""),
             )
 
             # Use original processing date, not today
@@ -371,21 +423,9 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     # Upload to reMarkable (skip in Zotero mode, or if already there)
     if zotero_mode:
         # Zotero reader mode: download PDF for local save but no RM upload
-        pdf_bytes = None
-        if att_key:
-            try:
-                pdf_bytes = zotero_client.download_pdf(att_key)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    log.info("PDF not synced to Zotero cloud for '%s'", title)
-                else:
-                    raise
-        if pdf_bytes is None and att_key:
-            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
-        if pdf_bytes is None:
-            paper_url = meta.get("url", "")
-            if paper_url:
-                pdf_bytes = zotero_client.download_pdf_from_url(paper_url)
+        pdf_bytes, att_key = _fetch_pdf_bytes(
+            att_key, paper_url=meta.get("url", ""), title=title,
+        )
 
         if pdf_bytes is not None:
             citekey = meta.get("citekey", "")
@@ -401,31 +441,9 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
     elif title in existing_on_rm:
         log.info("Already on reMarkable, skipping upload: %s", title)
     else:
-        pdf_bytes = None
-
-        # Try Zotero cloud download
-        if att_key:
-            try:
-                pdf_bytes = zotero_client.download_pdf(att_key)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    log.info("PDF not synced to Zotero cloud for '%s'", title)
-                else:
-                    raise
-
-        # Fall back to WebDAV (for users who store attachments via WebDAV)
-        if pdf_bytes is None and att_key:
-            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
-            if pdf_bytes:
-                log.info("Downloaded PDF from WebDAV for '%s'", title)
-
-        # Fall back to direct URL download
-        if pdf_bytes is None:
-            paper_url = meta.get("url", "")
-            if paper_url:
-                pdf_bytes = zotero_client.download_pdf_from_url(paper_url)
-                if pdf_bytes:
-                    log.info("Downloaded PDF from URL for '%s'", title)
+        pdf_bytes, att_key = _fetch_pdf_bytes(
+            att_key, paper_url=meta.get("url", ""), title=title,
+        )
 
         if pdf_bytes is None:
             log.warning(
@@ -778,49 +796,14 @@ def run_sync() -> None:
                         print(f"  Found \"{title}\" on reMarkable.")
                         continue
 
-                    pdf_bytes = None
-
-                    # Try Zotero cloud first (if we have an attachment key)
-                    if att_key:
-                        try:
-                            pdf_bytes = zotero_client.download_pdf(att_key)
-                            log.info("PDF now available for '%s' (%d bytes)", title, len(pdf_bytes))
-                        except requests.exceptions.HTTPError as e:
-                            if e.response is not None and e.response.status_code == 404:
-                                log.info("PDF still not synced in Zotero for '%s'", title)
-                            else:
-                                raise
-
-                    # Re-check Zotero children for a newer PDF attachment
-                    # (user may have added one, or original was a linked URL)
-                    if pdf_bytes is None:
-                        fresh_att = zotero_client.get_pdf_attachment(item_key)
-                        if fresh_att and fresh_att["key"] != att_key:
-                            att_key = fresh_att["key"]
-                            doc["zotero_attachment_key"] = att_key
-                            log.info("Found new PDF attachment for '%s'", title)
-                            try:
-                                pdf_bytes = zotero_client.download_pdf(att_key)
-                                log.info("PDF now available for '%s' (%d bytes)", title, len(pdf_bytes))
-                            except requests.exceptions.HTTPError as e:
-                                if e.response is not None and e.response.status_code == 404:
-                                    log.info("New attachment also has no file for '%s'", title)
-                                else:
-                                    raise
-
-                    # Fall back to WebDAV
-                    if pdf_bytes is None and att_key:
-                        pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
-                        if pdf_bytes:
-                            log.info("Downloaded PDF from WebDAV for '%s'", title)
-
-                    # Fall back to direct URL download (arxiv, biorxiv, etc.)
-                    if pdf_bytes is None:
-                        paper_url = meta.get("url", "")
-                        if paper_url:
-                            pdf_bytes = zotero_client.download_pdf_from_url(paper_url)
-                            if pdf_bytes:
-                                log.info("Downloaded PDF from URL for '%s'", title)
+                    pdf_bytes, att_key = _fetch_pdf_bytes(
+                        att_key, item_key=item_key,
+                        paper_url=meta.get("url", ""),
+                        title=title,
+                        check_fresh_attachment=True,
+                    )
+                    if att_key != doc["zotero_attachment_key"]:
+                        doc["zotero_attachment_key"] = att_key
 
                     if pdf_bytes is None:
                         log.info("No PDF available yet for '%s', will retry", title)
@@ -1143,14 +1126,7 @@ def run_sync() -> None:
                         handwritten_notes = {}
 
                         # Download PDF for rendering
-                        pdf_bytes = None
-                        if att_key:
-                            try:
-                                pdf_bytes = zotero_client.download_pdf(att_key)
-                            except Exception:
-                                pdf_bytes = None
-                        if pdf_bytes is None and att_key:
-                            pdf_bytes = zotero_client.download_pdf_from_webdav(att_key)
+                        pdf_bytes, att_key = _fetch_pdf_bytes(att_key, title=doc["title"])
 
                         render_ok = False
                         page_count = 0
@@ -1281,6 +1257,7 @@ def run_sync() -> None:
                     key_learnings=learnings,
                     reader_notes=flat_notes,
                     hf_summary=meta.get("hf_summary", ""),
+                    s2_tldr=meta.get("s2_tldr", ""),
                 )
 
                 # Compute engagement score and highlight stats

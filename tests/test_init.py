@@ -214,6 +214,7 @@ class TestInitRerun:
         env_file = tmp_path / ".env"
         env_file.write_text("ZOTERO_API_KEY=old_key\nZOTERO_USER_ID=111\n")
         monkeypatch.setattr(config, "ENV_PATH", env_file)
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
         for key in _WIZARD_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("ZOTERO_API_KEY", "old_key")
@@ -258,6 +259,7 @@ class TestInitRerun:
         env_file = tmp_path / ".env"
         env_file.write_text("ZOTERO_API_KEY=sk-very-long-api-key-12345\n")
         monkeypatch.setattr(config, "ENV_PATH", env_file)
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
         for key in _WIZARD_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("ZOTERO_API_KEY", "sk-very-long-api-key-12345")

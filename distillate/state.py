@@ -24,7 +24,10 @@ if not STATE_PATH.exists() and (Path.cwd() / "state.json").exists():
     STATE_PATH = Path.cwd() / "state.json"
 LOCK_PATH = STATE_PATH.with_suffix(".lock")
 
+_CURRENT_SCHEMA_VERSION = 1
+
 _DEFAULT_STATE = {
+    "schema_version": _CURRENT_SCHEMA_VERSION,
     "zotero_library_version": 0,
     "last_poll_timestamp": None,
     "documents": {},
@@ -33,11 +36,40 @@ _DEFAULT_STATE = {
 }
 
 
+def _migrate_0_to_1(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Add schema_version field to legacy state files."""
+    data["schema_version"] = 1
+    return data
+
+
+_MIGRATIONS: Dict[int, Any] = {0: _migrate_0_to_1}
+
+
+def _run_migrations(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply pending schema migrations in order."""
+    version = data.get("schema_version", 0)
+    if version > _CURRENT_SCHEMA_VERSION:
+        log.warning(
+            "State file has schema_version %d (newer than %d) — loading as-is",
+            version, _CURRENT_SCHEMA_VERSION,
+        )
+        return data
+    while version < _CURRENT_SCHEMA_VERSION:
+        migrate = _MIGRATIONS.get(version)
+        if migrate is None:
+            log.warning("No migration for schema version %d", version)
+            break
+        data = migrate(data)
+        version = data.get("schema_version", version + 1)
+    return data
+
+
 def _load_raw() -> Dict[str, Any]:
     if not STATE_PATH.exists():
         return copy.deepcopy(_DEFAULT_STATE)
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return _run_migrations(data)
     except (json.JSONDecodeError, ValueError) as exc:
         log.warning("Corrupt state file, backing up and starting fresh: %s", exc)
         backup = STATE_PATH.with_suffix(".json.bak")
@@ -73,6 +105,12 @@ class State:
 
     def save(self) -> None:
         _save_raw(self._data)
+
+    # -- Schema version --
+
+    @property
+    def schema_version(self) -> int:
+        return self._data.get("schema_version", 0)
 
     # -- Zotero library version --
 

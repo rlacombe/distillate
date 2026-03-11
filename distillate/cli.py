@@ -102,18 +102,23 @@ Advanced:
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
   --sync-state            Push state.json to a GitHub Gist
+  --export-state <path>   Export state.json to a file
+  --import-state <path>   Import state.json from a file (backs up existing)
+  --report                Show reading insights dashboard
 
 Options:
+  -v, --verbose           Show INFO-level logs on console
   -h, --help              Show this help
   -V, --version           Show version
 """
 
 _KNOWN_FLAGS = {
-    "--help", "-h", "--version", "-V", "--init", "--register",
+    "--help", "-h", "--version", "-V", "--verbose", "-v", "--init", "--register",
     "--status", "--list", "--queue", "--remove", "--import", "--reprocess",
     "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
+    "--export-state", "--import-state", "--report",
     "--scan-projects", "--install-hooks", "--watch",
     "--new-experiment", "--launch", "--experiments", "--attach", "--stop",
     "--host", "--model", "--turns", "--target", "--name",
@@ -124,6 +129,10 @@ def main():
     from distillate import commands
     from distillate import pipeline
     from distillate import wizard
+
+    if "--verbose" in sys.argv or "-v" in sys.argv:
+        from distillate import config
+        config.VERBOSE = True
 
     if "--help" in sys.argv or "-h" in sys.argv:
         print(_HELP)
@@ -207,6 +216,26 @@ def main():
     if "--suggest-email" in sys.argv:
         from distillate import digest
         digest.send_suggestion()
+        return
+
+    if "--export-state" in sys.argv:
+        idx = sys.argv.index("--export-state")
+        if idx + 1 >= len(sys.argv):
+            print("Usage: distillate --export-state <path>")
+            sys.exit(1)
+        commands._export_state(sys.argv[idx + 1])
+        return
+
+    if "--import-state" in sys.argv:
+        idx = sys.argv.index("--import-state")
+        if idx + 1 >= len(sys.argv):
+            print("Usage: distillate --import-state <path>")
+            sys.exit(1)
+        commands._import_state(sys.argv[idx + 1])
+        return
+
+    if "--report" in sys.argv:
+        commands._report()
         return
 
     if "--sync-state" in sys.argv:

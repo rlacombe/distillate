@@ -4,6 +4,7 @@ Individual commands dispatched from cli.py: status, list, remove, digest,
 suggest, import, metadata refresh, experiment commands, etc.
 """
 
+import json
 import logging
 import re
 import sys
@@ -112,6 +113,7 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
     items_by_key = {item["key"]: item for item in items}
     changed = 0
     total = len(keys)
+    is_tty = sys.stdout.isatty()
 
     for i, key in enumerate(keys, 1):
         item = items_by_key.get(key)
@@ -122,6 +124,11 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
             continue
 
         title = doc["title"]
+        # Show progress for each paper
+        short = title[:50]
+        if is_tty:
+            print(f"\r  [{i}/{total}] \"{short}\"" + " " * 20, end="\r", flush=True)
+
         old_meta = doc.get("metadata", {})
         new_meta = zotero_client.extract_metadata(item)
         any_change = False
@@ -321,11 +328,14 @@ def _refresh_metadata(args: list[str] | None = None) -> None:
         state.save()
         if any_change:
             changed += 1
+        elif is_tty:
+            # Clear progress line for unchanged papers
+            print(f"\r  [{i}/{total}] \"{short}\" \u2713" + " " * 20, end="\r", flush=True)
 
-    if changed:
-        print(f"  Updated {changed} paper(s).")
-    else:
-        print(f"  All {total} paper(s) up to date.")
+    # Clear any lingering progress line
+    if is_tty:
+        print(" " * 80, end="\r", flush=True)
+    print(f"  {total} papers checked, {changed} updated.")
 
 
 def _backfill_highlights(args: list[str]) -> None:
@@ -1829,3 +1839,188 @@ def _import(args: list[str]) -> None:
         raise
     finally:
         release_lock()
+
+
+# -- State export / import --
+
+
+def _export_state(path: str) -> None:
+    """Copy state.json to the specified path."""
+    import shutil
+    from distillate.state import STATE_PATH
+
+    if not STATE_PATH.exists():
+        print("  No state file found. Nothing to export.")
+        return
+
+    dest = Path(path).expanduser().resolve()
+    shutil.copy2(STATE_PATH, dest)
+    print(f"  State exported to {dest}")
+
+
+def _import_state(path: str) -> None:
+    """Validate and import a state.json from the specified path.
+
+    Backs up existing state before replacing.
+    """
+    import shutil
+    from distillate.state import STATE_PATH, _run_migrations
+
+    src = Path(path).expanduser().resolve()
+    if not src.exists():
+        print(f"  File not found: {src}")
+        sys.exit(1)
+
+    # Validate JSON
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"  Invalid JSON: {exc}")
+        sys.exit(1)
+
+    # Must have at minimum the documents dict
+    if not isinstance(data, dict) or "documents" not in data:
+        print("  Invalid state file: missing 'documents' key.")
+        sys.exit(1)
+
+    # Run migrations on the imported data
+    _run_migrations(data)
+
+    # Backup existing state
+    if STATE_PATH.exists():
+        backup = STATE_PATH.with_suffix(".json.bak")
+        shutil.copy2(STATE_PATH, backup)
+        print(f"  Backed up existing state to {backup.name}")
+
+    shutil.copy2(src, STATE_PATH)
+    n_papers = len(data.get("documents", {}))
+    print(f"  State imported from {src} ({n_papers} papers)")
+
+
+# -- Reading insights dashboard --
+
+
+def _report() -> None:
+    """Display reading insights dashboard in the terminal."""
+    from collections import Counter
+    from datetime import datetime, timezone, timedelta
+
+    from distillate.state import State
+    from distillate.cli import _bold
+
+    state = State()
+    processed = state.documents_with_status("processed")
+    if not processed:
+        print("\n  No processed papers yet. Read some papers first!\n")
+        return
+
+    # ── Lifetime stats ────────────────────────────────────────────
+    total_papers = len(processed)
+    total_pages = sum(d.get("page_count", 0) for d in processed)
+    total_words = sum(d.get("highlight_word_count", 0) for d in processed)
+    engagements = [d.get("engagement", 0) for d in processed if d.get("engagement")]
+    avg_engagement = round(sum(engagements) / len(engagements)) if engagements else 0
+
+    print()
+    print(f"  {_bold('Reading Report')}")
+    print(f"  {'─' * 35}")
+    print()
+    print(f"  {_bold('Lifetime')}")
+    print(f"    {total_papers} papers · {total_pages:,} pages · {total_words:,} words highlighted")
+    print(f"    Avg engagement: {avg_engagement}%")
+    print()
+
+    # ── Reading velocity (last 8 weeks) ───────────────────────────
+    now = datetime.now(timezone.utc)
+    week_counts: Counter = Counter()
+    for doc in processed:
+        ts = doc.get("processed_at", "")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+            weeks_ago = (now - dt).days // 7
+            if weeks_ago < 8:
+                # Use Monday of that week as label
+                monday = dt - timedelta(days=dt.weekday())
+                label = monday.strftime("%b %d")
+                week_counts[label] = week_counts.get(label, 0) + 1
+        except (ValueError, TypeError):
+            pass
+
+    if week_counts:
+        print(f"  {_bold('Reading Velocity')} (last 8 weeks)")
+        max_count = max(week_counts.values())
+        # Reverse chronological
+        for label in list(week_counts.keys())[::-1][:8]:
+            count = week_counts[label]
+            bar_len = round(count / max(max_count, 1) * 20)
+            bar = "\u2588" * bar_len
+            print(f"    {label}  {bar} {count}")
+        print()
+
+    # ── Top topics ────────────────────────────────────────────────
+    topic_counter: Counter = Counter()
+    for doc in processed:
+        tags = doc.get("metadata", {}).get("tags") or []
+        for tag in tags:
+            topic_counter[tag] += 1
+
+    if topic_counter:
+        print(f"  {_bold('Top Topics')}")
+        for i, (topic, count) in enumerate(topic_counter.most_common(5), 1):
+            # Truncate long topic names
+            display = topic[:30] if len(topic) > 30 else topic
+            print(f"    {i}. {display:<32} {count} papers")
+        print()
+
+    # ── Engagement distribution ───────────────────────────────────
+    buckets = {"0-25%": 0, "25-50%": 0, "50-75%": 0, "75-100%": 0}
+    for doc in processed:
+        eng = doc.get("engagement", 0)
+        if eng <= 25:
+            buckets["0-25%"] += 1
+        elif eng <= 50:
+            buckets["25-50%"] += 1
+        elif eng <= 75:
+            buckets["50-75%"] += 1
+        else:
+            buckets["75-100%"] += 1
+
+    max_bucket = max(buckets.values()) if buckets else 1
+    print(f"  {_bold('Engagement Distribution')}")
+    for label, count in buckets.items():
+        bar_len = round(count / max(max_bucket, 1) * 20)
+        bar = "\u2588" * bar_len
+        print(f"    {label:<8} {bar} {count}")
+    print()
+
+    # ── Most-cited papers read ────────────────────────────────────
+    cited = sorted(
+        [d for d in processed if d.get("metadata", {}).get("citation_count", 0) > 0],
+        key=lambda d: d.get("metadata", {}).get("citation_count", 0),
+        reverse=True,
+    )
+    if cited:
+        print(f"  {_bold('Most-Cited Papers Read')}")
+        for doc in cited[:5]:
+            idx = state.index_of(doc["zotero_item_key"])
+            cites = doc["metadata"]["citation_count"]
+            short = doc["title"][:50]
+            print(f"    [{idx}] {short} ({cites:,} citations)")
+        print()
+
+    # ── Most-read authors ─────────────────────────────────────────
+    author_counter: Counter = Counter()
+    for doc in processed:
+        for author in doc.get("authors", []):
+            if author and author.lower() != "unknown":
+                author_counter[author] += 1
+
+    top_authors = [(a, c) for a, c in author_counter.most_common(10) if c >= 2]
+    if top_authors:
+        print(f"  {_bold('Most-Read Authors')}")
+        for i, (author, count) in enumerate(top_authors[:5], 1):
+            short = author[:30] if len(author) > 30 else author
+            print(f"    {i}. {short:<32} {count} papers")
+        print()

@@ -101,6 +101,21 @@ def extract_original_pdf(zip_path: Path) -> Optional[bytes]:
         return None
 
 
+def _parse_page_ids(zf: zipfile.ZipFile) -> list[str]:
+    """Extract ordered page IDs from an open reMarkable zip."""
+    content_files = [n for n in zf.namelist() if n.endswith(".content")]
+    if not content_files:
+        return []
+    content_data = json.loads(zf.read(content_files[0]))
+    page_ids = content_data.get("cPages", {}).get("pages", [])
+    if not page_ids:
+        page_ids = content_data.get("pages", [])
+    return [
+        page.get("id", "") if isinstance(page, dict) else str(page)
+        for page in page_ids
+    ]
+
+
 def get_page_count(zip_path: Path) -> int:
     """Return the total page count from a reMarkable document bundle.
 
@@ -108,14 +123,7 @@ def get_page_count(zip_path: Path) -> int:
     """
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            content_files = [n for n in zf.namelist() if n.endswith(".content")]
-            if not content_files:
-                return 0
-            content_data = json.loads(zf.read(content_files[0]))
-            page_ids = content_data.get("cPages", {}).get("pages", [])
-            if not page_ids:
-                page_ids = content_data.get("pages", [])
-            return len(page_ids)
+            return len(_parse_page_ids(zf))
     except Exception:
         log.debug("Could not get page count from %s", zip_path, exc_info=True)
         return 0
@@ -132,21 +140,9 @@ def extract_highlights(zip_path: Path) -> Dict[int, List[str]]:
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            content_files = [n for n in zf.namelist() if n.endswith(".content")]
-            if not content_files:
+            ordered_ids = _parse_page_ids(zf)
+            if not ordered_ids:
                 return by_page
-
-            content_data = json.loads(zf.read(content_files[0]))
-            page_ids = content_data.get("cPages", {}).get("pages", [])
-            if not page_ids:
-                page_ids = content_data.get("pages", [])
-
-            ordered_ids = []
-            for page in page_ids:
-                if isinstance(page, dict):
-                    ordered_ids.append(page.get("id", ""))
-                else:
-                    ordered_ids.append(str(page))
 
             rm_files = [n for n in zf.namelist() if n.endswith(".rm")]
 
@@ -635,21 +631,9 @@ def _extract_highlights_by_page(
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            content_files = [n for n in zf.namelist() if n.endswith(".content")]
-            if not content_files:
+            ordered_ids = _parse_page_ids(zf)
+            if not ordered_ids:
                 return result
-
-            content_data = json.loads(zf.read(content_files[0]))
-            page_ids = content_data.get("cPages", {}).get("pages", [])
-            if not page_ids:
-                page_ids = content_data.get("pages", [])
-
-            ordered_ids = []
-            for page in page_ids:
-                if isinstance(page, dict):
-                    ordered_ids.append(page.get("id", ""))
-                else:
-                    ordered_ids.append(str(page))
 
             rm_files = [n for n in zf.namelist() if n.endswith(".rm")]
 
@@ -821,21 +805,9 @@ def _load_rm_pages(zip_path: Path) -> List[Tuple[int, bytes]]:
     result: List[Tuple[int, bytes]] = []
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            content_files = [n for n in zf.namelist() if n.endswith(".content")]
-            if not content_files:
+            ordered_ids = _parse_page_ids(zf)
+            if not ordered_ids:
                 return result
-
-            content_data = json.loads(zf.read(content_files[0]))
-            page_ids = content_data.get("cPages", {}).get("pages", [])
-            if not page_ids:
-                page_ids = content_data.get("pages", [])
-
-            ordered_ids = []
-            for page in page_ids:
-                if isinstance(page, dict):
-                    ordered_ids.append(page.get("id", ""))
-                else:
-                    ordered_ids.append(str(page))
 
             rm_files = [n for n in zf.namelist() if n.endswith(".rm")]
 

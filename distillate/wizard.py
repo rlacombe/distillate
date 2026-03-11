@@ -583,6 +583,26 @@ def _init_wizard() -> None:
             _init_step6_extras(save_to_env)
             _init_done(ENV_PATH)
             return
+        # Warn about existing state
+        try:
+            from distillate.state import STATE_PATH
+            if STATE_PATH.exists():
+                import json as _json
+                state_data = _json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                n_papers = len(state_data.get("documents", {}))
+                if n_papers > 0:
+                    print()
+                    print(f"  Warning: You have {n_papers} tracked paper(s) in state.json.")
+                    print("  A full re-setup will NOT erase your papers, but if you")
+                    print("  want to back them up first, run:")
+                    print(f"    distillate --export-state ~/distillate-backup.json")
+                    print()
+                    proceed = input("  Continue with full re-setup? [Y/n]: ").strip().lower()
+                    if proceed and proceed != "y":
+                        print("  Aborted.")
+                        return
+        except Exception:
+            pass
         print()
     else:
         print("  Welcome to Distillate")
