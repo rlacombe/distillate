@@ -422,6 +422,174 @@ class TestFetchPdfBytes:
         assert key == ""
 
 
+# ── Task 7: _process_paper_bundle ────────────────────────────────────────
+
+
+class TestProcessPaperBundle:
+    @pytest.fixture(autouse=True)
+    def _mock_deps(self):
+        """Mock all lazy-imported modules used by _process_paper_bundle."""
+        import distillate as _pkg
+        self.mock_config = MagicMock()
+        self.mock_obsidian = MagicMock()
+        self.mock_renderer = MagicMock()
+        self.mock_summarizer = MagicMock()
+        self.mock_zc = MagicMock()
+        self.mock_rm = MagicMock()
+
+        mocks = {
+            "distillate.config": self.mock_config,
+            "distillate.obsidian": self.mock_obsidian,
+            "distillate.renderer": self.mock_renderer,
+            "distillate.summarizer": self.mock_summarizer,
+            "distillate.zotero_client": self.mock_zc,
+            "distillate.remarkable_client": self.mock_rm,
+        }
+        with patch.dict("sys.modules", mocks), \
+             patch.object(_pkg, "config", self.mock_config, create=True), \
+             patch.object(_pkg, "obsidian", self.mock_obsidian, create=True), \
+             patch.object(_pkg, "renderer", self.mock_renderer, create=True), \
+             patch.object(_pkg, "summarizer", self.mock_summarizer, create=True), \
+             patch.object(_pkg, "zotero_client", self.mock_zc, create=True), \
+             patch.object(_pkg, "remarkable_client", self.mock_rm, create=True):
+            # Default config
+            self.mock_config.is_zotero_reader.return_value = True
+            self.mock_config.SYNC_HIGHLIGHTS = False
+            self.mock_config.ZOTERO_TAG_READ = "read"
+            self.mock_config.RM_FOLDER_SAVED = "Saved"
+
+            # Default returns
+            self.mock_zc.download_pdf.return_value = b"%PDF-test"
+            self.mock_zc.get_raw_annotations.return_value = []
+            self.mock_zc.get_linked_attachment.return_value = None
+            self.mock_zc.create_linked_attachment.return_value = None
+            self.mock_zc.get_highlight_annotations.return_value = {1: ["A highlight"]}
+            self.mock_zc.build_note_html.return_value = "<p>Note</p>"
+            self.mock_zc.set_note.return_value = "NOTE1"
+            self.mock_zc.get_pdf_attachment.return_value = None
+
+            self.mock_renderer.render_annotated_pdf_from_annotations.return_value = False
+            self.mock_summarizer.extract_insights.return_value = ["Insight"]
+            self.mock_summarizer.summarize_read_paper.return_value = ("Summary", "One liner")
+            self.mock_obsidian.save_annotated_pdf.return_value = None
+            self.mock_obsidian.get_obsidian_uri.return_value = None
+            yield
+
+    def _make_doc(self, **overrides):
+        doc = {
+            "title": "Test Paper",
+            "remarkable_doc_name": "test",
+            "zotero_item_key": "KEY1",
+            "zotero_attachment_key": "ATT1",
+            "authors": ["Alice"],
+            "status": "tracked",
+            "uploaded_at": "2025-01-01T00:00:00",
+            "processed_at": None,
+            "metadata": {"citekey": "alice_test_2025", "tags": ["ML"],
+                         "abstract": "Abstract", "hf_summary": "", "s2_tldr": ""},
+        }
+        doc.update(overrides)
+        return doc
+
+    def test_zotero_mode_success(self):
+        from distillate.pipeline import _process_paper_bundle
+        doc = self._make_doc()
+        state = MagicMock()
+        ok = _process_paper_bundle(doc, state)
+        assert ok is True
+        state.mark_processed.assert_called_once()
+        state.save.assert_called_once()
+        self.mock_obsidian.create_paper_note.assert_called_once()
+        self.mock_zc.set_note.assert_called_once()
+
+    def test_zotero_mode_no_pdf_returns_false(self):
+        from distillate.pipeline import _process_paper_bundle
+        self.mock_zc.download_pdf.side_effect = requests.exceptions.HTTPError(
+            response=MagicMock(status_code=404)
+        )
+        self.mock_zc.download_pdf_from_webdav.return_value = None
+        self.mock_zc.download_pdf_from_url.return_value = None
+        doc = self._make_doc()
+        state = MagicMock()
+        ok = _process_paper_bundle(doc, state)
+        assert ok is False
+        state.mark_processed.assert_not_called()
+
+    def test_refresh_metadata_fetches_from_zotero(self):
+        from distillate.pipeline import _process_paper_bundle
+        self.mock_zc.get_items_by_keys.return_value = [
+            {"key": "KEY1", "data": {"tags": [{"tag": "read"}]}}
+        ]
+        self.mock_zc.extract_metadata.return_value = {"citekey": "new_ck", "tags": ["AI"]}
+        doc = self._make_doc()
+        state = MagicMock()
+        _process_paper_bundle(doc, state, refresh_metadata=True)
+        self.mock_zc.get_items_by_keys.assert_called_once_with(["KEY1"])
+        assert doc["metadata"] == {"citekey": "new_ck", "tags": ["AI"]}
+
+    def test_ensure_read_tag_calls_add_tag(self):
+        from distillate.pipeline import _process_paper_bundle
+        doc = self._make_doc()
+        state = MagicMock()
+        _process_paper_bundle(doc, state, ensure_read_tag=True)
+        self.mock_zc.add_tag.assert_called_once_with("KEY1", "read")
+
+    def test_recreate_note_deletes_existing(self):
+        from distillate.pipeline import _process_paper_bundle
+        doc = self._make_doc()
+        state = MagicMock()
+        _process_paper_bundle(doc, state, recreate_note=True)
+        self.mock_obsidian.ensure_dataview_note.assert_called_once()
+        self.mock_obsidian.delete_paper_note.assert_called_once()
+
+    def test_delete_inbox_pdf_flag(self):
+        from distillate.pipeline import _process_paper_bundle
+        doc = self._make_doc()
+        state = MagicMock()
+        _process_paper_bundle(doc, state, delete_inbox_pdf=True)
+        self.mock_obsidian.delete_inbox_pdf.assert_called_once()
+
+    def test_move_on_rm_flag(self):
+        from distillate.pipeline import _process_paper_bundle
+        self.mock_config.is_zotero_reader.return_value = False
+        self.mock_rm.download_document_bundle_to.return_value = True
+        self.mock_renderer.extract_highlights.return_value = {1: ["h"]}
+        self.mock_renderer.extract_typed_notes.return_value = {}
+        self.mock_renderer.ocr_handwritten_notes.return_value = {}
+        self.mock_renderer.get_page_count.return_value = 5
+        self.mock_renderer.render_annotated_pdf.return_value = False
+        self.mock_rm.download_annotated_pdf_to.return_value = False
+        doc = self._make_doc()
+        state = MagicMock()
+        # We need the zip_path to exist for the test
+        with patch("distillate.pipeline.Path") as mock_path_cls:
+            # Let tempdir work normally but mock zip existence
+            mock_path_cls.side_effect = Path
+            _process_paper_bundle(
+                doc, state,
+                rm_folder="Read",
+                move_on_rm=True,
+                use_rm_geta_fallback=True,
+            )
+        self.mock_rm.move_document.assert_called_once_with(
+            "test", "Read", "Saved",
+        )
+
+    def test_state_updated_with_highlight_stats(self):
+        from distillate.pipeline import _process_paper_bundle
+        self.mock_zc.get_highlight_annotations.return_value = {
+            1: ["word1 word2", "word3"],
+            3: ["word4 word5 word6"],
+        }
+        doc = self._make_doc()
+        state = MagicMock()
+        _process_paper_bundle(doc, state)
+        assert doc["highlight_count"] == 3
+        assert doc["highlighted_pages"] == 2
+        assert doc["highlight_word_count"] == 6
+        assert doc["engagement"] > 0
+
+
 # ── Task 8: Reinstall safety ─────────────────────────────────────────────
 
 
