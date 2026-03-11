@@ -445,7 +445,7 @@ class TestImport:
             )
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
 
         _import(["2"])
 
@@ -509,7 +509,7 @@ class TestImport:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
         monkeypatch.setattr("builtins.input", lambda _: "all")
 
         _import([])
@@ -591,7 +591,7 @@ class TestImport:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
 
         _import(["10"])
 
@@ -628,7 +628,7 @@ class TestInitSeed:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
         monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/rmapi")
         monkeypatch.setenv("REMARKABLE_DEVICE_TOKEN", "tok")
         monkeypatch.setattr(
@@ -821,8 +821,8 @@ class TestSchedule:
         def mock_linux():
             called.append("linux")
 
-        monkeypatch.setattr("distillate.main._schedule_macos", mock_macos)
-        monkeypatch.setattr("distillate.main._schedule_linux", mock_linux)
+        monkeypatch.setattr("distillate.wizard._schedule_macos", mock_macos)
+        monkeypatch.setattr("distillate.wizard._schedule_linux", mock_linux)
 
         monkeypatch.setattr("platform.system", lambda: "Darwin")
         _schedule()

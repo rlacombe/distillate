@@ -32,7 +32,7 @@ def _find_papers_from_state(query: str, state) -> List[tuple]:
     Reuses main._find_papers logic: index number, exact citekey,
     citekey substring, title substring.
     """
-    from distillate.main import _find_papers
+    from distillate.pipeline import _find_papers
     return _find_papers(query, state)
 
 
@@ -768,7 +768,7 @@ def reprocess_paper(*, state, identifier: str) -> dict:
     title = doc.get("title", "")
 
     try:
-        from distillate.main import _reprocess
+        from distillate.pipeline import _reprocess
         _reprocess([identifier])
         return {"success": True, "title": title}
     except Exception as e:
@@ -807,7 +807,7 @@ def promote_papers(*, state, identifiers: List[str], demote: bool = False) -> di
         return {"success": False, "error": "Another distillate instance is running."}
 
     try:
-        from distillate.main import _demote_and_promote
+        from distillate.pipeline import _demote_and_promote
         result = _demote_and_promote(state, pick_keys, verbose=False, demote=demote)
         state.reload()
         return {

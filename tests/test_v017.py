@@ -204,7 +204,7 @@ class TestFirstRunStatus:
 
         main._status()
         captured = capsys.readouterr()
-        assert "No papers tracked yet" in captured.out
+        assert "No experiments or papers tracked yet" in captured.out
         assert "--init" in captured.out
 
     def test_status_works_normally_with_state(

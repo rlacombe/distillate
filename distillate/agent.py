@@ -376,7 +376,7 @@ def _run_init() -> None:
     """Run the setup wizard inline, then reload config."""
     import importlib
 
-    from distillate.main import _init_wizard
+    from distillate.wizard import _init_wizard
     _init_wizard()
     importlib.reload(config)
     print(f"\n  {_dim('Config reloaded. Back to Nicolas.')}\n")
