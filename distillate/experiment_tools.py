@@ -721,11 +721,13 @@ def scan_project_tool(*, state, path: str) -> dict:
                 if run_data["name"] not in existing_names:
                     state.add_run(project_id, run_id, run_data)
                     new_runs += 1
-            state.update_project(
-                project_id,
+            update_kw = dict(
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
                 last_commit_hash=result["head_hash"],
             )
+            if result.get("goals"):
+                update_kw["goals"] = result["goals"]
+            state.update_project(project_id, **update_kw)
             state.save()
             message = f"Rescanned '{result['name']}': found {new_runs} new run(s)."
         else:
@@ -736,11 +738,13 @@ def scan_project_tool(*, state, path: str) -> dict:
             )
             for run_id, run_data in result.get("runs", {}).items():
                 state.add_run(project_id, run_id, run_data)
-            state.update_project(
-                project_id,
+            update_kw = dict(
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
                 last_commit_hash=result["head_hash"],
             )
+            if result.get("goals"):
+                update_kw["goals"] = result["goals"]
+            state.update_project(project_id, **update_kw)
             state.save()
             message = (
                 f"Now tracking '{result['name']}' with "

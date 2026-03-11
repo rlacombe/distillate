@@ -345,8 +345,14 @@ def _create_app():
     def _infer_key_metric_name(proj: dict) -> str:
         """Infer the primary metric name from goals or most common result key."""
         goals = proj.get("goals", [])
-        if goals and isinstance(goals[0], dict) and goals[0].get("metric"):
-            return goals[0]["metric"]
+        if goals:
+            # Prefer the optimization target (non-constraint) over constraints
+            for g in goals:
+                if isinstance(g, dict) and g.get("metric") and not g.get("is_constraint"):
+                    return g["metric"]
+            # Fall back to first goal
+            if isinstance(goals[0], dict) and goals[0].get("metric"):
+                return goals[0]["metric"]
         # Fall back to most common numeric result key across kept runs
         from collections import Counter
         key_counts: Counter = Counter()

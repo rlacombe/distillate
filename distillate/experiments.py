@@ -527,10 +527,57 @@ def scan_project(path: Path) -> dict:
         if not _is_duplicate_run(runs, run):
             runs[run["id"]] = run
 
+    # Ingest .mlnotebook/state.json (structured experiment tracker)
+    goals: list[dict] = []
+    mlnb_state = path / ".mlnotebook" / "state.json"
+    if mlnb_state.exists():
+        try:
+            with open(mlnb_state, encoding="utf-8") as f:
+                mlnb = json.load(f)
+            # Extract goals
+            proj_meta = mlnb.get("project", {})
+            goals = proj_meta.get("goals", [])
+            if proj_meta.get("description"):
+                project_name = proj_meta.get("name", project_name) or project_name
+
+            # Extract experiments
+            for exp in mlnb.get("experiments", []):
+                hp = exp.get("hyperparameters", {})
+                results = exp.get("results", {})
+
+                # Promote metric-like HP keys into results
+                _METRIC_HP_KEYS = {"total_parameters", "total_params", "n_params",
+                                   "param_count", "model_size", "flops"}
+                for k in _METRIC_HP_KEYS:
+                    if k in hp and isinstance(hp[k], (int, float)) and k not in results:
+                        results[k] = hp[k]
+
+                run = _create_run(
+                    prefix="mlnb",
+                    name=exp.get("name", exp.get("id", "")),
+                    hyperparameters={k: v for k, v in hp.items()
+                                     if isinstance(v, (int, float, str, bool))
+                                     and k not in _METRIC_HP_KEYS},
+                    results={k: v for k, v in results.items()
+                             if isinstance(v, (int, float))},
+                    tags=exp.get("tags", []),
+                    files_created=exp.get("files_created", []),
+                    started_at=exp.get("started_at", ""),
+                    completed_at=exp.get("completed_at", ""),
+                    duration_minutes=exp.get("duration_minutes", 0),
+                    hypothesis=exp.get("hypothesis", ""),
+                    decision=exp.get("decision", ""),
+                )
+                if not _is_duplicate_run(runs, run):
+                    runs[run["id"]] = run
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
     return {
         "name": project_name,
         "path": str(path),
         "runs": runs,
+        "goals": goals,
         "has_git": has_git,
         "head_hash": _git_head_hash(path) if has_git else "",
         "total_commits": len(commits),
