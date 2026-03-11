@@ -20,6 +20,17 @@ Auto-research control plane: live experiment capture, desktop lab dashboard, and
 - **Desktop app**: Electron shell for Nicolas — native macOS app with syntax highlighting and tool indicators
 - **BYOK mode**: bring your own Anthropic API key via Settings (Cmd+,)
 
+### CLI & Internals
+
+- **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown, engagement distribution, most-cited papers, top authors
+- **`--export-state` / `--import-state`**: backup and restore tracked papers and reading history
+- **`--verbose` / `-v`**: show INFO-level logs on the console without full DEBUG output
+- **State schema versioning**: migration framework for future state.json changes (currently v1)
+- **S2 TLDR fallback**: papers without AI summaries now fall back to Semantic Scholar's one-sentence TLDR before using the abstract
+- **Progress bar for `--refresh-metadata`**: shows `[i/N]` progress and a summary of changes
+- **Init safety**: `--init` warns when existing tracked papers are found, offers backup before re-setup
+- Internal: extracted `_parse_page_ids()` (renderer, 4 call sites) and `_fetch_pdf_bytes()` (pipeline, 5 call sites) to reduce code duplication
+
 ### Improvements
 
 - Dual-source ingestion with fingerprint-based correlation and deduplication
