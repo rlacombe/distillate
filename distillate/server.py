@@ -177,6 +177,81 @@ def _create_app():
         except RuntimeError as e:
             return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
 
+    @app.post("/experiments/{project_id}/launch")
+    async def launch_experiment_endpoint(project_id: str, body: dict = None):
+        """Launch a new experiment session for the project."""
+        from pathlib import Path
+
+        from distillate.launcher import launch_experiment
+
+        body = body or {}
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        proj_path = Path(proj.get("path", ""))
+        if not proj_path.exists():
+            return JSONResponse({"ok": False, "reason": "path_not_found"}, status_code=404)
+
+        model = body.get("model", "claude-sonnet-4-6")
+        max_turns = body.get("max_turns", 100)
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _executor,
+                lambda: launch_experiment(
+                    proj_path, model=model, max_turns=max_turns, project=proj,
+                ),
+            )
+            # Persist session to state
+            sessions = proj.setdefault("sessions", {})
+            sessions[result["session_id"]] = result
+            _state.save()
+
+            return JSONResponse({
+                "ok": True,
+                "session_id": result.get("session_id", ""),
+                "tmux_session": result.get("tmux_session", ""),
+            })
+        except Exception as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
+
+    @app.post("/experiments/{project_id}/stop")
+    async def stop_experiment_endpoint(project_id: str):
+        """Stop all running sessions for the project."""
+        from distillate.launcher import _ensure_path, stop_session
+
+        _ensure_path()
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        sessions = proj.get("sessions", {})
+        running = [s for s in sessions.values() if s.get("status") == "running"]
+        if not running:
+            return JSONResponse({"ok": False, "reason": "no_running_session"}, status_code=404)
+
+        stopped = []
+        for sess in running:
+            tmux_name = sess.get("tmux_session", "")
+            host = sess.get("host")
+            if tmux_name:
+                try:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        _executor, stop_session, tmux_name, host,
+                    )
+                    sess["status"] = "completed"
+                    stopped.append(tmux_name)
+                except Exception:
+                    pass
+        if stopped:
+            _state.save()
+        return JSONResponse({"ok": True, "stopped": stopped})
+
     @app.get("/experiments/stream")
     async def experiments_stream():
         """SSE endpoint that tails experiment events from tracked projects."""
@@ -257,10 +332,38 @@ def _create_app():
             "status": run.get("status", ""),
             "decision": run.get("decision", ""),
             "key_metric": key_metric,
+            "results": {k: v for k, v in results.items() if isinstance(v, (int, float))},
+            "hyperparameters": run.get("hyperparameters", {}),
+            "hypothesis": run.get("hypothesis", ""),
+            "reasoning": run.get("reasoning", ""),
+            "baseline_comparison": run.get("baseline_comparison"),
             "started_at": run.get("started_at", ""),
             "duration_minutes": run.get("duration_minutes", 0),
             "tags": run.get("tags", []),
         }
+
+    def _infer_key_metric_name(proj: dict) -> str:
+        """Infer the primary metric name from goals or most common result key."""
+        goals = proj.get("goals", [])
+        if goals and isinstance(goals[0], dict) and goals[0].get("metric"):
+            return goals[0]["metric"]
+        # Fall back to most common numeric result key across kept runs
+        from collections import Counter
+        key_counts: Counter = Counter()
+        for run in proj.get("runs", {}).values():
+            if run.get("decision") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    key_counts[k] += 1
+        if key_counts:
+            return key_counts.most_common(1)[0][0]
+        # Fall back to any numeric result key
+        for run in proj.get("runs", {}).values():
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    return k
+        return ""
 
     @app.get("/experiments/list")
     async def list_experiments():
@@ -280,6 +383,7 @@ def _create_app():
                 "tags": proj.get("tags", []),
                 "run_count": len(runs),
                 "active_sessions": active,
+                "key_metric_name": _infer_key_metric_name(proj),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
                 "runs": [_run_summary(r) for r in sorted(
                     runs.values(), key=lambda r: r.get("started_at", ""),

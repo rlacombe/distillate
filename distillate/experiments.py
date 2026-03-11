@@ -1917,7 +1917,7 @@ def _render_diff(diff: dict, run_a: dict, run_b: dict) -> str:
 
 _HTML_NOTEBOOK_CSS = """\
 :root {
-  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --bg: #0f0f23; --surface: #1a1a2e; --border: #2a2a3e;
   --text: #e6edf3; --text-dim: #8b949e;
   --accent: #6366f1; --accent-dim: rgba(99,102,241,0.15);
   --green: #3fb950; --green-dim: rgba(63,185,80,0.15);

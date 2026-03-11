@@ -20,6 +20,50 @@ from distillate.config import CONFIG_DIR
 log = logging.getLogger(__name__)
 
 
+def _ensure_path():
+    """Augment PATH so tmux/claude are found from minimal-PATH environments (Electron)."""
+    extra = ["/usr/local/bin", "/opt/homebrew/bin",
+             str(Path.home() / ".local" / "bin")]
+    path = os.environ.get("PATH", "")
+    for p in extra:
+        if p not in path:
+            path = p + ":" + path
+    os.environ["PATH"] = path
+
+
+def ensure_tmux():
+    """Check that tmux is installed; install via brew if missing (macOS)."""
+    _ensure_path()
+    if shutil.which("tmux"):
+        return True
+    system = platform.system()
+    if system == "Darwin" and shutil.which("brew"):
+        log.info("tmux not found, installing via Homebrew...")
+        result = subprocess.run(
+            ["brew", "install", "tmux"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log.info("tmux installed successfully")
+            return True
+        log.error("Failed to install tmux: %s", result.stderr.strip())
+    elif system == "Linux":
+        for mgr, args in [("apt-get", ["-y"]), ("yum", ["-y"]), ("pacman", ["-S", "--noconfirm"])]:
+            if shutil.which(mgr):
+                log.info("tmux not found, installing via %s...", mgr)
+                result = subprocess.run(
+                    ["sudo", mgr, "install", *args, "tmux"],
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0:
+                    return True
+                break
+    raise RuntimeError(
+        "tmux is required but not installed. "
+        "Install it with: brew install tmux (macOS) or apt install tmux (Linux)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Template management
 # ---------------------------------------------------------------------------
@@ -289,6 +333,8 @@ def launch_experiment(
     5. Return session dict for state tracking
     """
     project_path = project_path.resolve()
+    ensure_tmux()
+
     prompt = project_path / "PROMPT.md"
     if not prompt.exists():
         raise FileNotFoundError(f"No PROMPT.md found in {project_path}")
