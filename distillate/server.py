@@ -16,6 +16,11 @@ REST API Endpoints
 General:
     GET  /status                              App version, paper/experiment counts.
     POST /sync                                Trigger cloud sync (pull + push).
+    GET  /report                              Reading insights dashboard (lifetime stats,
+                                              velocity, topics, engagement, citations).
+    GET  /state/export                        Download current state.json for backup.
+    POST /state/import                        Validate and import a state backup.
+                                              Body: ``{"state": {...}}``.
 
 Papers (Papers tab):
     GET  /papers                              List all papers (truncated summaries).
@@ -402,6 +407,7 @@ def _create_app():
             "status": doc.get("status", ""),
             "authors": doc.get("authors", []),
             "summary": doc.get("summary", "") or "",
+            "s2_tldr": meta.get("s2_tldr", ""),
             "engagement": doc.get("engagement", 0),
             "tags": meta.get("tags", []),
             "citation_count": meta.get("citation_count", 0),
@@ -414,6 +420,154 @@ def _create_app():
             "promoted_at": doc.get("promoted_at", ""),
             "highlights": highlights,
         }})
+
+    # -------------------------------------------------------------------
+    # Insights & state management
+    # -------------------------------------------------------------------
+
+    @app.get("/report")
+    async def report():
+        """Reading insights dashboard data."""
+        from collections import Counter
+        from datetime import timedelta
+
+        _state.reload()
+        processed = _state.documents_with_status("processed")
+
+        if not processed:
+            return JSONResponse({"ok": True, "empty": True})
+
+        # Lifetime stats
+        total_papers = len(processed)
+        total_pages = sum(
+            d.get("page_count", 0)
+            or d.get("metadata", {}).get("numPages", 0)
+            or 0
+            for d in processed
+        )
+        total_words = sum(d.get("highlight_word_count", 0) for d in processed)
+        engagements = [d.get("engagement", 0) for d in processed if d.get("engagement")]
+        avg_engagement = round(sum(engagements) / len(engagements)) if engagements else 0
+
+        # Reading velocity (last 8 weeks)
+        velocity = []
+        week_counts: Counter = Counter()
+        now = datetime.now(timezone.utc)
+        for doc in processed:
+            ts = doc.get("processed_at", "")
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(ts)
+                weeks_ago = (now - dt).days // 7
+                if weeks_ago < 8:
+                    monday = dt - timedelta(days=dt.weekday())
+                    label = monday.strftime("%Y-%m-%d")
+                    week_counts[label] += 1
+            except (ValueError, TypeError):
+                pass
+        for label in sorted(week_counts.keys()):
+            velocity.append({"week": label, "count": week_counts[label]})
+
+        # Top topics
+        topic_counter: Counter = Counter()
+        for doc in processed:
+            tags = doc.get("metadata", {}).get("tags") or []
+            for tag in tags:
+                topic_counter[tag] += 1
+        topics = [{"topic": t, "count": c} for t, c in topic_counter.most_common(8)]
+
+        # Engagement distribution
+        buckets = {"0-25%": 0, "25-50%": 0, "50-75%": 0, "75-100%": 0}
+        for doc in processed:
+            eng = doc.get("engagement", 0)
+            if eng <= 25:
+                buckets["0-25%"] += 1
+            elif eng <= 50:
+                buckets["25-50%"] += 1
+            elif eng <= 75:
+                buckets["50-75%"] += 1
+            else:
+                buckets["75-100%"] += 1
+        engagement_dist = [{"range": k, "count": v} for k, v in buckets.items()]
+
+        # Most-cited papers
+        cited = sorted(
+            [d for d in processed if d.get("metadata", {}).get("citation_count", 0) > 0],
+            key=lambda d: d.get("metadata", {}).get("citation_count", 0),
+            reverse=True,
+        )
+        cited_papers = []
+        for doc in cited[:5]:
+            key = doc.get("zotero_item_key", "")
+            cited_papers.append({
+                "title": doc.get("title", "")[:80],
+                "citations": doc["metadata"]["citation_count"],
+                "index": _state.index_of(key) if key else 0,
+            })
+
+        # Most-read authors
+        author_counter: Counter = Counter()
+        for doc in processed:
+            for author in doc.get("authors", []):
+                if author and author.lower() != "unknown":
+                    author_counter[author] += 1
+        top_authors = [
+            {"name": a, "count": c}
+            for a, c in author_counter.most_common(5)
+            if c >= 2
+        ]
+
+        return JSONResponse({
+            "ok": True,
+            "lifetime": {
+                "papers": total_papers,
+                "pages": total_pages,
+                "words": total_words,
+                "avg_engagement": avg_engagement,
+            },
+            "velocity": velocity,
+            "topics": topics,
+            "engagement": engagement_dist,
+            "cited_papers": cited_papers,
+            "top_authors": top_authors,
+        })
+
+    @app.get("/state/export")
+    async def export_state():
+        """Return current state as JSON for backup."""
+        from distillate.state import STATE_PATH
+        if not STATE_PATH.exists():
+            return JSONResponse({"ok": False, "reason": "no_state"}, status_code=404)
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return JSONResponse({"ok": True, "state": data})
+
+    @app.post("/state/import")
+    async def import_state(body: dict):
+        """Validate and import a state backup."""
+        import shutil
+        from distillate.state import STATE_PATH, _run_migrations
+
+        state_data = body.get("state")
+        if not state_data or not isinstance(state_data, dict):
+            return JSONResponse({"ok": False, "reason": "invalid_body"}, status_code=400)
+        if "documents" not in state_data:
+            return JSONResponse({"ok": False, "reason": "missing_documents"}, status_code=400)
+
+        _run_migrations(state_data)
+
+        # Backup existing
+        if STATE_PATH.exists():
+            backup = STATE_PATH.with_suffix(".json.bak")
+            shutil.copy2(STATE_PATH, backup)
+
+        STATE_PATH.write_text(
+            json.dumps(state_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _state.reload()
+        n_papers = len(state_data.get("documents", {}))
+        return JSONResponse({"ok": True, "papers": n_papers})
 
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):
