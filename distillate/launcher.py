@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -466,7 +467,7 @@ def _spawn_ssh(
     session_name: str, host: str, remote_dir: str, command: str,
 ) -> None:
     """Spawn a remote tmux session via SSH."""
-    ssh_cmd = f"cd {remote_dir} && tmux new-session -d -s {session_name} {command!r}"
+    ssh_cmd = f"cd {shlex.quote(remote_dir)} && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
@@ -482,7 +483,7 @@ def session_status(session_name: str, host: str | None = None) -> str:
     """Check if tmux session is alive. Returns 'running' | 'completed' | 'unknown'."""
     cmd = ["tmux", "has-session", "-t", session_name]
     if host:
-        cmd = ["ssh", host, " ".join(cmd)]
+        cmd = ["ssh", host, f"tmux has-session -t {shlex.quote(session_name)}"]
 
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode == 0:
@@ -512,7 +513,7 @@ def attach_session(session_name: str, host: str | None = None) -> None:
     system = platform.system()
 
     if host:
-        attach_cmd = f"ssh -t {host} tmux attach -t {session_name}"
+        attach_cmd = f"ssh -t {shlex.quote(host)} tmux attach -t {shlex.quote(session_name)}"
     else:
         attach_cmd = f"tmux attach -t {session_name}"
 
@@ -538,7 +539,7 @@ def stop_session(session_name: str, host: str | None = None) -> bool:
     """Send C-c to tmux session to stop gracefully. Returns success."""
     cmd = ["tmux", "send-keys", "-t", session_name, "C-c", ""]
     if host:
-        cmd = ["ssh", host, " ".join(cmd)]
+        cmd = ["ssh", host, f"tmux send-keys -t {shlex.quote(session_name)} C-c ''"]
 
     result = subprocess.run(cmd, capture_output=True)
     return result.returncode == 0

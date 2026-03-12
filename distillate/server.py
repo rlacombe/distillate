@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from distillate.agent_core import stream_turn
-from distillate.state import State
+from distillate.state import State, acquire_lock, release_lock
 
 log = logging.getLogger(__name__)
 
@@ -282,9 +282,13 @@ def _create_app():
                             max_turns=100, project=proj,
                         ),
                     )
-                    sessions = proj.setdefault("sessions", {})
-                    sessions[launch_result["session_id"]] = launch_result
-                    _state.save()
+                    acquire_lock()
+                    try:
+                        sessions = proj.setdefault("sessions", {})
+                        sessions[launch_result["session_id"]] = launch_result
+                        _state.save()
+                    finally:
+                        release_lock()
                     yield json.dumps({
                         "step": 5, "status": "done",
                         "tmux_session": launch_result.get("tmux_session", ""),
@@ -373,7 +377,7 @@ def _create_app():
         # Find the most recent running session
         running = [s for s in sessions.values() if s.get("status") == "running"]
         if not running:
-            return JSONResponse({"ok": False, "reason": "no_running_session", "output": ""})
+            return JSONResponse({"ok": False, "reason": "no_running_session", "output": ""}, status_code=404)
 
         sess = running[-1]
         tmux_name = sess.get("tmux_session", "")
@@ -457,9 +461,13 @@ def _create_app():
                 ),
             )
             # Persist session to state
-            sessions = proj.setdefault("sessions", {})
-            sessions[result["session_id"]] = result
-            _state.save()
+            acquire_lock()
+            try:
+                sessions = proj.setdefault("sessions", {})
+                sessions[result["session_id"]] = result
+                _state.save()
+            finally:
+                release_lock()
 
             return JSONResponse({
                 "ok": True,
@@ -624,7 +632,18 @@ def _create_app():
 
     @app.get("/experiments/list")
     async def list_experiments():
+        from distillate.launcher import refresh_session_statuses
+
         _state.reload()
+
+        # Refresh tmux session statuses so the UI doesn't show stale "running"
+        loop = asyncio.get_event_loop()
+        changed = await loop.run_in_executor(
+            _executor, refresh_session_statuses, _state,
+        )
+        if changed:
+            _state.save()
+
         projects = _state.projects
         result = []
         for proj_id, proj in projects.items():
