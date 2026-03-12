@@ -29,7 +29,7 @@ MAX_TOOL_RESULT_CHARS = 12000
 VERBOSE_TOOLS = frozenset({
     "run_sync", "reprocess_paper", "promote_papers",
     "add_paper_to_zotero", "refresh_metadata",
-    "scan_project", "add_project",
+    "scan_project", "add_project", "init_experiment",
 })
 
 TOOL_LABELS = {
@@ -60,6 +60,7 @@ TOOL_LABELS = {
     "link_paper": "\U0001F517 Linking paper to project",
     "update_goals": "\U0001F3AF Setting project goals",
     "annotate_run": "\U0001F4DD Adding note to run",
+    "init_experiment": "\u2697\ufe0f Drafting experiment prompt",
 }
 
 
@@ -275,6 +276,10 @@ def build_system_prompt(
             "- Use compare_runs to show what changed between experiments.\n"
             "- Use rename_project, rename_run, update_project, update_goals, "
             "link_paper to manage projects.\n"
+            "- Use init_experiment to set up a new experiment from scratch — "
+            "it scans the directory, drafts a PROMPT.md with Claude, and "
+            "sets up hooks and tracking. Use when the user wants to start "
+            "a new experiment or asks how to set one up.\n"
             "- Use annotate_run to add a hypothesis or note to a run — "
             "user-provided hypotheses take precedence over LLM enrichment.\n"
             "- Use delete_project/delete_run with confirm=false first, then "
@@ -370,6 +375,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "launch_experiment": et.launch_experiment_tool,
             "experiment_status": et.experiment_status_tool,
             "stop_experiment": et.stop_experiment_tool,
+            "init_experiment": et.init_experiment_tool,
         })
 
     fn = dispatch.get(name)

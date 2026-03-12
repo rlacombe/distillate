@@ -15,8 +15,13 @@ import random
 import sys
 import threading
 
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 from distillate import config
 from distillate.agent_core import (
@@ -39,6 +44,8 @@ log = logging.getLogger(__name__)
 
 _CONVERSATION_LOG_PATH = config.CONFIG_DIR / "conversations.json"
 _MAX_SESSIONS = 50
+
+_console = Console(highlight=False)
 
 # Re-export constants so existing tests that import from agent still work
 _CONVERSATION_TRIM_THRESHOLD = CONVERSATION_TRIM_THRESHOLD
@@ -269,6 +276,21 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             _run_init()
             state.reload()
             continue
+        if user_input.lower().startswith("/papers"):
+            _show_papers(state, user_input)
+            continue
+        if user_input.lower().startswith("/experiments"):
+            _show_experiments(state)
+            continue
+        if user_input.lower().startswith("/detail"):
+            _show_detail(state, user_input)
+            continue
+        if user_input.lower().startswith("/experiment "):
+            _show_experiment_detail(state, user_input)
+            continue
+        if user_input.lower().startswith("/report"):
+            _show_report(state)
+            continue
 
         _render_turn(
             client, state, conversation, user_input,
@@ -295,16 +317,8 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
         _save_conversation_log(all_sessions)
 
 
-def _term_width() -> int:
-    """Return terminal width, defaulting to 60."""
-    try:
-        return os.get_terminal_size().columns
-    except (ValueError, OSError):
-        return 60
-
-
 def _print_welcome(state: State) -> list[dict]:
-    """Print a compact welcome banner.
+    """Print a compact welcome banner using rich.
 
     Returns experiment update dicts (for later use in the system prompt).
     """
@@ -314,15 +328,8 @@ def _print_welcome(state: State) -> list[dict]:
     n_read = len(processed)
     n_queue = len(queue)
 
-    w = min(_term_width(), 64)
-    dashes = _dim("\u2500\u2500\u2500")
-    header_prefix = f"  {dashes} \u2697\ufe0f  {_bold('Nicolas')} "
-    header_tail = _dim("\u2500" * max(0, w - 19))
-    footer = _dim("  " + "\u2500" * (w - 2))
-
-    print()
-    print(header_prefix + header_tail)
-    print(f"  {_dim('Your research command center.')}")
+    lines = []
+    lines.append("[dim]Your research command center.[/dim]")
 
     experiment_updates: list[dict] = []
 
@@ -338,7 +345,7 @@ def _print_welcome(state: State) -> list[dict]:
         exp_line = f"{n_proj} experiment{'s' if n_proj != 1 else ''} \u00b7 {n_runs} runs"
         if active:
             exp_line += f" \u00b7 {active} running"
-        print(f"  \U0001F9EA {exp_line}")
+        lines.append(f"\U0001F9EA {exp_line}")
 
         # Check for new commits in tracked projects
         from distillate.experiments import check_projects_for_updates
@@ -349,15 +356,30 @@ def _print_welcome(state: State) -> list[dict]:
             n = u["new_commits"]
             s = "s" if n != 1 else ""
             hint = f'try "scan {slug}"'
-            line = f"  \u21b3 {proj_name} has {n} new commit{s} \u2014 {hint}"
-            print(f"  {_dim(line)}")
+            lines.append(f"  [dim]{proj_name} has {n} new commit{s} \u2014 {hint}[/dim]")
 
     # Papers second
-    print(f"  \U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 {_dim('Type /help or /quit.')}")
+    lines.append(f"\U0001F4DA {n_read} papers read \u00b7 {n_queue} in queue \u00b7 [dim]Type /help or /quit.[/dim]")
 
-    print(footer)
+    print()
+    _console.print(Panel(
+        "\n".join(lines),
+        title="\u2697\ufe0f  [bold]Nicolas[/bold]",
+        border_style="dim",
+        padding=(0, 2),
+    ))
 
-    # Contextual suggestions — experiments first
+    # Available commands
+    print()
+    print(f"  {_dim('/papers')}           {_dim('Browse your library')}")
+    print(f"  {_dim('/detail <n>')}       {_dim('View a paper by number')}")
+    if config.EXPERIMENTS_ENABLED and state.projects:
+        print(f"  {_dim('/experiments')}      {_dim('See all experiments')}")
+        print(f"  {_dim('/experiment <n>')}   {_dim('View an experiment')}")
+    print(f"  {_dim('/report')}           {_dim('Reading stats')}")
+    print(f"  {_dim('/help')}             {_dim('All commands')}")
+
+    # Contextual suggestions
     hints = []
     if config.EXPERIMENTS_ENABLED and state.projects:
         hints.append("How are my experiments?")
@@ -367,7 +389,7 @@ def _print_welcome(state: State) -> list[dict]:
         hints.append("Summarize my last read")
     hints.append("What's trending in AI?")
     sep = " \u00b7 "
-    print(f"\n  {_dim('Try:')} {_dim(sep.join(hints))}")
+    print(f"\n  {_dim('Or just ask:')} {_dim(sep.join(hints))}")
 
     return experiment_updates
 
@@ -384,24 +406,488 @@ def _run_init() -> None:
 
 def _print_help() -> None:
     print(
-        f"\n  {_bold('Commands')}\n"
-        "    /init    Run the setup wizard\n"
-        "    /clear   Clear conversation history\n"
-        "    /quit    Exit the agent\n"
-        "    /help    Show this help\n"
+        f"\n  {_bold('Browse')}\n"
+        "    /papers             Browse your full paper library\n"
+        "    /papers read        Show only papers you've finished reading\n"
+        "    /papers unread      Show papers still in your queue\n"
+        "    /detail <n>         View a paper's details — summary, highlights, metadata\n"
         "\n"
-        f"  {_bold('Try asking')}\n"
-        f"    {_dim('What is in my queue?')}\n"
-        f"    {_dim('Tell me about paper 42')}\n"
-        f"    {_dim('Compare my last two ML papers')}\n"
+        f"  {_bold('Experiments')}\n"
+        "    /experiments        See all tracked experiments and their status\n"
+        "    /experiment <name>  View an experiment — runs, metrics, hypotheses\n"
+        "\n"
+        f"  {_bold('Insights')}\n"
+        "    /report             Your reading stats — velocity, topics, engagement\n"
+        "\n"
+        f"  {_bold('Session')}\n"
+        "    /init               Run the setup wizard\n"
+        "    /clear              Clear conversation history\n"
+        "    /quit               Exit\n"
+        "\n"
+        f"  {_bold('Or just ask a question in plain English.')}\n"
         f"    {_dim('What should I read next?')}\n"
-        f"    {_dim('How many papers have I read this month?')}\n"
+        f"    {_dim('Compare my last two ML papers')}\n"
+        f"    {_dim('What is trending in AI?')}\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Slash command renderers — rich tables and panels
+# ---------------------------------------------------------------------------
+
+def _show_papers(state: State, cmd: str) -> None:
+    """Render papers as a rich table. Supports /papers, /papers read, /papers unread."""
+    parts = cmd.strip().split()
+    filter_mode = parts[1].lower() if len(parts) > 1 else None
+
+    if filter_mode == "read":
+        docs = state.documents_with_status("processed")
+        subtitle = "Read"
+    elif filter_mode == "unread":
+        q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+        docs = state.documents_with_status(q_status)
+        subtitle = "Unread"
+    else:
+        # All papers
+        q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+        docs = (
+            state.documents_with_status("processed")
+            + state.documents_with_status(q_status)
+            + state.documents_with_status("processing")
+            + state.documents_with_status("awaiting_pdf")
+        )
+        subtitle = "All"
+
+    if not docs:
+        print(f"\n  No papers found ({subtitle.lower()}).\n")
+        return
+
+    table = Table(title=f"Papers ({subtitle})", title_style="bold", padding=(0, 1))
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("", width=2)  # status dot
+    table.add_column("Title", max_width=50, no_wrap=True)
+    table.add_column("Year", width=5, justify="right")
+    table.add_column("Cites", width=6, justify="right", style="dim")
+
+    # Sort: unread first (by upload date desc), then read (by processed date desc)
+    def _sort_key(d):
+        if d.get("status") == "processed":
+            return (1, d.get("processed_at", ""))
+        return (0, d.get("uploaded_at", ""))
+
+    for doc in sorted(docs, key=_sort_key, reverse=True):
+        idx = state.index_of(doc["zotero_item_key"])
+        idx_str = str(idx) if idx else ""
+        status = doc.get("status", "")
+        if status == "processed":
+            dot = "[green]\u25cf[/green]"
+        elif status in ("on_remarkable", "tracked"):
+            dot = "[yellow]\u25cb[/yellow]"
+        elif status == "processing":
+            dot = "[blue]\u25cb[/blue]"
+        else:
+            dot = "[dim]\u25cb[/dim]"
+
+        title = doc.get("title", "Untitled")
+        if len(title) > 50:
+            title = title[:47] + "..."
+
+        meta = doc.get("metadata", {})
+        year = ""
+        pub_date = meta.get("publication_date", "")
+        if pub_date and len(pub_date) >= 4:
+            year = pub_date[:4]
+
+        cites = meta.get("citation_count", 0)
+        cite_str = f"{cites:,}" if cites else ""
+
+        table.add_row(idx_str, dot, title, year, cite_str)
+
+    print()
+    _console.print(table)
+    print()
+
+
+def _show_experiments(state: State) -> None:
+    """Render experiments as a rich table."""
+    projects = state.projects
+    if not projects:
+        print("\n  No experiments tracked yet.\n")
+        return
+
+    table = Table(title="Experiments", title_style="bold", padding=(0, 1))
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("Name", max_width=28, no_wrap=True)
+    table.add_column("Status", width=10)
+    table.add_column("Runs", width=5, justify="right")
+    table.add_column("Best Metric", max_width=22)
+    table.add_column("Sessions", width=10)
+
+    for proj_id, proj in projects.items():
+        idx = state.project_index_of(proj_id)
+        name = proj.get("name", proj_id)
+        if len(name) > 28:
+            name = name[:25] + "..."
+        status = proj.get("status", "tracking")
+        runs = proj.get("runs", {})
+        run_count = len(runs)
+
+        best_metric = ""
+        for run in runs.values():
+            results = run.get("results", {})
+            for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                       "best_val_acc", "f1", "loss", "val_bpb", "rmse"):
+                if k in results:
+                    val = results[k]
+                    if isinstance(val, float):
+                        best_metric = f"{k}: {val:.4f}"
+                    else:
+                        best_metric = f"{k}: {val}"
+                    break
+            if best_metric:
+                break
+
+        sessions = proj.get("sessions", {})
+        active = sum(1 for s in sessions.values() if s.get("status") == "running")
+        sess_str = f"[green]{active} active[/green]" if active else "[dim]0 active[/dim]"
+
+        table.add_row(str(idx), name, status, str(run_count), best_metric, sess_str)
+
+    print()
+    _console.print(table)
+    print()
+
+
+def _show_detail(state: State, cmd: str) -> None:
+    """Render paper detail as a rich panel."""
+    parts = cmd.strip().split()
+    if len(parts) < 2:
+        print("\n  Usage: /detail <number>\n")
+        return
+
+    try:
+        idx = int(parts[1])
+    except ValueError:
+        print(f"\n  Invalid paper number: {parts[1]}\n")
+        return
+
+    key = state.key_for_index(idx)
+    if not key:
+        print(f"\n  No paper with index {idx}.\n")
+        return
+
+    doc = state.get_document(key)
+    if not doc:
+        print(f"\n  Paper {idx} not found.\n")
+        return
+
+    title = doc.get("title", "Untitled")
+    authors = doc.get("authors", [])
+    meta = doc.get("metadata", {})
+    status = doc.get("status", "unknown")
+    summary = doc.get("summary", "")
+
+    lines = []
+    lines.append(f"[bold]{title}[/bold]")
+    if authors:
+        lines.append(f"[dim]{', '.join(authors[:5])}{'...' if len(authors) > 5 else ''}[/dim]")
+    lines.append("")
+
+    # Metadata row
+    meta_parts = []
+    pub_date = meta.get("publication_date", "")
+    if pub_date:
+        meta_parts.append(pub_date[:10])
+    venue = meta.get("venue", "") or meta.get("publication_venue", "")
+    if venue:
+        meta_parts.append(venue)
+    cites = meta.get("citation_count", 0)
+    if cites:
+        meta_parts.append(f"{cites:,} citations")
+    pages = doc.get("page_count", 0)
+    if pages:
+        meta_parts.append(f"{pages} pages")
+    engagement = doc.get("engagement", 0)
+    if engagement:
+        meta_parts.append(f"{engagement}% engagement")
+    if meta_parts:
+        lines.append("[dim]" + " \u00b7 ".join(meta_parts) + "[/dim]")
+        lines.append("")
+
+    # Status
+    status_display = {
+        "processed": "[green]Read[/green]",
+        "on_remarkable": "[yellow]On reMarkable[/yellow]",
+        "tracked": "[yellow]In Queue[/yellow]",
+        "processing": "[blue]Processing[/blue]",
+        "awaiting_pdf": "[red]Awaiting PDF[/red]",
+    }
+    lines.append(f"Status: {status_display.get(status, status)}")
+
+    # Summary
+    if summary:
+        lines.append("")
+        lines.append("[bold]Summary[/bold]")
+        lines.append(summary[:500])
+
+    # Highlights
+    word_count = doc.get("highlight_word_count", 0)
+    highlight_count = doc.get("highlight_count", 0)
+    if word_count or highlight_count:
+        lines.append("")
+        lines.append(f"[bold]Highlights[/bold]: {highlight_count} passages, {word_count:,} words")
+
+    # Tags
+    tags = meta.get("tags", [])
+    if tags:
+        lines.append("")
+        lines.append("[dim]Tags: " + ", ".join(tags) + "[/dim]")
+
+    print()
+    _console.print(Panel(
+        "\n".join(lines),
+        title=f"[dim]#{idx}[/dim]",
+        border_style="dim",
+        padding=(1, 2),
+    ))
+    print()
+
+
+def _show_experiment_detail(state: State, cmd: str) -> None:
+    """Render experiment detail as a rich panel."""
+    # Parse: "/experiment <name or index>"
+    query = cmd.strip().split(maxsplit=1)
+    if len(query) < 2:
+        print("\n  Usage: /experiment <name or index>\n")
+        return
+
+    proj = state.find_project(query[1])
+    if not proj:
+        print(f"\n  No experiment found matching '{query[1]}'.\n")
+        return
+
+    name = proj.get("name", proj.get("id", "?"))
+    idx = state.project_index_of(proj.get("id", ""))
+    runs = proj.get("runs", {})
+    status = proj.get("status", "tracking")
+    description = proj.get("description", "")
+    path = proj.get("path", "")
+    tags = proj.get("tags", [])
+    goals = proj.get("goals", [])
+
+    lines = []
+    lines.append(f"[bold]{name}[/bold]")
+    if description:
+        lines.append(f"[dim]{description}[/dim]")
+    lines.append("")
+
+    meta_parts = [f"Status: {status}", f"{len(runs)} runs"]
+    if path:
+        meta_parts.append(f"[dim]{path}[/dim]")
+    lines.append(" \u00b7 ".join(meta_parts))
+
+    if tags:
+        lines.append("[dim]Tags: " + ", ".join(tags) + "[/dim]")
+
+    if goals:
+        lines.append("")
+        lines.append("[bold]Goals[/bold]")
+        for g in goals[:5]:
+            text = g if isinstance(g, str) else g.get("description", str(g))
+            lines.append(f"  \u2022 {text}")
+
+    # Runs table
+    if runs:
+        lines.append("")
+        lines.append("[bold]Runs[/bold]")
+        # Show last 10 runs sorted by date
+        sorted_runs = sorted(
+            runs.values(),
+            key=lambda r: r.get("started_at", ""),
+            reverse=True,
+        )
+        for run in sorted_runs[:10]:
+            run_name = run.get("name", run.get("id", "?"))
+            run_status = run.get("status", "")
+            hypothesis = run.get("hypothesis", "")
+            results = run.get("results", {})
+
+            # Format result metrics
+            metric_str = ""
+            for k in ("accuracy", "exact_match", "test_accuracy", "loss", "f1", "val_bpb"):
+                if k in results:
+                    v = results[k]
+                    metric_str = f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                    break
+
+            parts = [run_name]
+            if run_status:
+                parts.append(run_status)
+            if metric_str:
+                parts.append(metric_str)
+            if hypothesis:
+                h = hypothesis[:40] + "..." if len(hypothesis) > 40 else hypothesis
+                parts.append(f'"{h}"')
+
+            lines.append(f"  \u2022 {' \u00b7 '.join(parts)}")
+
+        if len(runs) > 10:
+            lines.append(f"  [dim]... and {len(runs) - 10} more[/dim]")
+
+    print()
+    _console.print(Panel(
+        "\n".join(lines),
+        title=f"[dim]#{idx}[/dim]" if idx else None,
+        border_style="dim",
+        padding=(1, 2),
+    ))
+    print()
+
+
+def _show_report(state: State) -> None:
+    """Render reading stats as a rich panel."""
+    processed = state.documents_with_status("processed")
+    if not processed:
+        print("\n  No processed papers yet. Read some papers first!\n")
+        return
+
+    total_papers = len(processed)
+    total_pages = sum(d.get("page_count", 0) for d in processed)
+    total_words = sum(d.get("highlight_word_count", 0) for d in processed)
+    engagements = [d.get("engagement", 0) for d in processed if d.get("engagement")]
+    avg_engagement = round(sum(engagements) / len(engagements)) if engagements else 0
+
+    lines = []
+    lines.append("[bold]Lifetime[/bold]")
+    lines.append(f"  {total_papers} papers \u00b7 {total_pages:,} pages \u00b7 {total_words:,} words highlighted")
+    lines.append(f"  Avg engagement: {avg_engagement}%")
+
+    # Reading velocity (last 8 weeks)
+    now = datetime.now(timezone.utc)
+    week_counts: Counter = Counter()
+    for doc in processed:
+        ts = doc.get("processed_at", "")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+            weeks_ago = (now - dt).days // 7
+            if weeks_ago < 8:
+                monday = dt - timedelta(days=dt.weekday())
+                label = monday.strftime("%b %d")
+                week_counts[label] += 1
+        except (ValueError, TypeError):
+            pass
+
+    if week_counts:
+        lines.append("")
+        lines.append("[bold]Reading Velocity[/bold] (last 8 weeks)")
+        max_count = max(week_counts.values())
+        for label in list(week_counts.keys())[::-1][:8]:
+            count = week_counts[label]
+            bar_len = round(count / max(max_count, 1) * 20)
+            bar = "\u2588" * bar_len
+            lines.append(f"  {label}  {bar} {count}")
+
+    # Top topics
+    topic_counter: Counter = Counter()
+    for doc in processed:
+        tags = doc.get("metadata", {}).get("tags") or []
+        for tag in tags:
+            topic_counter[tag] += 1
+
+    if topic_counter:
+        lines.append("")
+        lines.append("[bold]Top Topics[/bold]")
+        for topic, count in topic_counter.most_common(5):
+            display = topic[:30] if len(topic) > 30 else topic
+            lines.append(f"  {display:<32} {count} papers")
+
+    # Engagement distribution
+    buckets = {"0-25%": 0, "25-50%": 0, "50-75%": 0, "75-100%": 0}
+    for doc in processed:
+        eng = doc.get("engagement", 0)
+        if eng <= 25:
+            buckets["0-25%"] += 1
+        elif eng <= 50:
+            buckets["25-50%"] += 1
+        elif eng <= 75:
+            buckets["50-75%"] += 1
+        else:
+            buckets["75-100%"] += 1
+
+    max_bucket = max(buckets.values()) if buckets else 1
+    lines.append("")
+    lines.append("[bold]Engagement Distribution[/bold]")
+    for label, count in buckets.items():
+        bar_len = round(count / max(max_bucket, 1) * 20)
+        bar = "\u2588" * bar_len
+        lines.append(f"  {label:<8} {bar} {count}")
+
+    # Most-cited papers
+    cited = sorted(
+        [d for d in processed if d.get("metadata", {}).get("citation_count", 0) > 0],
+        key=lambda d: d.get("metadata", {}).get("citation_count", 0),
+        reverse=True,
+    )
+    if cited:
+        lines.append("")
+        lines.append("[bold]Most-Cited Papers Read[/bold]")
+        for doc in cited[:5]:
+            idx = state.index_of(doc["zotero_item_key"])
+            cites = doc["metadata"]["citation_count"]
+            short = doc["title"][:45]
+            if len(doc["title"]) > 45:
+                short += "..."
+            lines.append(f"  [dim]\\[{idx}][/dim] {short} ({cites:,} citations)")
+
+    print()
+    _console.print(Panel(
+        "\n".join(lines),
+        title="[bold]Reading Report[/bold]",
+        border_style="dim",
+        padding=(1, 2),
+    ))
+    print()
 
 
 # ---------------------------------------------------------------------------
 # Turn rendering — consumes events from agent_core.stream_turn
 # ---------------------------------------------------------------------------
+
+def _repair_conversation(conversation: list[dict]) -> None:
+    """Ensure every tool_use in the last assistant message has a tool_result.
+
+    If the generator was interrupted mid-tool, the assistant message with
+    tool_use blocks was appended but the user message with tool_result blocks
+    was not.  The API requires them to be paired, so we add stub results
+    for any orphaned tool_use ids.
+    """
+    if len(conversation) < 1:
+        return
+    last = conversation[-1]
+    if last.get("role") != "assistant":
+        return
+    content = last.get("content", [])
+    tool_use_ids = [
+        b.id for b in content
+        if hasattr(b, "type") and b.type == "tool_use"
+    ]
+    if not tool_use_ids:
+        return
+    # Check if the next message already has the results
+    # (it won't exist if we were interrupted)
+    # Since last message IS the last in the list, results are missing.
+    stub_results = [
+        {
+            "type": "tool_result",
+            "tool_use_id": tid,
+            "content": '{"error": "interrupted by user"}',
+        }
+        for tid in tool_use_ids
+    ]
+    conversation.append({"role": "user", "content": stub_results})
+
 
 def _render_turn(
     client,
@@ -509,3 +995,7 @@ def _render_turn(
     except KeyboardInterrupt:
         spinner.stop()
         print("\n  (interrupted)")
+
+    # Repair conversation if interrupted mid-tool: ensure every tool_use
+    # has a matching tool_result, otherwise the next API call will 400.
+    _repair_conversation(conversation)

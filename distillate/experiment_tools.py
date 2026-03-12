@@ -537,6 +537,49 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project"],
         },
     },
+    {
+        "name": "init_experiment",
+        "description": (
+            "Initialize an experiment project — scan the directory, draft a "
+            "PROMPT.md with Claude, set up hooks and tracking. The user "
+            "describes what they want to research and the tool produces a "
+            "complete, ready-to-launch experiment. Returns the draft PROMPT.md "
+            "for review. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the project directory",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "What the experiment should achieve — the research "
+                        "question, target metric, or objective. Be specific."
+                    ),
+                },
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Display name for the experiment "
+                        "(default: directory name, title-cased)"
+                    ),
+                },
+                "constraints": {
+                    "type": "string",
+                    "description": (
+                        "Hardware, time, or methodology constraints "
+                        "(e.g. 'MacBook M3, no GPU', 'must use PyTorch', "
+                        "'2 hour budget')"
+                    ),
+                },
+            },
+            "required": ["path", "goal"],
+        },
+    },
 ]
 
 
@@ -1331,6 +1374,310 @@ def stop_experiment_tool(*, state, project: str) -> dict:
         "stopped": stopped,
         "message": f"Stopped {len(stopped)} session(s) for '{proj.get('name', '')}'.",
     }
+
+
+def init_experiment_tool(*, state, path: str, goal: str,
+                         name: str = "", constraints: str = "",
+                         duration_minutes: int = 5) -> dict:
+    """Initialize an experiment project with LLM-drafted PROMPT.md."""
+    import json as _json
+    import subprocess
+    from pathlib import Path as _Path
+
+    from distillate import config
+    from distillate.experiments import slugify
+    from distillate.launcher import _install_hooks_into
+    from distillate.state import acquire_lock, release_lock
+
+    project_path = _Path(path).expanduser().resolve()
+
+    # Create directory if it doesn't exist
+    if not project_path.exists():
+        project_path.mkdir(parents=True, exist_ok=True)
+
+    if not project_path.is_dir():
+        return {"success": False, "error": f"Path is not a directory: {path}"}
+
+    # Reject if PROMPT.md already exists
+    prompt_file = project_path / "PROMPT.md"
+    if prompt_file.exists():
+        return {
+            "success": False,
+            "error": (
+                f"PROMPT.md already exists in {path}. "
+                "Edit it directly or delete it first."
+            ),
+        }
+
+    # --- Step 1: Scan directory ---
+    scan = _scan_directory_for_init(project_path)
+
+    # --- Step 2: Call Claude to draft PROMPT.md ---
+    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes)
+    if prompt_md is None:
+        return {
+            "success": False,
+            "error": (
+                "Failed to generate PROMPT.md — no API credentials configured. "
+                "Set ANTHROPIC_API_KEY in your .env file."
+            ),
+        }
+
+    # --- Step 3: Write PROMPT.md ---
+    prompt_file.write_text(prompt_md, encoding="utf-8")
+
+    # --- Step 4: Set up infrastructure ---
+    # git init if not already a repo
+    if not (project_path / ".git").exists():
+        subprocess.run(
+            ["git", "init"],
+            cwd=project_path,
+            capture_output=True,
+        )
+
+    # Create .distillate/ with REPORTING.md
+    distillate_dir = project_path / ".distillate"
+    distillate_dir.mkdir(exist_ok=True)
+    reporting_src = _Path(__file__).parent / "autoresearch" / "REPORTING.md"
+    if reporting_src.exists():
+        import shutil
+        shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
+
+    # Install hooks
+    _install_hooks_into(project_path)
+
+    # Create .claude/settings.local.json with safe Bash permissions
+    claude_dir = project_path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_local = claude_dir / "settings.local.json"
+    if not settings_local.exists():
+        local_config = {
+            "permissions": {
+                "allow": [
+                    "Bash(python3:*)",
+                    "Bash(tail:*)",
+                    "Bash(ls:*)",
+                    "Bash(cat:*)",
+                    "Bash(head:*)",
+                    "Bash(wc:*)",
+                    "Bash(mkdir:*)",
+                    "Read",
+                    "Write",
+                    "Edit",
+                    "Glob",
+                    "Grep",
+                ],
+            },
+        }
+        settings_local.write_text(
+            _json.dumps(local_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    # --- Step 5: Register in state ---
+    display_name = name or project_path.name.replace("-", " ").replace("_", " ").title()
+    project_id = slugify(display_name)
+
+    if not state.has_project(project_id):
+        from datetime import datetime, timezone
+        acquire_lock()
+        try:
+            state.reload()
+            state.add_project(
+                project_id=project_id,
+                name=display_name,
+                path=str(project_path),
+            )
+            state.update_project(
+                project_id,
+                last_scanned_at=datetime.now(timezone.utc).isoformat(),
+            )
+            state.save()
+        finally:
+            release_lock()
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "name": display_name,
+        "path": str(project_path),
+        "prompt_md": prompt_md,
+        "message": (
+            f"Initialized '{display_name}' with a draft PROMPT.md. "
+            "Review it above — tell me what to change, or say 'launch it' "
+            "when ready."
+        ),
+    }
+
+
+def _scan_directory_for_init(project_path) -> dict:
+    """Scan a directory for context to feed the PROMPT.md generator."""
+    scan: dict = {
+        "files": [],
+        "readme": "",
+        "code_snippets": {},
+        "data_files": [],
+    }
+
+    # List files (2 levels deep)
+    try:
+        for item in sorted(project_path.rglob("*")):
+            rel = item.relative_to(project_path)
+            if any(p.startswith(".") for p in rel.parts):
+                continue
+            if len(rel.parts) > 2:
+                continue
+            if item.is_file():
+                scan["files"].append(str(rel))
+    except PermissionError:
+        pass
+
+    # Read README
+    for readme_name in ("README.md", "README.txt", "README"):
+        readme = project_path / readme_name
+        if readme.exists():
+            try:
+                text = readme.read_text(encoding="utf-8")
+                scan["readme"] = text[:3000]
+            except OSError:
+                pass
+            break
+
+    # Detect data files
+    data_exts = {".csv", ".json", ".jsonl", ".parquet", ".tsv", ".npy", ".npz", ".h5", ".hdf5"}
+    for f in scan["files"]:
+        from pathlib import Path as _P
+        if _P(f).suffix.lower() in data_exts:
+            scan["data_files"].append(f)
+
+    # Read key code files (first 50 lines)
+    key_names = {"train.py", "model.py", "main.py", "config.py", "config.yaml",
+                 "config.yml", "requirements.txt", "pyproject.toml", "setup.py"}
+    for f in scan["files"]:
+        from pathlib import Path as _P
+        if _P(f).name.lower() in key_names:
+            try:
+                lines = (project_path / f).read_text(encoding="utf-8").splitlines()[:50]
+                scan["code_snippets"][f] = "\n".join(lines)
+            except OSError:
+                pass
+
+    return scan
+
+
+_PROMPT_MD_SYSTEM = """\
+You are an expert ML researcher writing an autonomous experiment prompt. \
+Write a PROMPT.md that is precise, thorough, and gives an autonomous agent \
+everything it needs to run experiments independently.
+
+The PROMPT.md must follow this exact structure:
+
+# Task: <Title that captures the objective>
+
+**Objective:** <One sentence with a specific, measurable target>
+
+## The Task
+
+<Problem definition — what the model/system must do, input/output format, \
+what success looks like>
+
+## Data
+
+<What data exists, file paths relative to the project root, format, \
+train/test splits. If no data exists yet, specify how to obtain or generate it.>
+
+## Rules & Constraints
+
+<Hardware constraints, compute budget, time budget, no internet access, \
+autonomy requirements, no reward hacking, allowed tools and libraries. \
+IMPORTANT: include the time budget the user specified (default: 5 minutes per \
+experiment iteration). Each iteration should fit within this budget.>
+
+## Experiment Tracking (Distillate)
+
+After each experiment iteration, you MUST append one JSON line to \
+`.distillate/runs.jsonl`:
+
+```json
+{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", \
+"status":"keep|discard|crash", "hypothesis":"...", "changes":"...", \
+"hyperparameters":{...}, "results":{...}, "reasoning":"..."}
+```
+
+Set `status` to `keep` if results improved, `discard` if not, `crash` on \
+failure. Include `reasoning` to explain your decision. Create the \
+`.distillate/` directory if it doesn't exist.
+
+## What You Must Deliver
+
+<Numbered list of deliverables — model, training curves, evaluation, \
+written log of decisions>
+
+## Evaluation Criteria
+
+<Primary metric with threshold, secondary criteria like methodology quality>
+
+Write in second person ("you must..."). Be direct and specific. Include \
+concrete numbers for targets where the user provided them. The prompt should \
+be self-contained — an agent reading only this file should know exactly what \
+to do without asking questions.
+
+IMPORTANT: Always include the "Experiment Tracking (Distillate)" section \
+exactly as shown above — this is how experiment data is recorded and tracked.
+
+Do NOT include any meta-commentary, preamble, or explanation outside the \
+PROMPT.md content. Output ONLY the markdown content of the PROMPT.md file."""
+
+
+def _generate_prompt_md(goal: str, scan: dict, name: str,
+                        constraints: str,
+                        duration_minutes: int = 5) -> str | None:
+    """Call Claude to generate PROMPT.md content."""
+    from distillate.agent_core import create_client
+
+    client = create_client()
+    if client is None:
+        return None
+
+    # Build the user message with all context
+    parts = [f"**Goal:** {goal}"]
+
+    if name:
+        parts.append(f"**Project name:** {name}")
+
+    if constraints:
+        parts.append(f"**Constraints:** {constraints}")
+
+    parts.append(f"**Time budget per iteration:** {duration_minutes} minutes")
+
+    if scan["files"]:
+        file_list = "\n".join(f"- {f}" for f in scan["files"][:50])
+        parts.append(f"**Directory contents:**\n{file_list}")
+
+    if scan["readme"]:
+        parts.append(f"**README:**\n```\n{scan['readme']}\n```")
+
+    if scan["data_files"]:
+        parts.append(f"**Data files:** {', '.join(scan['data_files'])}")
+
+    if scan["code_snippets"]:
+        for fname, snippet in scan["code_snippets"].items():
+            parts.append(f"**{fname}** (first 50 lines):\n```\n{snippet}\n```")
+
+    user_msg = "\n\n".join(parts)
+
+    try:
+        from distillate import config
+        response = client.messages.create(
+            model=config.CLAUDE_FAST_MODEL,
+            max_tokens=4096,
+            system=_PROMPT_MD_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        return response.content[0].text.strip()
+    except Exception:
+        log.exception("Failed to generate PROMPT.md via Claude API")
+        return None
 
 
 def _remove_notebook(project_id: str) -> None:

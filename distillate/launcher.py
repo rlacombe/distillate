@@ -267,6 +267,55 @@ def _slugify(name: str) -> str:
     return slug.strip("-")
 
 
+def create_github_repo(project_path: Path, name: str, private: bool = True) -> dict:
+    """Create a GitHub repo and push initial commit.
+
+    Uses `gh` CLI (must be installed and authenticated).
+    Returns {"ok": True, "url": "..."} or {"ok": False, "reason": "..."}.
+    """
+    _ensure_path()
+
+    if not shutil.which("gh"):
+        return {"ok": False, "reason": "gh CLI not installed. Install: brew install gh"}
+
+    # Check gh auth
+    auth_check = subprocess.run(
+        ["gh", "auth", "status"],
+        capture_output=True, text=True,
+    )
+    if auth_check.returncode != 0:
+        return {"ok": False, "reason": "gh not authenticated. Run: gh auth login"}
+
+    # Initial commit if needed
+    subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial experiment setup"],
+        cwd=project_path, capture_output=True,
+    )
+
+    # Create repo
+    visibility = "--private" if private else "--public"
+    result = subprocess.run(
+        ["gh", "repo", "create", name, visibility, "--source", str(project_path), "--push"],
+        cwd=project_path,
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "reason": result.stderr.strip() or "Failed to create repo"}
+
+    # Extract URL from output
+    url = result.stdout.strip()
+    if not url:
+        # Try to get it from git remote
+        remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=project_path, capture_output=True, text=True,
+        )
+        url = remote.stdout.strip()
+
+    return {"ok": True, "url": url}
+
+
 def _session_name(project_name: str, session_num: int) -> str:
     """Generate a tmux session name: distillate-<slug>-<NNN>."""
     return f"distillate-{_slugify(project_name)}-{session_num:03d}"
@@ -309,6 +358,7 @@ def _build_claude_command(
         model,
         "--max-turns",
         str(max_turns),
+        "--verbose",
         "--output-format",
         "stream-json",
     ]
@@ -377,12 +427,20 @@ def launch_experiment(
 
 def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     """Spawn a local tmux session. Returns tmux server PID."""
+    # Prepend PATH setup into the command so claude/python3 are found
+    # regardless of how tmux was started (Electron has minimal PATH,
+    # and tmux server may have been started with a different environment).
+    # Also unset CLAUDECODE so Claude Code doesn't refuse to start
+    # (it blocks nested sessions, but tmux sessions are independent).
+    extra_paths = "/usr/local/bin:/opt/homebrew/bin:" + str(Path.home() / ".local" / "bin")
+    full_command = f'export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; {command}'
+
     result = subprocess.run(
         [
             "tmux", "new-session", "-d",
             "-s", session_name,
             "-c", str(work_dir),
-            command,
+            full_command,
         ],
         capture_output=True,
         text=True,
@@ -430,6 +488,19 @@ def session_status(session_name: str, host: str | None = None) -> str:
     if result.returncode == 0:
         return "running"
     return "completed"
+
+
+def capture_pane(session_name: str, lines: int = 200) -> str:
+    """Capture the last N lines of output from a tmux session pane."""
+    _ensure_path()
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", str(-lines)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout
 
 
 def attach_session(session_name: str, host: str | None = None) -> None:

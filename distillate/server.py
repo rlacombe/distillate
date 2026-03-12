@@ -113,6 +113,7 @@ def _create_app():
                         })
             if total_runs > 0 or session_details:
                 experiment_stats = {
+                    "total_projects": len(projects),
                     "active_sessions": active_sessions + len(session_details),
                     "total_runs": total_runs,
                     "runs_kept": runs_kept,
@@ -142,6 +143,256 @@ def _create_app():
         loop = asyncio.get_event_loop()
         ok = await loop.run_in_executor(_executor, sync_state, _state)
         return JSONResponse({"ok": ok})
+
+    @app.get("/experiments/templates")
+    async def list_experiment_templates():
+        """List available experiment templates."""
+        from distillate.launcher import list_templates
+
+        templates = list_templates()
+        return JSONResponse({
+            "ok": True,
+            "templates": [
+                {
+                    "name": t["name"],
+                    "has_data": t["has_data"],
+                    "prompt_lines": t["prompt_lines"],
+                }
+                for t in templates
+            ],
+        })
+
+    @app.post("/experiments/create")
+    async def create_experiment(body: dict):
+        """Create a new experiment: scan directory, draft PROMPT.md with Claude,
+        install hooks, register, and launch a Claude Code session.
+
+        Uses the CLI's init_experiment_tool for steps 1-4, then launches.
+
+        Body: {"name": "experiment-name", "goal": "what to optimize",
+               "target": "/path" (optional), "constraints": "..." (optional),
+               "launch": true (optional)}
+
+        Returns progress via streaming NDJSON so the desktop can update a
+        flowchart in real time.
+        """
+        from pathlib import Path
+
+        from starlette.responses import StreamingResponse
+
+        from distillate import config
+        from distillate.experiments import slugify
+
+        name = body.get("name", "").strip()
+        goal = body.get("goal", "").strip()
+        if not name:
+            return JSONResponse(
+                {"ok": False, "reason": "name is required"}, status_code=400,
+            )
+
+        target = body.get("target", "")
+        if not target:
+            project_id = slugify(name)
+            root = config.EXPERIMENTS_ROOT or str(Path.home() / "experiments")
+            target = str(Path(root) / project_id)
+        target_path = Path(target).expanduser().resolve()
+
+        async def generate():
+            from distillate.experiment_tools import init_experiment_tool
+            from distillate.launcher import launch_experiment
+
+            # Step 1: Create project directory
+            yield json.dumps({"step": 1, "label": "Create project directory", "status": "active"}) + "\n"
+            try:
+                target_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                yield json.dumps({"step": 1, "status": "error", "detail": str(e)}) + "\n"
+                return
+            yield json.dumps({"step": 1, "status": "done", "detail": str(target_path)}) + "\n"
+
+            # Steps 2-4: init_experiment_tool handles scanning, PROMPT.md
+            # generation (via Claude), hooks, reporting, and registration
+            yield json.dumps({"step": 2, "label": "Draft PROMPT.md with Claude", "status": "active"}) + "\n"
+
+            _state.reload()
+            loop = asyncio.get_event_loop()
+            try:
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: init_experiment_tool(
+                        state=_state,
+                        path=str(target_path),
+                        goal=goal,
+                        name=name,
+                        constraints=body.get("constraints", ""),
+                        duration_minutes=body.get("duration_minutes", 5),
+                    ),
+                )
+            except Exception as e:
+                yield json.dumps({"step": 2, "status": "error", "detail": str(e)}) + "\n"
+                return
+
+            if not result.get("success"):
+                error_msg = result.get("error", "Unknown error")
+                # If PROMPT.md already exists, that's okay — use the existing one
+                if "already exists" in error_msg:
+                    yield json.dumps({"step": 2, "status": "done", "detail": "Using existing PROMPT.md"}) + "\n"
+                    # Still need to ensure hooks and registration
+                    from distillate.launcher import _install_hooks_into
+                    yield json.dumps({"step": 3, "label": "Install hooks & reporting", "status": "active"}) + "\n"
+                    _install_hooks_into(target_path)
+                    yield json.dumps({"step": 3, "status": "done"}) + "\n"
+
+                    yield json.dumps({"step": 4, "label": "Register experiment", "status": "active"}) + "\n"
+                    from distillate.experiments import slugify
+                    project_id = slugify(name)
+                    if not _state.has_project(project_id):
+                        display_name = name.replace("-", " ").title() if name == project_id else name
+                        _state.add_project(
+                            project_id=project_id,
+                            name=display_name,
+                            path=str(target_path),
+                            description=goal,
+                        )
+                        _state.save()
+                    yield json.dumps({"step": 4, "status": "done", "project_id": project_id}) + "\n"
+                else:
+                    yield json.dumps({"step": 2, "status": "error", "detail": error_msg}) + "\n"
+                    return
+            else:
+                project_id = result["project_id"]
+                yield json.dumps({"step": 2, "status": "done"}) + "\n"
+
+                # Step 3: Hooks & reporting (already done by init_experiment_tool)
+                yield json.dumps({"step": 3, "label": "Install hooks & reporting", "status": "done"}) + "\n"
+
+                # Step 4: Register (already done by init_experiment_tool)
+                yield json.dumps({"step": 4, "label": "Register experiment", "status": "done", "project_id": project_id}) + "\n"
+
+            # Step 5: Launch Claude Code session
+            if body.get("launch", True):
+                yield json.dumps({"step": 5, "label": "Launch Claude Code session", "status": "active"}) + "\n"
+                try:
+                    _state.reload()
+                    proj = _state.find_project(project_id)
+                    launch_result = await loop.run_in_executor(
+                        _executor,
+                        lambda: launch_experiment(
+                            target_path, model="claude-sonnet-4-6",
+                            max_turns=100, project=proj,
+                        ),
+                    )
+                    sessions = proj.setdefault("sessions", {})
+                    sessions[launch_result["session_id"]] = launch_result
+                    _state.save()
+                    yield json.dumps({
+                        "step": 5, "status": "done",
+                        "tmux_session": launch_result.get("tmux_session", ""),
+                    }) + "\n"
+                except Exception as e:
+                    yield json.dumps({"step": 5, "status": "error", "detail": str(e)}) + "\n"
+                    return
+
+            yield json.dumps({"done": True, "project_id": project_id, "path": str(target_path)}) + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/experiments/{project_id}/github")
+    async def create_github_repo_endpoint(project_id: str, body: dict = None):
+        """Create a GitHub repo for the experiment and push initial commit."""
+        from pathlib import Path
+
+        from distillate.launcher import create_github_repo
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        proj_path = Path(proj.get("path", ""))
+        body = body or {}
+        repo_name = body.get("name", project_id)
+        private = body.get("private", True)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _executor,
+            lambda: create_github_repo(proj_path, repo_name, private=private),
+        )
+
+        if result.get("ok"):
+            _state.update_project(project_id, github_url=result.get("url", ""))
+            _state.save()
+
+        return JSONResponse(result)
+
+    @app.get("/experiments/{project_id}/prompt")
+    async def get_experiment_prompt(project_id: str):
+        """Get the PROMPT.md content for a project."""
+        from pathlib import Path
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        prompt_path = Path(proj.get("path", "")) / "PROMPT.md"
+        if not prompt_path.exists():
+            return JSONResponse({"ok": False, "reason": "no_prompt"})
+
+        content = prompt_path.read_text(encoding="utf-8")
+        return JSONResponse({"ok": True, "content": content, "path": str(prompt_path)})
+
+    @app.put("/experiments/{project_id}/prompt")
+    async def update_experiment_prompt(project_id: str, body: dict):
+        """Update the PROMPT.md content for a project."""
+        from pathlib import Path
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        content = body.get("content", "")
+        prompt_path = Path(proj.get("path", "")) / "PROMPT.md"
+        prompt_path.write_text(content, encoding="utf-8")
+        return JSONResponse({"ok": True})
+
+    @app.get("/experiments/{project_id}/session")
+    async def get_session_output(project_id: str):
+        """Get the last 200 lines of tmux session output for the project."""
+        from distillate.launcher import _ensure_path, capture_pane
+
+        _ensure_path()
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        sessions = proj.get("sessions", {})
+        # Find the most recent running session
+        running = [s for s in sessions.values() if s.get("status") == "running"]
+        if not running:
+            return JSONResponse({"ok": False, "reason": "no_running_session", "output": ""})
+
+        sess = running[-1]
+        tmux_name = sess.get("tmux_session", "")
+        if not tmux_name:
+            return JSONResponse({"ok": False, "reason": "no_tmux_session", "output": ""})
+
+        try:
+            loop = asyncio.get_event_loop()
+            output = await loop.run_in_executor(
+                _executor,
+                lambda: capture_pane(tmux_name),
+            )
+            return JSONResponse({
+                "ok": True,
+                "session": tmux_name,
+                "output": output,
+            })
+        except Exception as e:
+            return JSONResponse({"ok": False, "reason": str(e), "output": ""}, status_code=500)
 
     @app.post("/experiments/attach")
     async def attach_experiment(body: dict):
@@ -390,6 +641,7 @@ def _create_app():
                 "run_count": len(runs),
                 "active_sessions": active,
                 "key_metric_name": _infer_key_metric_name(proj),
+                "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
                 "runs": [_run_summary(r) for r in sorted(
                     runs.values(), key=lambda r: r.get("started_at", ""),
@@ -525,6 +777,7 @@ def _create_app():
             "venue": meta.get("venue", ""),
             "doi": meta.get("doi", ""),
             "arxiv_id": meta.get("arxiv_id", ""),
+            "url": meta.get("url", ""),
             "uploaded_at": doc.get("uploaded_at", ""),
             "processed_at": doc.get("processed_at", ""),
             "promoted_at": doc.get("promoted_at", ""),
