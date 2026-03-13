@@ -1616,8 +1616,12 @@ def generate_notebook(project: dict, section: str = "main",
     name = project.get("name", "Untitled Project")
     runs_dict = project.get("runs", {})
     runs = list(runs_dict.values())
-    run_enrichments = (enrichment or {}).get("runs", {})
-    project_insights = (enrichment or {}).get("project", {})
+    # Unwrap cache format: {fingerprint, enrichment: {runs, project}} → {runs, project}
+    _enr = enrichment or {}
+    if "enrichment" in _enr and isinstance(_enr["enrichment"], dict):
+        _enr = _enr["enrichment"]
+    run_enrichments = _enr.get("runs", {})
+    project_insights = _enr.get("project", {})
 
     # Sort runs by version number, then chronologically
     runs.sort(key=_run_sort_key)
@@ -2081,6 +2085,9 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .reasoning-block .reasoning-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; }
 .metric-chart { margin: 1.5rem 0; }
 .metric-chart svg { width: 100%; height: auto; }
+.sparkline { vertical-align: middle; margin-left: 6px; opacity: 0.85; }
+.result-chip .sparkline { margin-left: 4px; }
+.stat .sparkline { display: block; margin: 4px auto 0; opacity: 0.7; }
 @media (max-width: 640px) { .narrative { grid-template-columns: 1fr; } .run-enriched-name { display: none; } }
 """
 
@@ -2099,6 +2106,35 @@ def _decision_icon(decision: str | None) -> str:
     if decision == "crash":
         return '<span class="decision-crash">&#9888; crash</span>'
     return '<span style="color:var(--text-dim)">&mdash;</span>'
+
+
+def _sparkline_svg(values: list[float], width: int = 60, height: int = 16,
+                   color: str = "#6366f1") -> str:
+    """Render a tiny inline SVG sparkline from a list of numeric values."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    span = hi - lo if hi != lo else 1.0
+    # Pad Y slightly so line doesn't touch edges
+    pad = 1
+    inner_h = height - 2 * pad
+    n = len(values)
+    pts = []
+    for i, v in enumerate(values):
+        x = round(i / (n - 1) * width, 1)
+        y = round(pad + inner_h - (v - lo) / span * inner_h, 1)
+        pts.append(f"{x},{y}")
+    polyline = " ".join(pts)
+    # Last point dot
+    lx, ly = pts[-1].split(",")
+    return (
+        f'<svg class="sparkline" viewBox="0 0 {width} {height}" '
+        f'width="{width}" height="{height}">'
+        f'<polyline points="{polyline}" fill="none" stroke="{color}" '
+        f'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        f'<circle cx="{lx}" cy="{ly}" r="1.5" fill="{color}"/>'
+        f'</svg>'
+    )
 
 
 def _render_metric_chart(runs: list[dict]) -> str:
@@ -2207,8 +2243,12 @@ def generate_html_notebook(project: dict,
     name = project.get("name", "Untitled Project")
     runs_dict = project.get("runs", {})
     runs = list(runs_dict.values())
-    run_enrichments = (enrichment or {}).get("runs", {})
-    project_insights = (enrichment or {}).get("project", {})
+    # Unwrap cache format: {fingerprint, enrichment: {runs, project}} → {runs, project}
+    _enr = enrichment or {}
+    if "enrichment" in _enr and isinstance(_enr["enrichment"], dict):
+        _enr = _enr["enrichment"]
+    run_enrichments = _enr.get("runs", {})
+    project_insights = _enr.get("project", {})
 
     runs.sort(key=_run_sort_key)
     common_params, varying_keys = _factorize_hyperparams(runs)
@@ -2216,6 +2256,13 @@ def generate_html_notebook(project: dict,
     def _enrich(run: dict, field: str) -> str:
         e = run_enrichments.get(run.get("id", ""), {})
         return e.get(field, "")
+
+    # Pre-compute metric histories for sparklines (metric_name → [values in run order])
+    metric_histories: dict[str, list[float]] = {}
+    for run in runs:
+        for k, v in run.get("results", {}).items():
+            if isinstance(v, (int, float)):
+                metric_histories.setdefault(k, []).append(float(v))
 
     parts: list[str] = []
 
@@ -2261,6 +2308,17 @@ def generate_html_notebook(project: dict,
                      '<div class="stat-label">Running</div></div>')
     parts.append(f'<div class="stat"><div class="stat-value">{unique_configs}</div>'
                  '<div class="stat-label">Configs Tested</div></div>')
+    # Key metric sparkline in stats bar
+    if metric_histories:
+        # Pick the most common metric, or first one
+        best_key = max(metric_histories, key=lambda k: len(metric_histories[k]))
+        history = metric_histories[best_key]
+        if len(history) >= 2:
+            spark = _sparkline_svg(history, width=80, height=20, color="#6366f1")
+            parts.append(f'<div class="stat"><div class="stat-value" '
+                         f'style="font-size:0.85rem">{_h(best_key)}</div>'
+                         f'{spark}'
+                         f'<div class="stat-label">Trend</div></div>')
     parts.append("</div>")
 
     # --- Research Insights ---
@@ -2466,16 +2524,21 @@ def generate_html_notebook(project: dict,
                     )
                 parts.append("</div>")
 
-        # Result chips
+        # Result chips (with sparklines showing metric history)
         results = run.get("results", {})
         if results:
             parts.append('<div class="run-section-title">Results</div>')
             parts.append('<div class="results-row">')
             for k, v in results.items():
+                spark = ""
+                history = metric_histories.get(k, [])
+                if len(history) >= 2:
+                    spark = _sparkline_svg(history, width=48, height=14)
                 parts.append(
                     f'<span class="result-chip">'
                     f'<span class="rk">{_h(k)}=</span>'
-                    f'<span class="rv">{_h(_fmt_metric(k, v))}</span></span>'
+                    f'<span class="rv">{_h(_fmt_metric(k, v))}</span>'
+                    f'{spark}</span>'
                 )
             parts.append("</div>")
 
@@ -2715,8 +2778,31 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
     xs = list(range(len(points)))
     ys = [p["value"] for p in points]
 
-    # Line
-    ax.plot(xs, ys, color="#4F46E5", linewidth=1.5, alpha=0.7, zorder=2)
+    # Determine if lower is better
+    _lower_kw = {"loss", "error", "mae", "rmse", "mse", "perplexity",
+                  "time", "latency", "param", "count", "size", "flops", "cost"}
+    lower_better = any(kw in metric.lower() for kw in _lower_kw)
+
+    # Raw run line (thin, dimmed)
+    ax.plot(xs, ys, color="#4F46E5", linewidth=1, alpha=0.25, zorder=1)
+
+    # Best-so-far frontier (bold, primary — only advances on "keep" runs)
+    best_so_far = None
+    frontier_xs, frontier_ys = [], []
+    for i, p in enumerate(points):
+        v = p["value"]
+        decision = p["run"].get("decision", "")
+        if decision == "keep":
+            if best_so_far is None:
+                best_so_far = v
+            elif (lower_better and v < best_so_far) or (not lower_better and v > best_so_far):
+                best_so_far = v
+        if best_so_far is not None:
+            frontier_xs.append(i)
+            frontier_ys.append(best_so_far)
+    if len(frontier_xs) > 1:
+        ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=2.5, alpha=0.9, zorder=2,
+                label=f"Best {metric}")
 
     # Dots colored by decision
     colors_map = {"keep": "#22c55e", "discard": "#ef4444", "crash": "#d29922"}
@@ -2724,8 +2810,9 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
     ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
 
     # Labels
+    direction = "\u2193" if lower_better else "\u2191"
     ax.set_xlabel("Run", fontsize=10, color="#666")
-    ax.set_ylabel(metric, fontsize=10, color="#666")
+    ax.set_ylabel(f"{metric} {direction}", fontsize=10, color="#666")
     if title:
         ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
 

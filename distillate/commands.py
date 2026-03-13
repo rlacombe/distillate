@@ -478,6 +478,7 @@ def _scan_projects() -> None:
 
     from distillate.experiments import (
         generate_notebook,
+        load_enrichment_cache,
         update_project,
     )
     from distillate.obsidian import write_experiment_notebook
@@ -486,7 +487,9 @@ def _scan_projects() -> None:
     for proj_id, proj in projects.items():
         print(f"  Scanning {proj.get('name', proj_id)}...")
         if update_project(proj, state):
-            notebook_md = generate_notebook(proj)
+            proj_path = proj.get("path", "")
+            enrichment = load_enrichment_cache(Path(proj_path)) if proj_path else {}
+            notebook_md = generate_notebook(proj, enrichment=enrichment)
             write_experiment_notebook(proj, notebook_md)
             updated += 1
 
@@ -732,7 +735,8 @@ def _launch_experiment(args: list[str]) -> None:
 
 
 def _list_experiments() -> None:
-    """List all tracked experiments with status."""
+    """List all tracked experiments with status and key insights."""
+    from distillate.experiments import load_enrichment_cache
     from distillate.launcher import refresh_session_statuses
     from distillate.state import State
 
@@ -753,6 +757,8 @@ def _list_experiments() -> None:
     print()
     print(f"  {'#':>3}  {'Name':<22} {'Status':<12} {'Runs':>5}  {'Best Metric':<20} {'Sessions'}")
     print(f"  {'─' * 3}  {'─' * 22} {'─' * 12} {'─' * 5}  {'─' * 20} {'─' * 12}")
+
+    insights_by_proj: list[tuple[str, dict]] = []
 
     for proj_id, proj in projects.items():
         idx = state.project_index_of(proj_id)
@@ -783,6 +789,31 @@ def _list_experiments() -> None:
         sess_str = f"{active} active" if active else "0 active"
 
         print(f"  {idx:>3}  {name:<22} {status:<12} {run_count:>5}  {best_metric:<20} {sess_str}")
+
+        # Load enrichment for insights
+        proj_path = proj.get("path", "")
+        if proj_path:
+            cache = load_enrichment_cache(Path(proj_path))
+            enr = cache.get("enrichment", cache)
+            project_insights = enr.get("project", {})
+            if project_insights:
+                insights_by_proj.append((proj.get("name", proj_id), project_insights))
+
+    # Print research insights below the table
+    if insights_by_proj:
+        print()
+        print(f"  {'─' * 60}")
+        for proj_name, insights in insights_by_proj:
+            breakthrough = insights.get("key_breakthrough", "")
+            lessons = insights.get("lessons_learned", [])
+            if breakthrough or lessons:
+                print(f"\n  {_bold(proj_name)} — Research Insights")
+                if breakthrough:
+                    print(f"  {_dim('Breakthrough:')} {breakthrough}")
+                if lessons:
+                    print(f"  {_dim('Lessons:')}")
+                    for i, lesson in enumerate(lessons, 1):
+                        print(f"    {i}. {lesson}")
 
     print()
 
@@ -1171,6 +1202,7 @@ def _watch(args: list[str]) -> None:
     from distillate.experiments import (
         generate_html_notebook,
         generate_notebook,
+        load_enrichment_cache,
         scan_project,
         watch_project_artifacts,
     )
@@ -1197,13 +1229,16 @@ def _watch(args: list[str]) -> None:
     runs_count = len(project.get("runs", {}))
     print(f"  Found {runs_count} experiment(s)")
 
+    # Load LLM enrichment (insights, lessons learned)
+    enrichment = load_enrichment_cache(project_path)
+
     # Generate initial notebook
-    html = generate_html_notebook(project)
+    html = generate_html_notebook(project, enrichment=enrichment)
     html_path = project_path / ".distillate" / "notebook.html"
     html_path.parent.mkdir(exist_ok=True)
     html_path.write_text(html, encoding="utf-8")
 
-    md = generate_notebook(project)
+    md = generate_notebook(project, enrichment=enrichment)
     md_path = project_path / ".distillate" / "notebook.md"
     md_path.write_text(md, encoding="utf-8")
 
@@ -1241,10 +1276,11 @@ def _watch(args: list[str]) -> None:
             if new_data:
                 print(f"  Detected {len(new_data)} new event(s), regenerating...")
                 project = scan_project(project_path)
+                enrichment = load_enrichment_cache(project_path)
                 if "error" not in project:
-                    html = generate_html_notebook(project)
+                    html = generate_html_notebook(project, enrichment=enrichment)
                     html_path.write_text(html, encoding="utf-8")
-                    md = generate_notebook(project)
+                    md = generate_notebook(project, enrichment=enrichment)
                     md_path.write_text(md, encoding="utf-8")
                     new_runs = len(project.get("runs", {}))
                     print(f"  Updated: {new_runs} experiment(s)")

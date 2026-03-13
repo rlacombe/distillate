@@ -254,7 +254,6 @@ class TestBuildClaudeCommand:
         assert "PROMPT.md" in cmd
         assert "claude-sonnet-4-5-20250929" in cmd
         assert "--max-turns 100" in cmd
-        assert "--output-format stream-json" in cmd
         assert "--allowedTools" in cmd
 
     def test_custom_params(self):

@@ -1637,7 +1637,11 @@ def _create_app():
         for proj_id, proj in projects.items():
             runs = proj.get("runs", {})
             sessions = proj.get("sessions", {})
-            active = sum(1 for s in sessions.values() if s.get("status") == "running")
+            active_sessions = {
+                sid: s for sid, s in sessions.items()
+                if s.get("status") == "running"
+            }
+            active = len(active_sessions)
             entry = {
                 "id": proj_id,
                 "name": proj.get("name", ""),
@@ -1648,6 +1652,11 @@ def _create_app():
                 "goals": proj.get("goals", []),
                 "run_count": len(runs),
                 "active_sessions": active,
+                "sessions": {
+                    sid: {"tmux_session": s.get("tmux_session", "")}
+                    for sid, s in active_sessions.items()
+                    if s.get("tmux_session")
+                },
                 "key_metric_name": _infer_key_metric_name(proj),
                 "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
@@ -1658,6 +1667,16 @@ def _create_app():
             campaign = proj.get("campaign")
             if campaign:
                 entry["campaign"] = campaign
+            # Include research insights from LLM enrichment
+            proj_path_str = proj.get("path", "")
+            if proj_path_str:
+                from pathlib import Path as _P
+                from distillate.experiments import load_enrichment_cache
+                cache = load_enrichment_cache(_P(proj_path_str))
+                enr = cache.get("enrichment", cache)
+                project_insights = enr.get("project", {})
+                if project_insights:
+                    entry["insights"] = project_insights
             result.append(entry)
         return JSONResponse({"ok": True, "projects": result})
 
@@ -1691,14 +1710,7 @@ def _create_app():
         from distillate.experiments import generate_export_chart
         runs = list(proj.get("runs", {}).values())
         if not metric:
-            # Use first available numeric metric
-            for r in runs:
-                for k, v in r.get("results", {}).items():
-                    if isinstance(v, (int, float)):
-                        metric = k
-                        break
-                if metric:
-                    break
+            metric = _infer_key_metric_name(proj)
         if not metric:
             return JSONResponse({"ok": False, "reason": "no_metric"}, status_code=400)
 
