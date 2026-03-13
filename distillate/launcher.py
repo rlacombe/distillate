@@ -654,6 +654,10 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
             f"Failed to create tmux session '{session_name}': {result.stderr.strip()}"
         )
 
+    # Configure tmux session for embedded use (xterm.js)
+    subprocess.run(["tmux", "set", "-t", session_name, "status", "off"], capture_output=True)
+    subprocess.run(["tmux", "set", "-t", session_name, "mouse", "on"], capture_output=True)
+
     # Auto-confirm workspace trust dialog (Enter after brief delay)
     import time
     time.sleep(3)
