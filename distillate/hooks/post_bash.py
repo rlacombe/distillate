@@ -186,44 +186,6 @@ def _emit_epoch_metrics(
         _append_event(project_root, evt)
 
 
-_RUN_TIME_WARN_MINUTES = 10  # Warn after this many minutes on a single run
-
-
-def _check_run_elapsed(project_root: Path) -> None:
-    """Print a warning if the current run has been going too long.
-
-    Reads the last entry in runs.jsonl. If it has status="running" and
-    its timestamp is older than _RUN_TIME_WARN_MINUTES, print a nudge.
-    """
-    runs_file = project_root / ".distillate" / "runs.jsonl"
-    if not runs_file.exists():
-        return
-    try:
-        # Read last non-empty line
-        lines = runs_file.read_text(encoding="utf-8").strip().splitlines()
-        if not lines:
-            return
-        last = json.loads(lines[-1])
-        if last.get("status") != "running":
-            return
-        ts_str = last.get("timestamp", "")
-        if not ts_str:
-            return
-        # Parse ISO timestamp
-        started = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        elapsed_min = elapsed / 60
-        if elapsed_min > _RUN_TIME_WARN_MINUTES:
-            print(
-                f"\n*** TIME WARNING: You have been on run {last.get('id', '?')} "
-                f"for {int(elapsed_min)} minutes. Wrap up this run NOW — "
-                f"log results (even partial), commit, and move on to the next "
-                f"experiment. ***"
-            )
-    except Exception:
-        pass
-
-
 def main() -> None:
     """Entry point: reads PostToolUse event from stdin."""
     try:
@@ -281,21 +243,6 @@ def main() -> None:
                 "command": command,
                 "session_id": session_id,
             })
-
-        # Check if PROMPT.md was updated externally (via desktop editor)
-        flag = project_root / ".distillate" / "prompt_updated"
-        if flag.exists():
-            try:
-                flag.unlink()
-                print(
-                    "\n*** PROMPT.md has been updated by the user. "
-                    "Re-read PROMPT.md now and adjust your approach accordingly. ***"
-                )
-            except OSError:
-                pass
-
-        # Time-elapsed warning: nudge agent if current run is taking too long
-        _check_run_elapsed(project_root)
 
     except Exception:
         pass  # Never block the agent

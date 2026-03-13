@@ -5,8 +5,6 @@ Discovers ML projects, reconstructs experiment history from artifacts
 markdown lab notebooks.  Works with or without git.
 """
 
-from __future__ import annotations
-
 import hashlib
 import html as html_mod
 import json
@@ -51,30 +49,12 @@ _ML_IMPORT_KEYWORDS = {
     "transformers", "lightning", "sklearn",
 }
 
-# Metric classification — checked in priority order (first match wins)
-_METRIC_CATEGORIES = (
-    ("ratio", ("accuracy", "precision", "recall", "f1", "auc", "map", "ap",
-               "iou", "dice", "bleu", "rouge", "meteor", "exact_match", "score")),
-    ("loss", ("loss", "error", "mae", "rmse", "mse", "perplexity", "nll",
-              "cross_entropy", "bpb")),
-    ("count", ("param", "count", "num_", "flops", "size", "steps", "epochs",
-               "samples", "vocab")),
-    ("time", ("time", "duration", "seconds", "minutes", "latency")),
-    ("cost", ("cost", "price")),
-    ("hyperparameter", ("lr", "learning_rate", "weight_decay", "dropout",
-                        "momentum", "beta", "epsilon", "warmup")),
+# Lower-is-better metric names
+_LOWER_BETTER_KEYWORDS = (
+    "loss", "error", "mae", "rmse", "mse",
+    "time", "duration", "seconds", "minutes",
+    "latency", "perplexity",
 )
-
-_LOWER_BETTER_CATEGORIES = {"loss", "count", "time", "cost"}
-
-
-def classify_metric(name: str) -> str:
-    """Classify a metric name into a category."""
-    nl = name.lower()
-    for category, keywords in _METRIC_CATEGORIES:
-        if any(kw in nl for kw in keywords):
-            return category
-    return "generic"
 
 
 def _create_run(
@@ -543,19 +523,8 @@ def scan_project(path: Path) -> dict:
 
     # Ingest structured reports + hook events
     ingested = ingest_runs(path)
-    has_structured = any(r.get("source") == "structured" for r in ingested)
-    if has_structured:
-        # Structured runs (runs.jsonl) are the canonical experiment log.
-        # Drop ALL artifact-scanned runs — they're redundant noise when
-        # the agent is actively logging via the protocol.
-        artifact_keys = [k for k, v in runs.items()
-                         if v.get("source") != "structured" and v.get("source") != "hooks"]
-        for k in artifact_keys:
-            del runs[k]
     for run in ingested:
-        if run.get("source") == "structured":
-            runs[run["id"]] = run
-        elif not _is_duplicate_run(runs, run):
+        if not _is_duplicate_run(runs, run):
             runs[run["id"]] = run
 
     # Ingest .mlnotebook/state.json (structured experiment tracker)
@@ -674,7 +643,6 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                     duration_minutes=duration_mins,
                     source="structured",
                     decision=decision,
-                    description=entry.get("description", ""),
                     agent_reasoning=entry.get("reasoning", ""),
                     hypothesis=entry.get("hypothesis", ""),
                     changes=entry.get("changes", ""),
@@ -685,25 +653,6 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                 runs.append(run)
     except OSError:
         pass
-
-    # Deduplicate by run name: prefer terminal status, then latest timestamp
-    seen: dict[str, int] = {}
-    _terminal = {"keep", "discard", "crash"}
-    for i, run in enumerate(runs):
-        name = run["name"]
-        if name not in seen:
-            seen[name] = i
-        else:
-            prev = runs[seen[name]]
-            prev_terminal = prev.get("decision") in _terminal or prev.get("status") in ("completed", "failed")
-            curr_terminal = run.get("decision") in _terminal or run.get("status") in ("completed", "failed")
-            prev_ts = prev.get("started_at", "")
-            curr_ts = run.get("started_at", "")
-            # Prefer terminal over running; among same finality, prefer later timestamp
-            if (curr_terminal and not prev_terminal) or \
-               (curr_terminal == prev_terminal and curr_ts > prev_ts):
-                seen[name] = i
-    runs = [runs[i] for i in sorted(seen.values())]
 
     return runs
 
@@ -810,100 +759,6 @@ def ingest_runs(project_path: Path) -> list[dict]:
     return result
 
 
-def backfill_runs_from_events(project_path: Path) -> int:
-    """Auto-create runs.jsonl entries for training events that weren't logged.
-
-    Reads events.jsonl for ``run_completed`` events that have metrics,
-    checks runs.jsonl for existing entries covering those events
-    (by timestamp proximity), and appends new entries for unmatched events.
-
-    Returns count of new entries added.
-    """
-    project_path = Path(project_path).resolve()
-    distillate_dir = project_path / ".distillate"
-    events_file = distillate_dir / "events.jsonl"
-    runs_file = distillate_dir / "runs.jsonl"
-
-    if not events_file.exists():
-        return 0
-
-    # Parse existing completed runs from runs.jsonl
-    existing_timestamps: set[str] = set()
-    existing_run_ids: set[str] = set()
-    next_run_num = 1
-    if runs_file.exists():
-        for line in runs_file.read_text(encoding="utf-8").strip().splitlines():
-            try:
-                entry = json.loads(line)
-                if entry.get("status") in ("keep", "discard", "crash"):
-                    ts = entry.get("timestamp", "")
-                    if ts:
-                        existing_timestamps.add(ts[:16])  # match to minute
-                rid = entry.get("id", "")
-                if rid:
-                    existing_run_ids.add(rid)
-                    # Track highest run number
-                    m = re.match(r"run_(\d+)", rid)
-                    if m:
-                        next_run_num = max(next_run_num, int(m.group(1)) + 1)
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-    # Parse training events
-    new_entries: list[dict] = []
-    for line in events_file.read_text(encoding="utf-8").strip().splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") != "run_completed":
-            continue
-        metrics = event.get("results", {})
-        if not metrics:
-            continue
-
-        ts = event.get("ts", "")
-        # Skip if we already have a runs.jsonl entry near this timestamp
-        if ts and ts[:16] in existing_timestamps:
-            continue
-
-        # Extract script name from command
-        command = event.get("command", "")
-        script_name = ""
-        m = re.search(r"python[3]?\s+(\S+\.py)", command)
-        if m:
-            script_name = Path(m.group(1)).stem
-
-        run_id = f"run_{next_run_num:03d}"
-        next_run_num += 1
-
-        entry = {
-            "$schema": "distillate/run/v1",
-            "id": run_id,
-            "timestamp": ts,
-            "status": "keep",
-            "description": f"Backfilled from {script_name}" if script_name else "Backfilled from training event",
-            "hyperparameters": event.get("hyperparameters", {}),
-            "results": metrics,
-            "reasoning": f"Auto-logged by rescan. Command: {command[:100]}" if command else "Auto-logged by rescan from events.jsonl",
-        }
-        new_entries.append(entry)
-        if ts:
-            existing_timestamps.add(ts[:16])
-
-    if not new_entries:
-        return 0
-
-    # Append to runs.jsonl
-    distillate_dir.mkdir(exist_ok=True)
-    with open(runs_file, "a", encoding="utf-8") as f:
-        for entry in new_entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    log.info("Backfilled %d run(s) from events.jsonl into runs.jsonl", len(new_entries))
-    return len(new_entries)
-
-
 def watch_project_artifacts(project_path: Path) -> list[dict]:
     """Check for new data since last scan.
 
@@ -994,10 +849,6 @@ _TRAIN_FILENAME_RE = re.compile(
 _CMD_KV_RE = re.compile(
     r"(?<![/\w])(\w+)\s*=\s*([\d.eE+-]+|[Tt]rue|[Ff]alse)"
 )
-# --key value pairs (argparse style, e.g. --d_model 64 --lr 1e-3)
-_ARGPARSE_RE = re.compile(
-    r"--(\w+)\s+([\d.eE+-]+|[Tt]rue|[Ff]alse)(?=\s|$)"
-)
 
 # Known hyperparameter names (for filtering noise from key=value extraction)
 _KNOWN_HYPERPARAMS = {
@@ -1013,9 +864,7 @@ _METRIC_RE = re.compile(
     r"(?:^|[|\s,])\s*"
     r"(accuracy|loss|exact_match|val_loss|val_accuracy|test_accuracy|"
     r"train_loss|train_accuracy|val_exact_match|f1|precision|recall|"
-    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss|"
-    r"test_acc|train_acc|val_acc|param_count|n_params|total_params|"
-    r"params|mse|rmse|mae|val_bpb|train_bpb|bpb)"
+    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss)"
     r"\s*[=:]\s*([\d.]+)%?",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -1057,19 +906,15 @@ def _parse_training_command(command: str) -> Optional[dict]:
 
     script = full_path
 
-    # Extract key=value and --key value pairs
+    # Extract key=value pairs
     hyperparams: dict[str, Any] = {}
     for key, val in _CMD_KV_RE.findall(command):
         key_lower = key.lower()
+        # Only keep known hyperparameter names or numeric-valued keys
         if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
             hyperparams[key] = _coerce_value(val)
         elif re.match(r"^[\d.eE+-]+$", val):
-            hyperparams[key] = _coerce_value(val)
-    for key, val in _ARGPARSE_RE.findall(command):
-        key_lower = key.lower()
-        if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
-            hyperparams[key] = _coerce_value(val)
-        elif re.match(r"^[\d.eE+-]+$", val):
+            # Keep any numeric key=value — likely a hyperparameter
             hyperparams[key] = _coerce_value(val)
 
     return {"script": script, "hyperparameters": hyperparams}
@@ -1186,19 +1031,25 @@ def _merge_into_run(target: dict, source: dict) -> None:
 
 
 def _run_sort_key(run: dict) -> tuple:
-    """Sort key that orders runs by run number extracted from the ID.
+    """Sort key that orders runs by version number, then by timestamp.
 
-    Extracts the number from run_NNN patterns (e.g. run_042 -> 42,
-    run_004a -> (4, 'a')).  Non-numeric IDs sort first (number=0)
-    with timestamp as tiebreaker.
+    Version extraction: 'v5' -> 5, 'final' -> 9999, unversioned -> 0.
+    Falls back to started_at/completed_at timestamp.
     """
     name = run.get("name", "")
-    m = re.match(r"(?:run_?)(\d+)([a-z]?)", name)
+    tags = run.get("tags", [])
+    tag = tags[0] if tags else name
+
+    # Extract version number from tag or name
+    version = 0
+    m = re.search(r"v(\d+)", tag, re.IGNORECASE)
     if m:
-        return (int(m.group(1)), m.group(2), "")
-    # Non-numeric IDs sort first, ordered by timestamp
+        version = int(m.group(1))
+    elif "final" in tag.lower():
+        version = 9999
+
     ts = run.get("started_at") or run.get("completed_at") or ""
-    return (0, "", ts)
+    return (version, ts)
 
 
 def _is_experiment_run(run: dict) -> bool:
@@ -1382,7 +1233,7 @@ def _save_enrichment_cache(project_path: Path, data: dict) -> None:
     )
 
 
-def _build_enrichment_prompt(runs: dict, project_name: str, results_md: str = "") -> str:
+def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
     """Build the Sonnet prompt for enriching experiment runs."""
     # Sort runs by version number, then chronologically
     sorted_runs = sorted(runs.items(), key=lambda kv: _run_sort_key(kv[1]))
@@ -1413,10 +1264,7 @@ def _build_enrichment_prompt(runs: dict, project_name: str, results_md: str = ""
         )
         diff_str = "; ".join(diff_parts) if diff_parts else "(first experiment)"
 
-        # Use run number from ID if available, otherwise positional
-        m = re.match(r"(?:run_?)(\d+)", rid)
-        num_label = f"#{m.group(1)}" if m else f"#{i}"
-        desc = f"Experiment {num_label} [{rid}]: {run.get('name', '?')}\n"
+        desc = f"Experiment {i} [{rid}]: {run.get('name', '?')}\n"
         desc += f"  Hyperparameters: {hp_str}\n"
         desc += f"  Metrics: {metric_str}\n"
         desc += f"  Changes from previous: {diff_str}\n"
@@ -1428,19 +1276,6 @@ def _build_enrichment_prompt(runs: dict, project_name: str, results_md: str = ""
 
     run_ids_json = json.dumps([rid for rid, _ in sorted_runs])
 
-    results_section = ""
-    if results_md:
-        truncated = results_md[:10000]
-        if len(results_md) > 10000:
-            truncated += "\n\n[... truncated ...]"
-        results_section = f"""
-The agent also wrote this research summary (RESULTS.md):
-
-{truncated}
-
-Use the agent's own observations to inform your analysis. Prefer the agent's phrasing when accurate.
-"""
-
     return f"""You are a research scientist writing a lab notebook for an ML experiment series.
 
 Project: {project_name}
@@ -1448,7 +1283,7 @@ Project: {project_name}
 Experiment timeline (chronological order):
 
 {chr(10).join(run_descriptions)}
-{results_section}
+
 For each experiment, generate:
 1. name: A descriptive human-readable name (e.g. "Baseline Character-Level Transformer", "Scaled-Up Model", "Triplet Tokenization Breakthrough"). Keep it short (3-6 words).
 2. hypothesis: Why this experiment was tried (1-2 sentences). For the first experiment, describe the baseline rationale.
@@ -1463,7 +1298,7 @@ Also generate project-level insights:
 9. lessons_learned: 3-5 bullets of deeper insights connecting the experiments. Reference concrete numbers, not vague claims.
 
 Output ONLY valid JSON in this exact format (no markdown, no code blocks):
-{{"project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}, "runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}}}
+{{"runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}, "project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}}}
 
 The "runs" object must have keys matching these exact run IDs: {run_ids_json}
 Each run value: {{"name": "...", "hypothesis": "...", "approach": "...", "analysis": "...", "next_steps": "...", "params": "...", "validation": "..."}}"""
@@ -1495,17 +1330,8 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         log.info("Using cached LLM enrichment for %s", project_name)
         return cache["enrichment"]
 
-    # Read RESULTS.md if available
-    results_md = ""
-    results_path = project_path / "RESULTS.md"
-    if results_path.exists():
-        try:
-            results_md = results_path.read_text(encoding="utf-8")
-        except OSError:
-            pass
-
     # Build prompt and call Sonnet
-    prompt = _build_enrichment_prompt(runs, project_name, results_md=results_md)
+    prompt = _build_enrichment_prompt(runs, project_name)
 
     # Guard against overly large prompts (rough estimate: ~4 chars per token)
     _MAX_ENRICHMENT_CHARS = 400_000  # ~100K tokens, well under 200K limit
@@ -1526,15 +1352,14 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
         response = client.messages.create(
             model=config.CLAUDE_SMART_MODEL,
-            max_tokens=16384,
+            max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
         if not response.content or not hasattr(response.content[0], "text"):
             log.error("Unexpected API response: no content blocks")
             return None
         text = response.content[0].text.strip()
-        stop_reason = response.stop_reason
-        log.info("LLM enrichment response: %d chars, stop=%s", len(text), stop_reason)
+        log.info("LLM enrichment response: %d chars", len(text))
     except (anthropic.APIError, anthropic.APIConnectionError) as e:
         log.error("Claude API error during LLM enrichment: %s", e)
         return None
@@ -1544,40 +1369,17 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         text = text.split("\n", 1)[1]
         if "```" in text:
             text = text.rsplit("```", 1)[0]
-
-    # If response was truncated (end_turn not reached), try to close JSON
-    if stop_reason == "max_tokens":
-        log.warning("LLM enrichment truncated — attempting to repair JSON")
-        # Count unclosed braces and brackets
-        open_braces = text.count("{") - text.count("}")
-        open_brackets = text.count("[") - text.count("]")
-        # Strip trailing incomplete string/value
-        text = text.rstrip()
-        if text and text[-1] not in "{}[],":
-            # Likely mid-value — find last complete entry
-            for trim_char in [",", "}", "]"]:
-                last_pos = text.rfind(trim_char)
-                if last_pos > 0:
-                    text = text[:last_pos + 1]
-                    break
-        # Close brackets/braces
-        text += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
-
-    enrichment = None
     try:
         enrichment = json.loads(text)
     except json.JSONDecodeError:
-        # Try to extract JSON object from surrounding text
+        # Try to extract JSON object
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
             try:
                 enrichment = json.loads(text[start:end + 1])
             except json.JSONDecodeError:
-                log.error(
-                    "Failed to parse LLM enrichment JSON "
-                    "(first 200 chars: %s)", text[:200],
-                )
+                log.error("Failed to parse LLM enrichment JSON")
                 return None
         else:
             log.error("No JSON found in LLM enrichment response")
@@ -1586,10 +1388,6 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
     if not isinstance(enrichment, dict) or "runs" not in enrichment:
         log.error("LLM enrichment missing 'runs' key")
         return None
-
-    if "project" not in enrichment:
-        log.warning("LLM enrichment missing 'project' key — not caching (will retry)")
-        return enrichment  # Return partial result but don't cache
 
     # Cache the result
     _save_enrichment_cache(project_path, {
@@ -1712,7 +1510,8 @@ def update_project(project: dict, state: Any) -> bool:
 
 def _is_lower_better(metric_name: str) -> bool:
     """Return True if lower values are better for this metric."""
-    return classify_metric(metric_name) in _LOWER_BETTER_CATEGORIES
+    name = metric_name.lower()
+    return any(kw in name for kw in _LOWER_BETTER_KEYWORDS)
 
 
 def diff_runs(run_a: dict, run_b: dict) -> dict:
@@ -1811,14 +1610,10 @@ def generate_notebook(project: dict, section: str = "main",
     name = project.get("name", "Untitled Project")
     runs_dict = project.get("runs", {})
     runs = list(runs_dict.values())
-    # Unwrap cache format: {fingerprint, enrichment: {runs, project}} → {runs, project}
-    _enr = enrichment or {}
-    if "enrichment" in _enr and isinstance(_enr["enrichment"], dict):
-        _enr = _enr["enrichment"]
-    run_enrichments = _enr.get("runs", {})
-    project_insights = _enr.get("project", {})
+    run_enrichments = (enrichment or {}).get("runs", {})
+    project_insights = (enrichment or {}).get("project", {})
 
-    # Sort runs by run number (run_NNN → NNN)
+    # Sort runs by version number, then chronologically
     runs.sort(key=_run_sort_key)
 
     # Factorize hyperparameters
@@ -2074,59 +1869,18 @@ def _fmt_duration(minutes: int) -> str:
 
 
 def _fmt_metric(name: str, val: Any) -> str:
-    """Format a metric value based on its category."""
-    if not isinstance(val, (int, float)):
-        return str(val)
-    cat = classify_metric(name)
-    if cat == "ratio":
-        if isinstance(val, float) and 0 < val <= 1:
-            return f"{val:.2%}"
-        return f"{val:.2f}"
-    if cat == "loss":
-        if isinstance(val, float):
-            if abs(val) < 0.001:
-                return f"{val:.2e}"
-            if abs(val) < 1:
-                return f"{val:.4f}"
-        return f"{val:.2f}"
-    if cat == "count":
-        if isinstance(val, int) or (isinstance(val, float) and val == int(val)):
-            iv = int(val)
-            v = abs(iv)
-            if v >= 1e9:
-                return f"{iv / 1e9:.2f}B ({iv:,})"
-            if v >= 1e6:
-                return f"{iv / 1e6:.2f}M ({iv:,})"
-            return f"{iv:,}"
-        return f"{val:.2f}"
-    if cat == "time":
-        v = abs(val)
-        if v >= 3600:
-            h = int(v // 3600)
-            m = int((v % 3600) // 60)
-            return f"{h}h {m}m"
-        if v >= 60:
-            m = int(v // 60)
-            s = int(v % 60)
-            return f"{m}m {s}s"
-        return f"{val:.2f}s"
-    if cat == "cost":
-        return f"${val:.2f}"
-    if cat == "hyperparameter":
-        if isinstance(val, float) and (abs(val) < 0.01 or abs(val) >= 1000):
-            return f"{val:.2e}"
-        return f"{val:.4g}"
-    # generic
+    """Format a metric value with adaptive precision."""
+    if isinstance(val, float):
+        nl = name.lower()
+        no_pct = ("loss", "mae", "rmse", "mse", "error", "time", "seconds")
+        if 0 < val <= 1 and not any(k in nl for k in no_pct):
+            return f"{val:.1%}" if val < 0.9995 else f"{val:.2%}"
+        if val == int(val) and abs(val) >= 1:
+            return f"{int(val):,}"
+        return f"{val:.6f}" if abs(val) < 0.01 else f"{val:.4f}"
     if isinstance(val, int):
         return f"{val:,}"
-    if isinstance(val, float):
-        if 0 < val <= 1:
-            return f"{val:.2%}"
-        if abs(val) < 0.001:
-            return f"{val:.2e}"
-        if abs(val) < 1:
-            return f"{val:.4f}"
-    return f"{val:.2f}"
+    return str(val)
 
 
 def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
@@ -2149,23 +1903,18 @@ def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
             return ", ".join(parts)
     if not results:
         return "-"
-    # Select best metric by category priority (loss/ratio first, skip counts/hyperparams)
-    _CAT_PRIORITY = {"loss": 0, "ratio": 1, "generic": 2, "time": 3, "cost": 4}
-    candidates = []
+    # Priority order for key metrics
+    priority = ["exact_match", "val_exact_match", "accuracy", "test_accuracy",
+                 "val_accuracy", "best_val_acc", "f1", "bleu", "rouge",
+                 "loss", "final_loss", "val_loss"]
+    for key in priority:
+        if key in results and isinstance(results[key], (int, float)):
+            return f"{key}={_fmt_metric(key, results[key])}"
+    # Fallback: first numeric metric (skip metadata-like fields)
+    skip = {"n_params", "duration_minutes", "num_examples", "n_samples",
+            "num_classes", "vocab_size", "num_papers"}
     for k, v in results.items():
-        if not isinstance(v, (int, float)):
-            continue
-        cat = classify_metric(k)
-        if cat in ("count", "hyperparameter"):
-            continue
-        candidates.append((k, v, _CAT_PRIORITY.get(cat, 99)))
-    if candidates:
-        candidates.sort(key=lambda x: x[2])
-        k, v, _ = candidates[0]
-        return f"{k}={_fmt_metric(k, v)}"
-    # Last resort: first numeric metric
-    for k, v in results.items():
-        if isinstance(v, (int, float)):
+        if isinstance(v, (int, float)) and k not in skip:
             return f"{k}={_fmt_metric(k, v)}"
     return "-"
 
@@ -2232,12 +1981,8 @@ h1 {
   background: linear-gradient(135deg, #6366f1, #3b82f6);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
-.subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 0.75rem; }
+.subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
 .subtitle code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
-.project-description { color: var(--text); font-size: 0.95rem; margin-bottom: 1rem; line-height: 1.6; padding: 0.75rem 1rem; background: var(--surface); border-radius: 8px; border-left: 3px solid var(--accent); }
-.hero-metric { display: flex; align-items: baseline; gap: 12px; margin-bottom: 1.5rem; }
-.hero-value { font-size: 2.25rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-.hero-label { font-size: 0.85rem; color: var(--text-dim); }
 .stats-bar {
   display: flex; gap: 1.5rem; padding: 1rem 1.25rem;
   background: var(--surface); border: 1px solid var(--border);
@@ -2322,22 +2067,14 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .toolbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 .toolbar button { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
 .toolbar button:hover { border-color: var(--accent); color: var(--text); }
-.toolbar button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
-.run-desc { color: var(--text-dim); font-size: 0.8rem; font-style: italic; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.section-header { display: flex; align-items: center; justify-content: space-between; }
-.section-header h2 { border-bottom: none; margin-bottom: 0; flex: 1; }
-.section-header .toolbar { margin-bottom: 0; }
 .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
 .decision-keep { color: var(--green); font-weight: 600; }
-.decision-discard { color: #888; font-weight: 600; }
+.decision-discard { color: var(--red); font-weight: 600; }
 .decision-crash { color: var(--yellow); font-weight: 600; }
 .reasoning-block { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 0.85rem; }
 .reasoning-block .reasoning-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; }
 .metric-chart { margin: 1.5rem 0; }
 .metric-chart svg { width: 100%; height: auto; }
-.sparkline { vertical-align: middle; margin-left: 6px; opacity: 0.85; }
-.result-chip .sparkline { margin-left: 4px; }
-.stat .sparkline { display: block; margin: 4px auto 0; opacity: 0.7; }
 @media (max-width: 640px) { .narrative { grid-template-columns: 1fr; } .run-enriched-name { display: none; } }
 """
 
@@ -2358,60 +2095,35 @@ def _decision_icon(decision: str | None) -> str:
     return '<span style="color:var(--text-dim)">&mdash;</span>'
 
 
-def _sparkline_svg(values: list[float], width: int = 60, height: int = 16,
-                   color: str = "#6366f1") -> str:
-    """Render a tiny inline SVG sparkline from a list of numeric values."""
-    if len(values) < 2:
-        return ""
-    lo, hi = min(values), max(values)
-    span = hi - lo if hi != lo else 1.0
-    # Pad Y slightly so line doesn't touch edges
-    pad = 1
-    inner_h = height - 2 * pad
-    n = len(values)
-    pts = []
-    for i, v in enumerate(values):
-        x = round(i / (n - 1) * width, 1)
-        y = round(pad + inner_h - (v - lo) / span * inner_h, 1)
-        pts.append(f"{x},{y}")
-    polyline = " ".join(pts)
-    # Last point dot
-    lx, ly = pts[-1].split(",")
-    return (
-        f'<svg class="sparkline" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}">'
-        f'<polyline points="{polyline}" fill="none" stroke="{color}" '
-        f'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
-        f'<circle cx="{lx}" cy="{ly}" r="1.5" fill="{color}"/>'
-        f'</svg>'
-    )
-
-
-def _render_metric_chart(runs: list[dict],
-                         key_metric: str = "") -> str:
+def _render_metric_chart(runs: list[dict]) -> str:
     """Render an inline SVG polyline chart of the primary metric over time.
 
     Each point is colored by decision (green=keep, red=discard, yellow=crash).
     Pure SVG — no JS library needed.
     """
-    # Use key_metric if provided, otherwise auto-detect
-    metric_name = key_metric
+    # Find the primary metric across runs
+    metric_name = ""
+    for run in runs:
+        results = run.get("results", {})
+        if not results:
+            continue
+        priority = ["val_bpb", "val_loss", "loss", "accuracy", "val_accuracy",
+                     "test_accuracy", "exact_match", "f1"]
+        for key in priority:
+            if key in results:
+                metric_name = key
+                break
+        if metric_name:
+            break
     if not metric_name:
-        # Auto-detect: prefer loss/ratio metrics (the ones people chart),
-        # then any other non-count/non-hyperparameter metric
-        all_numeric = {}
+        # Fallback: first numeric metric
         for run in runs:
             for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)) and k not in all_numeric:
-                    all_numeric[k] = classify_metric(k)
-        # Priority: loss > ratio > generic > time > cost > count
-        _CAT_PRIORITY = {"loss": 0, "ratio": 1, "generic": 2,
-                         "time": 3, "cost": 4, "count": 5}
-        candidates = [(k, cat) for k, cat in all_numeric.items()
-                      if cat not in ("hyperparameter",)]
-        if candidates:
-            candidates.sort(key=lambda kc: _CAT_PRIORITY.get(kc[1], 99))
-            metric_name = candidates[0][0]
+                if isinstance(v, (int, float)):
+                    metric_name = k
+                    break
+            if metric_name:
+                break
     if not metric_name:
         return ""
 
@@ -2457,27 +2169,19 @@ def _render_metric_chart(runs: list[dict],
         svg.append(f'<line x1="{pad_x}" y1="{y}" x2="{w - pad_x}" y2="{y}" '
                    f'stroke="#30363d" stroke-dasharray="4,4"/>')
         svg.append(f'<text x="{pad_x - 8}" y="{y + 4}" text-anchor="end" '
-                   f'fill="#8b949e" font-size="11">{_h(_fmt_metric(metric_name, label_val))}</text>')
+                   f'fill="#8b949e" font-size="11">{label_val:.4g}</text>')
 
     # Polyline
     line_points = " ".join(f"{_x(idx)},{_y(val)}" for idx, val, _ in points)
     svg.append(f'<polyline points="{line_points}" fill="none" stroke="#6366f1" '
                f'stroke-width="2"/>')
 
-    # Decision markers with tooltips
-    colors = {"keep": "#3fb950", "discard": "#555555", "crash": "#d29922"}
+    # Decision markers
+    colors = {"keep": "#3fb950", "discard": "#f85149", "crash": "#d29922"}
     for idx, val, decision in points:
         color = colors.get(decision, "#8b949e")
         cx, cy = _x(idx), _y(val)
-        # Get run description for tooltip
-        run = runs[idx] if idx < len(runs) else {}
-        desc = run.get("description", "") or run.get("hypothesis", "")
-        run_id = run.get("name", run.get("id", f"#{idx + 1}"))
-        tip = f"{_h(run_id)}: {_h(_fmt_metric(metric_name, val))} [{_h(decision or '?')}]"
-        if desc:
-            tip += f" — {_h(desc)}"
-        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="{color}" stroke="#0d1117" stroke-width="2">'
-                   f'<title>{tip}</title></circle>')
+        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="{color}" stroke="#0d1117" stroke-width="2"/>')
 
     # Axis label
     svg.append(f'<text x="{w / 2}" y="{h - 2}" text-anchor="middle" '
@@ -2497,26 +2201,15 @@ def generate_html_notebook(project: dict,
     name = project.get("name", "Untitled Project")
     runs_dict = project.get("runs", {})
     runs = list(runs_dict.values())
-    # Unwrap cache format: {fingerprint, enrichment: {runs, project}} → {runs, project}
-    _enr = enrichment or {}
-    if "enrichment" in _enr and isinstance(_enr["enrichment"], dict):
-        _enr = _enr["enrichment"]
-    run_enrichments = _enr.get("runs", {})
-    project_insights = _enr.get("project", {})
+    run_enrichments = (enrichment or {}).get("runs", {})
+    project_insights = (enrichment or {}).get("project", {})
 
-    runs.sort(key=_run_sort_key, reverse=True)  # newest first by default
+    runs.sort(key=_run_sort_key)
     common_params, varying_keys = _factorize_hyperparams(runs)
 
     def _enrich(run: dict, field: str) -> str:
         e = run_enrichments.get(run.get("id", ""), {})
         return e.get(field, "")
-
-    # Pre-compute metric histories for sparklines (metric_name → [values in run order])
-    metric_histories: dict[str, list[float]] = {}
-    for run in runs:
-        for k, v in run.get("results", {}).items():
-            if isinstance(v, (int, float)):
-                metric_histories.setdefault(k, []).append(float(v))
 
     parts: list[str] = []
 
@@ -2532,62 +2225,6 @@ def generate_html_notebook(project: dict,
         f'<br><code>{_h(project.get("path", ""))}</code>'
     )
     parts.append(f'<div class="subtitle">{subtitle}</div>')
-
-    # --- Goal / Description ---
-    description = project.get("description", "")
-    if description:
-        parts.append(f'<div class="project-description">{_h(description)}</div>')
-
-    # --- North star metric ---
-    key_metric_name = project.get("key_metric_name", "")
-    if key_metric_name:
-        # Find best value from kept runs (or all runs if no decisions)
-        lower_better = _is_lower_better(key_metric_name)
-        best_val = None
-        kept_runs = [r for r in runs if r.get("decision") == "keep"]
-        search_runs = kept_runs if kept_runs else runs
-        for r in search_runs:
-            v = r.get("results", {}).get(key_metric_name)
-            if isinstance(v, (int, float)):
-                if best_val is None or (v < best_val if lower_better else v > best_val):
-                    best_val = v
-        if best_val is not None:
-            arrow = "&darr;" if lower_better else "&uarr;"
-            # Check if best value meets goal threshold
-            goal_met = True
-            goal_label = ""
-            goals = project.get("goals", [])
-            for g in goals:
-                if g.get("metric") == key_metric_name:
-                    thresh = g.get("threshold")
-                    if thresh is not None:
-                        goal_label = f" (goal: {_h(_fmt_metric(key_metric_name, thresh))})"
-                        if g.get("direction") == "maximize" and best_val < thresh:
-                            goal_met = False
-                        elif g.get("direction") != "maximize" and best_val > thresh:
-                            goal_met = False
-            color_class = "" if goal_met else ' style="opacity:0.6"'
-            parts.append(f'<div class="hero-metric"{color_class}>'
-                         f'<span class="hero-value">{_h(_fmt_metric(key_metric_name, best_val))}</span>'
-                         f'<span class="hero-label">{_h(key_metric_name)} {arrow}{goal_label}</span>'
-                         f'</div>')
-
-    # --- Research Insights (above stats for prominence) ---
-    breakthrough = project_insights.get("key_breakthrough", "")
-    lessons = project_insights.get("lessons_learned", [])
-    if breakthrough or lessons:
-        parts.append("<h2>Research Insights</h2>")
-        parts.append('<div class="insights">')
-        if breakthrough:
-            parts.append('<h3>Key Breakthrough</h3>')
-            parts.append(f'<p class="breakthrough">{_h(breakthrough)}</p>')
-        if lessons:
-            parts.append('<h3>Lessons Learned</h3>')
-            parts.append('<ul class="lessons">')
-            for lesson in lessons:
-                parts.append(f"<li>{_h(lesson)}</li>")
-            parts.append("</ul>")
-        parts.append("</div>")
 
     # --- Stats bar ---
     completed = sum(1 for r in runs if r.get("status") == "completed")
@@ -2618,19 +2255,24 @@ def generate_html_notebook(project: dict,
                      '<div class="stat-label">Running</div></div>')
     parts.append(f'<div class="stat"><div class="stat-value">{unique_configs}</div>'
                  '<div class="stat-label">Configs Tested</div></div>')
-    # Key metric sparkline in stats bar (use key_metric_name if set)
-    spark_key = key_metric_name
-    if not spark_key and metric_histories:
-        spark_key = max(metric_histories, key=lambda k: len(metric_histories[k]))
-    if spark_key and spark_key in metric_histories:
-        history = metric_histories[spark_key]
-        if len(history) >= 2:
-            spark = _sparkline_svg(history, width=80, height=20, color="#6366f1")
-            parts.append(f'<div class="stat"><div class="stat-value" '
-                         f'style="font-size:0.85rem">{_h(spark_key)}</div>'
-                         f'{spark}'
-                         f'<div class="stat-label">Trend</div></div>')
     parts.append("</div>")
+
+    # --- Research Insights ---
+    breakthrough = project_insights.get("key_breakthrough", "")
+    lessons = project_insights.get("lessons_learned", [])
+    if breakthrough or lessons:
+        parts.append("<h2>Research Insights</h2>")
+        parts.append('<div class="insights">')
+        if breakthrough:
+            parts.append('<h3>Key Breakthrough</h3>')
+            parts.append(f'<p class="breakthrough">{_h(breakthrough)}</p>')
+        if lessons:
+            parts.append('<h3>Lessons Learned</h3>')
+            parts.append('<ul class="lessons">')
+            for lesson in lessons:
+                parts.append(f"<li>{_h(lesson)}</li>")
+            parts.append("</ul>")
+        parts.append("</div>")
 
     # --- Goals ---
     goals = project.get("goals", [])
@@ -2648,55 +2290,25 @@ def generate_html_notebook(project: dict,
 
     # --- Metric progression chart ---
     if has_decisions and len(runs) >= 2:
-        chart_svg = _render_metric_chart(runs, key_metric=key_metric_name)
+        chart_svg = _render_metric_chart(runs)
         if chart_svg:
             parts.append("<h2>Metric Progression</h2>")
             parts.append(f'<div class="metric-chart">{chart_svg}</div>')
 
     # --- Timeline table ---
     if runs:
-        # Sort toggle + header
-        parts.append('<div class="section-header">')
         parts.append("<h2>Experiment Timeline</h2>")
-        parts.append('<div class="toolbar">')
-        parts.append(
-            '<button id="sort-toggle" onclick="'
-            "var tb=document.getElementById('timeline-body');"
-            "var rows=Array.from(tb.rows);"
-            "rows.reverse();"
-            "rows.forEach(function(r){tb.appendChild(r)});"
-            "var btn=document.getElementById('sort-toggle');"
-            "btn.textContent=btn.textContent==='↑ Oldest first'?'↓ Newest first':'↑ Oldest first';"
-            '">&#8595; Newest first</button>')
-        parts.append("</div></div>")
-
         parts.append("<table><thead><tr>")
         if has_decisions:
-            parts.append("<th>#</th><th>Experiment</th><th>What</th>"
-                         "<th>Decision</th><th>Params</th><th>Validation</th>")
+            parts.append("<th>#</th><th>Experiment</th><th>Decision</th><th>Params</th><th>Validation</th>")
         else:
-            parts.append("<th>#</th><th>Experiment</th><th>What</th>"
-                         "<th>Params</th><th>Validation</th>")
-        parts.append("</tr></thead><tbody id='timeline-body'>")
+            parts.append("<th>#</th><th>Experiment</th><th>Params</th><th>Validation</th>")
+        parts.append("</tr></thead><tbody>")
         for i, run in enumerate(runs, 1):
             run_enr = run_enrichments.get(run.get("id", ""), {})
             key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
             raw_name = run.get("name", "?")
             enriched_label = _enrich(run, "name")
-
-            # Short description: enriched name > hypothesis > changes > commit
-            desc = (
-                _enrich(run, "name")
-                or run.get("hypothesis", "")
-                or run.get("changes", "")
-                or run.get("description", "")
-                or ""
-            )
-            # Truncate to 7 words
-            if desc:
-                words = desc.split()
-                if len(words) > 7:
-                    desc = " ".join(words[:7]) + "\u2026"
 
             # Split key_metric into params/validation columns
             params_col = _h(run_enr.get("params", ""))
@@ -2722,7 +2334,6 @@ def generate_html_notebook(project: dict,
             parts.append(f'<tr onclick="{onclick}">')
             parts.append(f"<td>{i}</td>")
             parts.append(f"<td>{_h(raw_name)}{enriched_span}</td>")
-            parts.append(f'<td class="run-desc" title="{_h(desc)}">{_h(desc)}</td>')
             if has_decisions:
                 decision = run.get("decision", "")
                 decision_html = _decision_icon(decision)
@@ -2849,21 +2460,16 @@ def generate_html_notebook(project: dict,
                     )
                 parts.append("</div>")
 
-        # Result chips (with sparklines showing metric history)
+        # Result chips
         results = run.get("results", {})
         if results:
             parts.append('<div class="run-section-title">Results</div>')
             parts.append('<div class="results-row">')
             for k, v in results.items():
-                spark = ""
-                history = metric_histories.get(k, [])
-                if len(history) >= 2:
-                    spark = _sparkline_svg(history, width=48, height=14)
                 parts.append(
                     f'<span class="result-chip">'
                     f'<span class="rk">{_h(k)}=</span>'
-                    f'<span class="rv">{_h(_fmt_metric(k, v))}</span>'
-                    f'{spark}</span>'
+                    f'<span class="rv">{_h(_fmt_metric(k, v))}</span></span>'
                 )
             parts.append("</div>")
 
@@ -3053,316 +2659,3 @@ def slugify(name: str) -> str:
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = slug.strip("-")
     return slug
-
-
-def generate_export_chart(runs: list[dict], metric: str, title: str = "",
-                          log_scale: bool = False, subtitle: str = "") -> bytes:
-    """Generate a minimal, centered chart PNG for sharing. Returns PNG bytes."""
-    import io
-
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.font_manager import FontProperties, findfont
-    from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator
-
-    points = []
-    for i, run in enumerate(runs):
-        val = run.get("results", {}).get(metric)
-        if isinstance(val, (int, float)):
-            points.append({"value": val, "run": run, "index": i})
-    if not points:
-        raise ValueError(f"No data for metric '{metric}'")
-
-    # Ordinal x-axis (same as canvas chart — evenly spaced)
-    xs = list(range(len(points)))
-    ys = [p["value"] for p in points]
-    lower_better = _is_lower_better(metric)
-
-    # ── Figure ──
-    fig, ax = plt.subplots(figsize=(10, 5), dpi=200)
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
-
-    # Font
-    for fam in ("Inter", "Helvetica Neue", "Helvetica", "Arial"):
-        try:
-            if findfont(FontProperties(family=fam), fallback_to_default=False):
-                plt.rcParams["font.family"] = fam
-                break
-        except Exception:
-            continue
-
-    # Open plot: left + bottom spines only
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_linewidth(0.5)
-    ax.spines["bottom"].set_linewidth(0.5)
-    ax.spines["left"].set_color("#ccc")
-    ax.spines["bottom"].set_color("#ccc")
-
-    # Grid: light dashed horizontal
-    ax.yaxis.grid(True, alpha=0.25, linewidth=0.4, color="#bbb", linestyle="--")
-    ax.xaxis.grid(False)
-    ax.set_axisbelow(True)
-
-    if log_scale:
-        ax.set_yscale("log")
-
-    # ── Frontier (step function, running best over ALL runs) ──
-    # Running min/max across every data point, not just keeps.
-    # Green dots mark any run that actually improved the frontier.
-    front_xs: list = []
-    front_ys: list = []
-    front_set: set = set()
-    best = None
-
-    if points:
-        best = points[0]["value"]
-        front_xs.append(xs[0])
-        front_ys.append(best)
-        front_set.add(0)
-
-        for i in range(1, len(points)):
-            v = points[i]["value"]
-            improved = (lower_better and v < best) or (not lower_better and v > best)
-            if improved:
-                best = v
-                front_set.add(i)
-            front_xs.append(xs[i])
-            front_ys.append(best)
-
-    if front_xs:
-        # Extend right to last run
-        if front_xs[-1] < xs[-1]:
-            front_xs.append(xs[-1])
-            front_ys.append(front_ys[-1])
-
-    if len(front_xs) > 1:
-        ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
-                zorder=2, solid_capstyle="round")
-
-    # ── Dots: green = frontier-improving keeps, gray = everything else ──
-    for i, p in enumerate(points):
-        if i in front_set:
-            ax.scatter(xs[i], p["value"], c="#22c55e", s=30,
-                       zorder=4, edgecolors="white", linewidths=0.5)
-        else:
-            ax.scatter(xs[i], p["value"], c="#ccc", s=12, zorder=3,
-                       edgecolors="none", alpha=0.45)
-
-    # ── Tilted labels on frontier-improving keeps ──
-    for i, p in enumerate(points):
-        if i not in front_set:
-            continue
-        desc = p["run"].get("description", "") or p["run"].get("hypothesis", "")
-        if not desc:
-            continue
-        if len(desc) > 24:
-            desc = desc[:22] + "\u2026"
-        ax.annotate(
-            desc, (xs[i], p["value"]),
-            textcoords="offset points", xytext=(5, -7),
-            fontsize=5.5, color="#aaa", ha="left", va="top",
-            rotation=-30, rotation_mode="anchor",
-            zorder=5, annotation_clip=True,
-        )
-
-    # ── Axes ──
-    metric_label = metric.replace("_", " ").title()
-    scale_note = " (log)" if log_scale else ""
-    ax.set_ylabel(f"{metric_label}{scale_note}", fontsize=9.5, color="#666", labelpad=8)
-    ax.set_xlabel("Run", fontsize=9.5, color="#666", labelpad=8)
-    ax.tick_params(colors="#888", labelsize=8, length=3, width=0.4)
-
-    # X-axis: show run numbers at evenly spaced intervals (like canvas)
-    n_pts = len(points)
-    x_step = max(1, n_pts // 6)
-    x_tick_positions = list(range(0, n_pts, x_step))
-    x_tick_labels = []
-    for idx in x_tick_positions:
-        p = points[idx]
-        rn = p["run"].get("run_number", 0)
-        if rn > 0:
-            x_tick_labels.append(f"#{rn}")
-        else:
-            m = re.match(r"(?:run_?)(\d+)", p["run"].get("name", ""))
-            x_tick_labels.append(f"#{m.group(1)}" if m else f"#{idx}")
-    ax.set_xticks(x_tick_positions)
-    ax.set_xticklabels(x_tick_labels)
-
-    # Y-axis ticks
-    if log_scale:
-        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5), numticks=8))
-    else:
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]))
-
-    cat = classify_metric(metric)
-    def _tick(v, _):
-        if cat == "ratio":
-            return f"{v * 100:g}%" if 0 <= v <= 1 else f"{v:g}"
-        if cat == "loss":
-            return f"{v:.2e}" if abs(v) < 0.001 else f"{v:g}"
-        if cat == "count":
-            if v == 0:
-                return "0"
-            iv = int(round(v))
-            if abs(iv) >= 1e6:
-                return f"{iv / 1e6:g}M"
-            if abs(iv) >= 1e3:
-                return f"{iv / 1e3:g}K"
-            return f"{iv:,}"
-        return f"{v:g}"
-    ax.yaxis.set_major_formatter(FuncFormatter(_tick))
-
-    if not log_scale and min(ys) >= 0:
-        ax.set_ylim(bottom=0, top=max(ys) * 1.05)
-
-    # ── Title (just the experiment name, top-center) ──
-    if title:
-        ax.set_title(title, fontsize=14, fontweight="bold", color="#222", pad=14)
-
-    fig.tight_layout()
-
-    # ── Branding: SVG logo + "Distillate" in brand indigo ──
-    try:
-        import cairosvg
-        import numpy as np
-        from pathlib import Path as _P
-        from PIL import Image as _Img
-
-        svg_path = _P(__file__).parent.parent / "docs" / "logo.svg"
-        if not svg_path.exists():
-            raise FileNotFoundError
-        png_bytes = cairosvg.svg2png(url=str(svg_path), output_width=48, output_height=48)
-        logo_arr = np.array(_Img.open(io.BytesIO(png_bytes)).convert("RGBA")) / 255.0
-        logo_ax = fig.add_axes([0.895, 0.01, 0.02, 0.035], anchor="SE", zorder=10)
-        logo_ax.imshow(logo_arr)
-        logo_ax.axis("off")
-        fig.text(0.92, 0.026, "Distillate", ha="left", va="center",
-                 fontsize=7, color="#6366f1", alpha=0.5, fontweight="600")
-    except Exception:
-        fig.text(0.99, 0.01, "Distillate", ha="right", va="bottom",
-                 fontsize=7, color="#6366f1", alpha=0.35, fontweight="600")
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
-
-def detect_primary_metric(content: str) -> str:
-    """Extract primary metric name from PROMPT.md content.
-
-    Looks for patterns like:
-      Primary metric: param_count (minimize)
-      Primary metric: `test_accuracy` (maximize)
-    """
-    # Match "Primary metric: <name> (direction)" pattern
-    m = re.search(
-        r'[Pp]rimary\s+[Mm]etric\s*:\s*`?(\w+)`?\s*\(',
-        content,
-    )
-    if m:
-        return m.group(1)
-    # Fallback: look for "key metric" or "north star" mentions
-    m = re.search(
-        r'(?:[Kk]ey|[Nn]orth\s*[Ss]tar)\s+[Mm]etric\s*:\s*`?(\w+)`?',
-        content,
-    )
-    return m.group(1) if m else ""
-
-
-def infer_key_metric_name(proj: dict) -> str:
-    """Pick the best metric to chart by default.
-
-    Priority order:
-    1. Explicit goal metric (user told us what matters)
-    2. Test-set performance metric present in most runs
-    3. Validation-set performance metric
-    4. Any performance metric (accuracy, f1, auc, etc.)
-    5. Most common numeric metric across runs
-
-    We prefer metrics that have data in ALL (or most) runs so the
-    chart is meaningful, and favour "test > val > train" and
-    "accuracy/f1/auc > loss/error" for relevance.
-    """
-    from collections import Counter
-
-    # --- 0. Explicit user override (from PATCH or wizard) ---
-    explicit = proj.get("key_metric_name", "")
-    if explicit:
-        return explicit
-
-    # --- 1. Goal metric ---
-    goals = proj.get("goals", [])
-    if goals:
-        for g in goals:
-            if isinstance(g, dict) and g.get("metric") and not g.get("is_constraint"):
-                return g["metric"]
-        if isinstance(goals[0], dict) and goals[0].get("metric"):
-            return goals[0]["metric"]
-
-    # --- 2-5. Score-based ranking ---
-    runs = list(proj.get("runs", {}).values())
-    if not runs:
-        return ""
-
-    # Count how many runs have each numeric metric
-    metric_counts: Counter = Counter()
-    for run in runs:
-        for k, v in run.get("results", {}).items():
-            if isinstance(v, (int, float)):
-                metric_counts[k] += 1
-
-    if not metric_counts:
-        return ""
-
-    total_runs = len(runs)
-
-    # Score each metric: coverage * relevance
-    _RELEVANCE = {
-        # Test-set performance (highest priority)
-        "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
-        "test_auc": 90, "test_precision": 85, "test_recall": 85,
-        "test_score": 80, "test_r2": 80, "test_rmse": 75,
-        "test_loss": 70, "test_error": 70, "test_mae": 70,
-        # Validation-set
-        "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
-        "val_auc": 50, "val_loss": 45, "val_error": 45,
-        "val_score": 50, "val_r2": 50, "val_rmse": 45,
-        # Generic performance
-        "accuracy": 40, "f1": 38, "f1_score": 38,
-        "auc": 35, "precision": 30, "recall": 30,
-        "rmse": 25, "mae": 25, "r2": 25, "r2_score": 25,
-        "loss": 20, "error": 20,
-        # Meta (low priority — usually not what you want to chart)
-        "param_count": 5, "train_time_sec": 3, "epochs": 2,
-    }
-
-    def _score(metric_name: str) -> float:
-        coverage = metric_counts[metric_name] / total_runs
-        name_lower = metric_name.lower().replace("-", "_")
-        # Exact match first
-        relevance = _RELEVANCE.get(name_lower, 0)
-        if relevance == 0:
-            # Fuzzy: check if name contains key patterns
-            for pattern, score in [
-                ("test", 30), ("accuracy", 25), ("acc", 25),
-                ("f1", 20), ("auc", 20), ("score", 15),
-                ("val", 12), ("loss", 10), ("error", 10),
-                ("rmse", 10), ("mae", 10),
-            ]:
-                if pattern in name_lower:
-                    relevance = max(relevance, score)
-            if relevance == 0:
-                relevance = 8  # unknown metric baseline
-        # Penalize non-optimization metrics (counts, times, costs)
-        cat = classify_metric(metric_name)
-        if cat in ("count", "time", "cost"):
-            relevance = min(relevance, 1)
-        return coverage * relevance
-
-    best = max(metric_counts.keys(), key=_score)
-    return best

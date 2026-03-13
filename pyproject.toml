@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.314.0"
+version = "0.7.0"
 description = "Design, launch, and track autonomous research experiments — with a paper library built in"
 readme = "README.md"
 license = "MIT"
@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-desktop = ["fastapi", "uvicorn[standard]", "websockets", "matplotlib"]
+desktop = ["fastapi", "uvicorn[standard]", "websockets"]
 
 [project.urls]
 Homepage = "https://distillate.dev"
