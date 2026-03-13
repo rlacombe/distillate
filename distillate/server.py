@@ -638,14 +638,13 @@ def _create_app():
             return JSONResponse({"ok": False, "reason": "path_not_found"}, status_code=404)
 
         model = body.get("model", "claude-sonnet-4-6")
-        max_turns = body.get("max_turns", 100)
 
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 _executor,
                 lambda: launch_experiment(
-                    proj_path, model=model, max_turns=max_turns, project=proj,
+                    proj_path, model=model, project=proj,
                 ),
             )
             # Persist session to state

@@ -246,9 +246,14 @@ def _install_hooks_into(project_path: Path) -> None:
     existing_hooks = existing.setdefault("hooks", {})
     for event_type, hook_list in hook_config.get("hooks", {}).items():
         existing_entries = existing_hooks.setdefault(event_type, [])
-        existing_commands = {e.get("command", "") for e in existing_entries}
+        # Collect all commands already registered for dedup
+        existing_commands = set()
+        for entry in existing_entries:
+            for h in entry.get("hooks", []):
+                existing_commands.add(h.get("command", ""))
         for hook in hook_list:
-            if hook.get("command", "") not in existing_commands:
+            new_cmds = {h.get("command", "") for h in hook.get("hooks", [])}
+            if not new_cmds & existing_commands:
                 existing_entries.append(hook)
 
     settings_file.write_text(
@@ -260,6 +265,16 @@ def _install_hooks_into(project_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Session management (tmux-based)
 # ---------------------------------------------------------------------------
+
+
+def _tmux_session_exists(session_name: str) -> bool:
+    """Check if a tmux session with the given name is currently running."""
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
 
 def _slugify(name: str) -> str:
     """Convert a name to a URL-safe slug."""
@@ -408,7 +423,34 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         best_metric_name = k
                         best_run_id = run_id
 
-    if best_metric_val is not None:
+    # --- Infer key metric and optimization direction ---
+    key_metric, key_direction = _infer_key_metric(runs)
+    if key_metric:
+        # Find best value among kept runs
+        best_val = None
+        best_rid = None
+        for run in recent:
+            if run.get("status") != "keep":
+                continue
+            val = run.get("results", {}).get(key_metric)
+            if not isinstance(val, (int, float)):
+                continue
+            if best_val is None:
+                best_val, best_rid = val, run.get("id", "?")
+            elif key_direction == "lower" and val < best_val:
+                best_val, best_rid = val, run.get("id", "?")
+            elif key_direction == "higher" and val > best_val:
+                best_val, best_rid = val, run.get("id", "?")
+
+        direction_word = "minimize" if key_direction == "lower" else "maximize"
+        best_str = ""
+        if best_val is not None:
+            best_str = f" Current best: **{key_metric}={best_val}** (from {best_rid})."
+        lines.insert(7, f"**Key metric to {direction_word}:** `{key_metric}`.{best_str}")
+        lines.insert(8, f"Your goal is to {direction_word} `{key_metric}` across runs. "
+                        f"Report this metric for every run.")
+        lines.insert(9, "")
+    elif best_metric_val is not None:
         lines.insert(7, f"**Current best:** {best_metric_name}={best_metric_val} "
                         f"(from {best_run_id})")
         lines.insert(8, "")
@@ -419,43 +461,84 @@ def _generate_run_context(project_path: Path) -> Path | None:
     return context_path
 
 
+def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
+    """Infer the key metric to optimize from run history.
+
+    Returns (metric_name, direction) where direction is "higher" or "lower".
+    Returns ("", "") if no metric can be inferred.
+
+    Uses scoring: test > val > train, accuracy/f1 > loss/error,
+    and prefers metrics present in most runs.
+    """
+    if not runs:
+        return ("", "")
+
+    from collections import Counter
+    metric_counts: Counter = Counter()
+    for run in runs:
+        for k, v in run.get("results", {}).items():
+            if isinstance(v, (int, float)):
+                metric_counts[k] += 1
+    if not metric_counts:
+        return ("", "")
+
+    total = len(runs)
+
+    # Lower-is-better keywords
+    _LOWER_KW = {"loss", "error", "mae", "rmse", "mse", "perplexity",
+                  "time", "latency", "param", "count", "size", "flops", "cost"}
+
+    _RELEVANCE = {
+        "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
+        "test_auc": 90, "test_loss": 70, "test_error": 70,
+        "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
+        "val_loss": 45, "accuracy": 40, "f1": 38,
+        "loss": 20, "error": 20, "param_count": 15,
+        "total_params": 15, "params": 15,
+    }
+
+    def _score(name: str) -> float:
+        coverage = metric_counts[name] / total
+        lower_name = name.lower().replace("-", "_")
+        rel = _RELEVANCE.get(lower_name, 0)
+        if rel == 0:
+            for pat, sc in [("test", 30), ("accuracy", 25), ("acc", 25),
+                            ("f1", 20), ("auc", 20), ("val", 12),
+                            ("loss", 10), ("error", 10), ("param", 10)]:
+                if pat in lower_name:
+                    rel = max(rel, sc)
+            if rel == 0:
+                rel = 5
+        return coverage * rel
+
+    best = max(metric_counts.keys(), key=_score)
+    lower_best = best.lower().replace("-", "_")
+    direction = "lower" if any(kw in lower_best for kw in _LOWER_KW) else "higher"
+    return (best, direction)
+
+
 def _build_claude_command(
     prompt_path: Path,
     *,
     model: str = "claude-sonnet-4-5-20250929",
-    max_turns: int = 100,
     effort: str = "high",
     has_context: bool = False,
 ) -> str:
-    """Build the claude CLI invocation string."""
-    if has_context:
-        prompt_arg = f'"$(cat {prompt_path.name} .distillate/context.md .distillate/steering.md 2>/dev/null)"'
-    else:
-        prompt_arg = f'"$(cat {prompt_path.name})"'
+    """Build the claude CLI invocation string.
+
+    Runs claude interactively (no -p) so the full TUI is visible in
+    the tmux session / xterm.js. The prompt just tells claude to read
+    PROMPT.md — all experiment logic lives in that file.
+    """
+    prompt = (
+        "Read PROMPT.md and follow it precisely. "
+        "You are fully autonomous. Do NOT pause to ask the human anything. "
+        "The human may be asleep. Work indefinitely until manually stopped."
+    )
     parts = [
         "claude",
-        "-p",
-        prompt_arg,
-        "--allowedTools",
-        "'Bash(python3:*)'",
-        "'Bash(tail:*)'",
-        "'Bash(ls:*)'",
-        "'Bash(cat:*)'",
-        "'Bash(head:*)'",
-        "'Bash(wc:*)'",
-        "'Bash(mkdir:*)'",
-        "'Read'",
-        "'Write'",
-        "'Edit'",
-        "'Glob'",
-        "'Grep'",
-        "--model",
-        model,
-        "--max-turns",
-        str(max_turns),
-        "--verbose",
-        "--output-format",
-        "stream-json",
+        "--permission-mode", "auto",
+        shlex.quote(prompt),
     ]
     return " ".join(parts)
 
@@ -465,7 +548,6 @@ def launch_experiment(
     *,
     host: str | None = None,
     model: str = "claude-sonnet-4-5-20250929",
-    max_turns: int = 100,
     effort: str = "high",
     project: dict | None = None,
 ) -> dict:
@@ -480,6 +562,16 @@ def launch_experiment(
     project_path = project_path.resolve()
     ensure_tmux()
 
+    # Check if a session is already running for this project
+    if project:
+        for sess in project.get("sessions", {}).values():
+            if sess.get("status") == "running":
+                tmux_name = sess.get("tmux_session", "")
+                if tmux_name and _tmux_session_exists(tmux_name):
+                    raise RuntimeError(
+                        f"Session '{tmux_name}' is already running. Stop it first."
+                    )
+
     prompt = project_path / "PROMPT.md"
     if not prompt.exists():
         raise FileNotFoundError(f"No PROMPT.md found in {project_path}")
@@ -492,7 +584,7 @@ def launch_experiment(
 
     # Build command
     cmd = _build_claude_command(
-        prompt, model=model, max_turns=max_turns, effort=effort,
+        prompt, model=model, effort=effort,
         has_context=context_path is not None,
     )
 
@@ -510,15 +602,11 @@ def launch_experiment(
     log_dir.mkdir(exist_ok=True)
     session_log = log_dir / f"{session_id}.jsonl"
 
-    # Pipe stream-json output to log file via tee (keeps terminal + file in sync)
-    # Use relative path from project_path (tmux cwd)
-    cmd_with_log = f"{cmd} 2>&1 | tee -a .distillate/{session_id}.jsonl"
-
-    # Spawn tmux session
+    # Spawn tmux session (interactive claude — no tee needed)
     if host:
-        _spawn_ssh(tmux_name, host, str(project_path), cmd_with_log)
+        _spawn_ssh(tmux_name, host, str(project_path), cmd)
     else:
-        _spawn_local(tmux_name, project_path, cmd_with_log)
+        _spawn_local(tmux_name, project_path, cmd)
 
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -528,7 +616,6 @@ def launch_experiment(
         "status": "running",
         "host": host,
         "model": model,
-        "max_turns": max_turns,
         "runs_at_start": runs_at_start,
         "session_log": str(session_log),
     }
@@ -544,7 +631,13 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Unset ANTHROPIC_API_KEY so Claude Code uses SSO auth (Max/Pro
     # subscription) instead of billing against the raw API key.
     extra_paths = "/usr/local/bin:/opt/homebrew/bin:" + str(Path.home() / ".local" / "bin")
-    full_command = f'export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+    # Source bash login profile for SSO auth, then run the command
+    bash_profile = Path.home() / ".bash_profile"
+    source_line = f"source {shlex.quote(str(bash_profile))} >/dev/null 2>&1; " if bash_profile.exists() else ""
+    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+
+    print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
+    print(f"[launch] command: {full_command}")
 
     result = subprocess.run(
         [
@@ -560,6 +653,14 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
         raise RuntimeError(
             f"Failed to create tmux session '{session_name}': {result.stderr.strip()}"
         )
+
+    # Auto-confirm workspace trust dialog (Enter after brief delay)
+    import time
+    time.sleep(3)
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, "Enter"],
+        capture_output=True,
+    )
 
     # Get tmux server PID
     pid_result = subprocess.run(
@@ -646,12 +747,25 @@ def attach_session(session_name: str, host: str | None = None) -> None:
 
 
 def stop_session(session_name: str, host: str | None = None) -> bool:
-    """Send C-c to tmux session to stop gracefully. Returns success."""
-    cmd = ["tmux", "send-keys", "-t", session_name, "C-c", ""]
-    if host:
-        cmd = ["ssh", host, f"tmux send-keys -t {shlex.quote(session_name)} C-c ''"]
+    """Stop a tmux session: send C-c, wait briefly, then kill the session."""
+    import time
 
-    result = subprocess.run(cmd, capture_output=True)
+    if host:
+        subprocess.run(
+            ["ssh", host, f"tmux send-keys -t {shlex.quote(session_name)} C-c ''"],
+            capture_output=True,
+        )
+        time.sleep(2)
+        subprocess.run(
+            ["ssh", host, f"tmux kill-session -t {shlex.quote(session_name)}"],
+            capture_output=True,
+        )
+        return True
+
+    # Local: send C-c, wait, then kill the session
+    subprocess.run(["tmux", "send-keys", "-t", session_name, "C-c", ""], capture_output=True)
+    time.sleep(2)
+    result = subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
     return result.returncode == 0
 
 
