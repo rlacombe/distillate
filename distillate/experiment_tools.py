@@ -645,6 +645,30 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["project"],
         },
     },
+    {
+        "name": "steer_experiment",
+        "description": (
+            "Write steering instructions for the next experiment session. "
+            "The text is saved to .distillate/steering.md and automatically "
+            "injected into the next session's prompt. Use when the user wants "
+            "to guide the experiment in a specific direction (e.g., 'try lower "
+            "learning rate', 'focus on regularization')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Steering instructions for the next session",
+                },
+            },
+            "required": ["project", "text"],
+        },
+    },
 ]
 
 
@@ -1545,6 +1569,33 @@ def continue_experiment_tool(*, state, project: str,
     }
 
 
+def steer_experiment_tool(*, state, project: str, text: str) -> dict:
+    """Write steering instructions for the next experiment session."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import write_steering
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    path = write_steering(_Path(proj_path), text)
+    preview = text[:200] + ("..." if len(text) > 200 else "")
+    return {
+        "success": True,
+        "path": str(path),
+        "preview": preview,
+        "message": (
+            f"Steering instructions written for '{proj.get('name', '')}'. "
+            "They'll be injected into the next session's prompt."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Goal auto-parsing from free-form text
 # ---------------------------------------------------------------------------
@@ -1878,6 +1929,12 @@ train/test splits. If no data exists yet, specify how to obtain or generate it.>
 autonomy requirements, no reward hacking, allowed tools and libraries. \
 IMPORTANT: include the time budget the user specified (default: 5 minutes per \
 experiment iteration). Each iteration should fit within this budget.>
+
+**CRITICAL: File Size Limit.** When using the Read tool, tool results must \
+not exceed 51,200 bytes. For files longer than ~400 lines, always use \
+`offset` and `limit` parameters to read in chunks. When writing code, \
+keep individual Python files under 400 lines — split large scripts into \
+separate modules.
 
 ## Experiment Tracking (Distillate)
 

@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -504,11 +505,20 @@ def launch_experiment(
     # Count current runs
     runs_at_start = len(project.get("runs", {})) if project else 0
 
+    # Session output log file (stream-json piped via tee)
+    log_dir = project_path / ".distillate"
+    log_dir.mkdir(exist_ok=True)
+    session_log = log_dir / f"{session_id}.jsonl"
+
+    # Pipe stream-json output to log file via tee (keeps terminal + file in sync)
+    # Use relative path from project_path (tmux cwd)
+    cmd_with_log = f"{cmd} 2>&1 | tee -a .distillate/{session_id}.jsonl"
+
     # Spawn tmux session
     if host:
-        _spawn_ssh(tmux_name, host, str(project_path), cmd)
+        _spawn_ssh(tmux_name, host, str(project_path), cmd_with_log)
     else:
-        _spawn_local(tmux_name, project_path, cmd)
+        _spawn_local(tmux_name, project_path, cmd_with_log)
 
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -520,6 +530,7 @@ def launch_experiment(
         "model": model,
         "max_turns": max_turns,
         "runs_at_start": runs_at_start,
+        "session_log": str(session_log),
     }
 
 
@@ -530,8 +541,10 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # and tmux server may have been started with a different environment).
     # Also unset CLAUDECODE so Claude Code doesn't refuse to start
     # (it blocks nested sessions, but tmux sessions are independent).
+    # Unset ANTHROPIC_API_KEY so Claude Code uses SSO auth (Max/Pro
+    # subscription) instead of billing against the raw API key.
     extra_paths = "/usr/local/bin:/opt/homebrew/bin:" + str(Path.home() / ".local" / "bin")
-    full_command = f'export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; {command}'
+    full_command = f'export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
 
     result = subprocess.run(
         [
@@ -884,6 +897,231 @@ def launch_sweep(
             prompt_file.write_text(backup, encoding="utf-8")
 
     return results
+
+
+def write_steering(project_path: Path, text: str) -> Path:
+    """Write steering instructions to .distillate/steering.md.
+
+    Already read by ``_build_claude_command()`` via
+    ``$(cat ... .distillate/steering.md 2>/dev/null)``.
+    Returns the path written.
+    """
+    project_path = Path(project_path).resolve()
+    steering_path = project_path / ".distillate" / "steering.md"
+    steering_path.parent.mkdir(exist_ok=True)
+    steering_path.write_text(
+        f"# Steering Instructions\n\n{text}\n",
+        encoding="utf-8",
+    )
+    return steering_path
+
+
+def _rescan_after_session(project_id: str, state) -> dict | None:
+    """Rescan a project after a session completes, adding new runs to state.
+
+    Shared by ``run_campaign()`` (CLI foreground) and server SSE loop.
+    Returns ``{"new_runs": int, "total_runs": int, "best_metric": dict|None}``
+    or None on failure.
+    """
+    from distillate.experiments import scan_project
+    from distillate.state import acquire_lock, release_lock
+
+    proj = state.get_project(project_id)
+    if not proj:
+        return None
+
+    proj_path = Path(proj.get("path", ""))
+    if not proj_path.is_dir():
+        return None
+
+    result = scan_project(proj_path)
+    if "error" in result:
+        return None
+
+    acquire_lock()
+    try:
+        state.reload()
+        existing = state.get_project(project_id)
+        if not existing:
+            return None
+        old_runs = existing.get("runs", {})
+        old_count = len(old_runs)
+        existing_names = {r["name"] for r in old_runs.values()}
+        new_runs = 0
+        for run_id, run_data in result.get("runs", {}).items():
+            if run_data["name"] not in existing_names:
+                state.add_run(project_id, run_id, run_data)
+                new_runs += 1
+        state.update_project(
+            project_id,
+            last_scanned_at=datetime.now(timezone.utc).isoformat(),
+            last_commit_hash=result.get("head_hash", ""),
+        )
+        state.save()
+    finally:
+        release_lock()
+
+    # Find best metric across all kept runs
+    best_metric = None
+    updated_proj = state.get_project(project_id)
+    if updated_proj:
+        for run in updated_proj.get("runs", {}).values():
+            if run.get("decision") != "keep" and run.get("status") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    if best_metric is None or v > best_metric.get(list(best_metric.keys())[0], 0):
+                        best_metric = {k: v}
+
+    return {
+        "new_runs": new_runs,
+        "total_runs": old_count + new_runs,
+        "best_metric": best_metric,
+    }
+
+
+def run_campaign(
+    project_id: str,
+    state,
+    *,
+    max_sessions: int = 10,
+    model: str = "claude-sonnet-4-5-20250929",
+    max_turns: int = 100,
+    poll_interval: int = 10,
+    on_event: Optional[callable] = None,
+    stop_flag: Optional["threading.Event"] = None,
+) -> dict:
+    """Synchronous campaign loop: launch → poll → rescan → check goals → repeat.
+
+    Called by both the CLI (foreground) and server (via run_in_executor).
+    Returns ``{"sessions_launched": N, "stop_reason": "goal_reached|budget_exhausted|user_stopped"}``.
+    """
+    import threading
+    import time
+
+    from distillate.state import acquire_lock, release_lock
+
+    if stop_flag is None:
+        stop_flag = threading.Event()
+
+    sessions_launched = 0
+
+    def _emit(event: dict):
+        if on_event:
+            on_event(event)
+        # Also append to events.jsonl
+        proj = state.get_project(project_id)
+        if proj:
+            proj_path = Path(proj.get("path", ""))
+            events_file = proj_path / ".distillate" / "events.jsonl"
+            events_file.parent.mkdir(exist_ok=True)
+            try:
+                with open(events_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(event) + "\n")
+            except OSError:
+                pass
+
+    while not stop_flag.is_set():
+        state.reload()
+        proj = state.get_project(project_id)
+        if not proj:
+            break
+
+        campaign = proj.get("campaign", {})
+        if campaign.get("status") not in ("running", None):
+            # Externally paused/stopped
+            return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
+
+        # Budget check
+        total = campaign.get("sessions_launched", 0)
+        if total >= max_sessions:
+            _emit({
+                "type": "campaign_completed",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "project_id": project_id,
+                "sessions_launched": total,
+                "stop_reason": "budget_exhausted",
+            })
+            return {"sessions_launched": sessions_launched, "stop_reason": "budget_exhausted"}
+
+        # Goal check
+        if not should_continue(proj):
+            _emit({
+                "type": "goal_reached",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "project_id": project_id,
+                "sessions_launched": total,
+            })
+            return {"sessions_launched": sessions_launched, "stop_reason": "goal_reached"}
+
+        # Launch session
+        proj_path = Path(proj.get("path", ""))
+        if not proj_path.is_dir():
+            break
+
+        try:
+            session_data = launch_continuation(
+                proj_path, proj, model=model, max_turns=max_turns,
+            )
+        except Exception:
+            log.exception("Campaign launch failed for %s", project_id)
+            time.sleep(30)
+            continue
+
+        sessions_launched += 1
+
+        # Save session + update campaign counters
+        acquire_lock()
+        try:
+            state.reload()
+            state.add_session(project_id, session_data["session_id"], session_data)
+            p = state.get_project(project_id)
+            c = dict(p.get("campaign", {}))
+            c["sessions_launched"] = c.get("sessions_launched", 0) + 1
+            c["current_session_id"] = session_data["session_id"]
+            state.update_project(project_id, campaign=c)
+            state.save()
+        finally:
+            release_lock()
+
+        _emit({
+            "type": "campaign_run_started",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "project_id": project_id,
+            "session_id": session_data["session_id"],
+            "sessions_launched": c["sessions_launched"],
+            "budget_remaining": max_sessions - c["sessions_launched"],
+        })
+
+        # Poll for session completion
+        tmux_name = session_data.get("tmux_session", "")
+        while not stop_flag.is_set():
+            time.sleep(poll_interval)
+            state.reload()
+            p = state.get_project(project_id)
+            c = p.get("campaign", {}) if p else {}
+            if c.get("status") not in ("running", None):
+                return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
+            try:
+                actual = session_status(tmux_name, None)
+            except Exception:
+                actual = "unknown"
+            if actual != "running":
+                # Rescan
+                try:
+                    _rescan_after_session(project_id, state)
+                except Exception:
+                    log.exception("Campaign rescan failed for %s", project_id)
+                break
+
+        # Small delay before next iteration
+        time.sleep(5)
+
+    # If we exited due to stop_flag
+    if stop_flag.is_set():
+        return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
+
+    return {"sessions_launched": sessions_launched, "stop_reason": "unknown"}
 
 
 def refresh_session_statuses(state) -> int:

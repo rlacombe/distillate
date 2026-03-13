@@ -657,7 +657,7 @@ class TestStateSessionMethods:
 class TestExperimentToolSchemas:
     def test_schema_count(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 20  # 14 original + 6 new
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 21  # 14 original + 7 new
 
     def test_new_tool_names(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS

@@ -79,6 +79,147 @@ _DEFAULT_PORT = 8742
 _executor = ThreadPoolExecutor(max_workers=2)
 
 
+def _summarize_tool_result(raw_result, is_err: bool) -> str:
+    """Turn a tool result into a compact one-line summary."""
+    import json as _json
+
+    prefix = "ERR" if is_err else "OK"
+    if not raw_result:
+        return ""
+
+    # raw_result may be a dict (already parsed) or a string
+    obj = raw_result
+    if isinstance(obj, str):
+        try:
+            obj = _json.loads(obj)
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    if isinstance(obj, dict):
+        # Glob results
+        if "filenames" in obj:
+            n = obj.get("numFiles", len(obj["filenames"]))
+            return f"  [{prefix}] {n} files found"
+        # File read
+        if "filePath" in obj:
+            fp = obj["filePath"].rsplit("/", 1)[-1]  # just filename
+            lines = obj.get("numLines", "?")
+            return f"  [{prefix}] {fp} ({lines} lines)"
+        # Bash stdout
+        if "stdout" in obj:
+            stdout = obj["stdout"].strip()
+            if len(stdout) > 150:
+                stdout = stdout[:150] + "..."
+            return f"  [{prefix}] {stdout}" if stdout else ""
+        # File content (from Read)
+        if "file" in obj and isinstance(obj["file"], dict):
+            fp = obj["file"].get("filePath", "?").rsplit("/", 1)[-1]
+            lines = obj["file"].get("numLines", "?")
+            return f"  [{prefix}] {fp} ({lines} lines)"
+
+    # Plain text fallback
+    text = str(raw_result)
+    if len(text) > 150:
+        text = text[:150] + "..."
+    return f"  [{prefix}] {text}"
+
+
+def _parse_stream_json(raw: str) -> str:
+    """Parse Claude Code stream-json output into human-readable text.
+
+    The log file has one JSON object per line.  Falls back to a
+    brace-depth scanner for tmux capture-pane where lines are wrapped.
+    """
+    import json as _json
+
+    # --- Extract JSON objects ---
+    events: list[dict] = []
+
+    # Try line-by-line (works for log files)
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+            if isinstance(obj, dict):
+                events.append(obj)
+        except _json.JSONDecodeError:
+            pass
+
+    # If line-by-line yielded few results, try brace-depth scan
+    if len(events) < 3:
+        flat = raw.replace("\n", "").replace("\r", "")
+        decoder = _json.JSONDecoder()
+        i = 0
+        while i < len(flat):
+            pos = flat.find("{", i)
+            if pos == -1:
+                break
+            try:
+                obj, end = decoder.raw_decode(flat, pos)
+                if isinstance(obj, dict) and "type" in obj:
+                    events.append(obj)
+                i = end
+            except _json.JSONDecodeError:
+                i = pos + 1
+
+    # --- Format events ---
+    output: list[str] = []
+    for evt in events:
+        evt_type = evt.get("type", "")
+
+        if evt_type == "thinking":
+            thought = evt.get("thinking", "")
+            if thought:
+                first = thought.split("\n")[0][:120]
+                output.append(f"[thinking] {first}")
+
+        elif evt_type == "assistant":
+            for block in evt.get("message", {}).get("content", []):
+                btype = block.get("type", "")
+                if btype == "text":
+                    output.append(block.get("text", ""))
+                elif btype == "tool_use":
+                    name = block.get("name", "?")
+                    inp = block.get("input", {})
+                    if name in ("Read", "Write", "Edit"):
+                        detail = inp.get("file_path", "").rsplit("/", 1)[-1]
+                    elif name == "Bash":
+                        cmd = inp.get("command", "")
+                        detail = cmd[:120] + ("..." if len(cmd) > 120 else "")
+                    elif name in ("Grep", "Glob"):
+                        detail = inp.get("pattern", "")
+                    else:
+                        detail = str(inp)[:80]
+                    output.append(f">>> {name}: {detail}")
+
+        elif evt_type == "user":
+            for block in evt.get("message", {}).get("content", []):
+                if block.get("type") == "tool_result":
+                    raw_result = evt.get("tool_use_result", "")
+                    if not raw_result:
+                        raw_result = block.get("content", "")
+                    is_err = block.get("is_error", False)
+                    summary = _summarize_tool_result(raw_result, is_err)
+                    if summary:
+                        output.append(summary)
+
+        elif evt_type == "text":
+            f = evt.get("file", {})
+            if isinstance(f, dict) and f.get("filePath"):
+                name = f["filePath"].rsplit("/", 1)[-1]
+                lines = f.get("numLines", "?")
+                output.append(f"  [OK] {name} ({lines} lines)")
+
+        elif evt_type == "result":
+            result_text = evt.get("result", "")
+            if result_text:
+                output.append(f"\n--- Result ---\n{result_text}")
+
+    return "\n".join(output) if output else "Session is running... waiting for output."
+
+
 def _create_app():
     """Build the FastAPI application (lazy import so PyPI installs don't need fastapi)."""
     from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -389,7 +530,13 @@ def _create_app():
 
     @app.get("/experiments/{project_id}/session")
     async def get_session_output(project_id: str):
-        """Get the last 200 lines of tmux session output for the project."""
+        """Get parsed session output for the project.
+
+        Reads the session log file (.distillate/<session_id>.jsonl) which
+        contains stream-json output piped via tee.  Falls back to
+        capture_pane for sessions started before the log-file change.
+        """
+        from pathlib import Path
         from distillate.launcher import _ensure_path, capture_pane
 
         _ensure_path()
@@ -406,15 +553,31 @@ def _create_app():
 
         sess = running[-1]
         tmux_name = sess.get("tmux_session", "")
-        if not tmux_name:
-            return JSONResponse({"ok": False, "reason": "no_tmux_session", "output": ""})
+        session_log = sess.get("session_log", "")
 
         try:
-            loop = asyncio.get_event_loop()
-            output = await loop.run_in_executor(
-                _executor,
-                lambda: capture_pane(tmux_name),
-            )
+            raw = ""
+            # Prefer log file (reliable, survives scrollback limits)
+            if session_log:
+                log_path = Path(session_log)
+                if log_path.exists():
+                    # Read last ~50KB of the log file
+                    size = log_path.stat().st_size
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        if size > 50_000:
+                            f.seek(size - 50_000)
+                            f.readline()  # skip partial line
+                        raw = f.read()
+
+            # Fallback to capture_pane
+            if not raw.strip() and tmux_name:
+                loop = asyncio.get_event_loop()
+                raw = await loop.run_in_executor(
+                    _executor,
+                    lambda: capture_pane(tmux_name, lines=500),
+                )
+
+            output = _parse_stream_json(raw)
             return JSONResponse({
                 "ok": True,
                 "session": tmux_name,
@@ -568,6 +731,15 @@ def _create_app():
                 if run_data["name"] not in existing_names:
                     _state.add_run(proj_id, run_id, run_data)
                     new_runs += 1
+                else:
+                    # Update existing run if newer timestamp
+                    for eid, erun in old_runs.items():
+                        if erun["name"] == run_data["name"]:
+                            new_ts = run_data.get("started_at", "")
+                            old_ts = erun.get("started_at", "")
+                            if new_ts > old_ts:
+                                _state.update_run(proj_id, eid, **run_data)
+                            break
             _state.update_project(
                 proj_id,
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
@@ -775,160 +947,43 @@ def _create_app():
     _campaign_tasks: dict[str, asyncio.Task] = {}
 
     async def _campaign_loop(project_id: str):
-        """Background campaign loop: launch -> wait -> rescan -> check -> repeat."""
-        from pathlib import Path
+        """Background campaign loop — delegates to shared run_campaign()."""
+        import threading
 
-        from distillate.launcher import (
-            launch_continuation, session_status, should_continue,
-        )
-        from distillate.state import acquire_lock, release_lock
+        from distillate.launcher import run_campaign
 
-        while True:
-            _state.reload()
-            proj = _state.get_project(project_id)
-            if not proj:
-                break
-
-            campaign = proj.get("campaign", {})
-            if campaign.get("status") != "running":
-                break
-
-            budget = campaign.get("budget", {})
-            max_sessions = budget.get("max_sessions", 10)
-
-            # Budget check
-            if campaign.get("sessions_launched", 0) >= max_sessions:
-                _state.update_project(project_id, campaign={
-                    **campaign,
-                    "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "stop_reason": "budget_exhausted",
-                })
-                _state.save()
-                break
-
-            # Goal check
-            if not should_continue(proj):
-                _state.update_project(project_id, campaign={
-                    **campaign,
-                    "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "stop_reason": "goal_reached",
-                })
-                _state.save()
-                break
-
-            # Launch a session
-            proj_path = Path(proj.get("path", ""))
-            if not proj_path.is_dir():
-                break
-
-            model = campaign.get("model", "claude-sonnet-4-5-20250929")
-            max_turns = campaign.get("max_turns", 100)
-
-            try:
-                loop = asyncio.get_event_loop()
-                session_data = await loop.run_in_executor(
-                    _executor,
-                    lambda: launch_continuation(
-                        proj_path, proj, model=model, max_turns=max_turns,
-                    ),
-                )
-            except Exception:
-                log.exception("Campaign launch failed for %s", project_id)
-                await asyncio.sleep(30)
-                continue
-
-            # Save session + update campaign counters
-            acquire_lock()
-            try:
-                _state.reload()
-                _state.add_session(
-                    project_id, session_data["session_id"], session_data,
-                )
-                p = _state.get_project(project_id)
-                c = dict(p.get("campaign", {}))
-                c["sessions_launched"] = c.get("sessions_launched", 0) + 1
-                c["current_session_id"] = session_data["session_id"]
-                _state.update_project(project_id, campaign=c)
-                _state.save()
-            finally:
-                release_lock()
-
-            # Emit campaign_run_started SSE event
-            events_file = proj_path / ".distillate" / "events.jsonl"
-            events_file.parent.mkdir(exist_ok=True)
-            try:
-                with open(events_file, "a", encoding="utf-8") as f:
-                    evt = {
-                        "type": "campaign_run_started",
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "project_id": project_id,
-                        "session_id": session_data["session_id"],
-                        "sessions_launched": c["sessions_launched"],
-                        "budget_remaining": max_sessions - c["sessions_launched"],
-                    }
-                    f.write(json.dumps(evt) + "\n")
-            except OSError:
-                log.warning("Could not write campaign event for %s", project_id)
-
-            # Wait for session to complete (poll every 10s)
-            tmux_name = session_data.get("tmux_session", "")
-            while True:
-                await asyncio.sleep(10)
-                _state.reload()
-                p = _state.get_project(project_id)
-                c = p.get("campaign", {}) if p else {}
-                if c.get("status") != "running":
-                    break  # campaign was paused/stopped externally
-                try:
-                    actual = await loop.run_in_executor(
-                        _executor, session_status, tmux_name, None,
-                    )
-                except Exception:
-                    actual = "unknown"
-                if actual != "running":
-                    # Rescan the project to pick up new runs
-                    try:
-                        _state.reload()
-                        fresh_proj = _state.get_project(project_id)
-                        if fresh_proj:
-                            await loop.run_in_executor(
-                                _executor,
-                                _rescan_project, project_id, fresh_proj,
-                            )
-                    except Exception:
-                        log.exception("Campaign rescan failed for %s", project_id)
-                    break
-
-            # Small delay before next iteration
-            await asyncio.sleep(5)
-
-        # Campaign ended - emit campaign_completed event
         _state.reload()
         proj = _state.get_project(project_id)
-        if proj:
-            campaign = proj.get("campaign", {})
-            proj_path = Path(proj.get("path", ""))
-            events_file = proj_path / ".distillate" / "events.jsonl"
-            if events_file.parent.exists():
-                try:
-                    with open(events_file, "a", encoding="utf-8") as f:
-                        evt = {
-                            "type": "campaign_completed",
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "project_id": project_id,
-                            "sessions_launched": campaign.get(
-                                "sessions_launched", 0,
-                            ),
-                            "stop_reason": campaign.get("stop_reason", "unknown"),
-                        }
-                        f.write(json.dumps(evt) + "\n")
-                except OSError:
-                    pass
+        if not proj:
+            _campaign_tasks.pop(project_id, None)
+            return
 
-        # Clean up task reference
-        _campaign_tasks.pop(project_id, None)
+        campaign = proj.get("campaign", {})
+        budget = campaign.get("budget", {})
+        max_sessions = budget.get("max_sessions", 10)
+        model = campaign.get("model", "claude-sonnet-4-5-20250929")
+        max_turns = campaign.get("max_turns", 100)
+
+        # The stop flag is checked by run_campaign; we set it on cancel
+        stop_flag = threading.Event()
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                _executor,
+                lambda: run_campaign(
+                    project_id,
+                    _state,
+                    max_sessions=max_sessions,
+                    model=model,
+                    max_turns=max_turns,
+                    stop_flag=stop_flag,
+                ),
+            )
+        except Exception:
+            log.exception("Campaign loop failed for %s", project_id)
+        finally:
+            _campaign_tasks.pop(project_id, None)
 
     @app.post("/experiments/{project_id}/campaign/start")
     async def start_campaign(project_id: str, request: Request):
@@ -1058,6 +1113,8 @@ def _create_app():
         """Write steering instructions for the next session."""
         from pathlib import Path
 
+        from distillate.launcher import write_steering
+
         body = await request.json()
         text = body.get("text", "").strip()
         if not text:
@@ -1074,12 +1131,7 @@ def _create_app():
             )
 
         proj_path = Path(proj.get("path", ""))
-        steering_path = proj_path / ".distillate" / "steering.md"
-        steering_path.parent.mkdir(exist_ok=True)
-        steering_path.write_text(
-            f"# Steering Instructions\n\n{text}\n",
-            encoding="utf-8",
-        )
+        write_steering(proj_path, text)
 
         return JSONResponse({"ok": True})
 
@@ -1472,33 +1524,89 @@ def _create_app():
         }
 
     def _infer_key_metric_name(proj: dict) -> str:
-        """Infer the primary metric name from goals or most common result key."""
+        """Pick the best metric to chart by default.
+
+        Priority order:
+        1. Explicit goal metric (user told us what matters)
+        2. Test-set performance metric present in most runs
+        3. Validation-set performance metric
+        4. Any performance metric (accuracy, f1, auc, etc.)
+        5. Most common numeric metric across runs
+
+        We prefer metrics that have data in ALL (or most) runs so the
+        chart is meaningful, and favour "test > val > train" and
+        "accuracy/f1/auc > loss/error" for relevance.
+        """
+        # --- 1. Goal metric ---
         goals = proj.get("goals", [])
         if goals:
-            # Prefer the optimization target (non-constraint) over constraints
             for g in goals:
                 if isinstance(g, dict) and g.get("metric") and not g.get("is_constraint"):
                     return g["metric"]
-            # Fall back to first goal
             if isinstance(goals[0], dict) and goals[0].get("metric"):
                 return goals[0]["metric"]
-        # Fall back to most common numeric result key across kept runs
+
+        # --- 2-5. Score-based ranking ---
         from collections import Counter
-        key_counts: Counter = Counter()
-        for run in proj.get("runs", {}).values():
-            if run.get("decision") != "keep":
-                continue
+        runs = list(proj.get("runs", {}).values())
+        if not runs:
+            return ""
+
+        # Count how many runs have each numeric metric
+        metric_counts: Counter = Counter()
+        for run in runs:
             for k, v in run.get("results", {}).items():
                 if isinstance(v, (int, float)):
-                    key_counts[k] += 1
-        if key_counts:
-            return key_counts.most_common(1)[0][0]
-        # Fall back to any numeric result key
-        for run in proj.get("runs", {}).values():
-            for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)):
-                    return k
-        return ""
+                    metric_counts[k] += 1
+
+        if not metric_counts:
+            return ""
+
+        total_runs = len(runs)
+
+        # Score each metric: coverage * relevance
+        # Coverage: fraction of runs that have this metric (0-1)
+        # Relevance: heuristic based on name patterns
+        _RELEVANCE = {
+            # Test-set performance (highest priority)
+            "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
+            "test_auc": 90, "test_precision": 85, "test_recall": 85,
+            "test_score": 80, "test_r2": 80, "test_rmse": 75,
+            "test_loss": 70, "test_error": 70, "test_mae": 70,
+            # Validation-set
+            "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
+            "val_auc": 50, "val_loss": 45, "val_error": 45,
+            "val_score": 50, "val_r2": 50, "val_rmse": 45,
+            # Generic performance
+            "accuracy": 40, "f1": 38, "f1_score": 38,
+            "auc": 35, "precision": 30, "recall": 30,
+            "rmse": 25, "mae": 25, "r2": 25, "r2_score": 25,
+            "loss": 20, "error": 20,
+            # Meta (low priority — usually not what you want to chart)
+            "param_count": 5, "train_time_sec": 3, "epochs": 2,
+        }
+
+        def _score(metric_name: str) -> float:
+            coverage = metric_counts[metric_name] / total_runs
+            name_lower = metric_name.lower().replace("-", "_")
+            # Exact match first
+            relevance = _RELEVANCE.get(name_lower, 0)
+            if relevance == 0:
+                # Fuzzy: check if name contains key patterns
+                for pattern, score in [
+                    ("test", 30), ("accuracy", 25), ("acc", 25),
+                    ("f1", 20), ("auc", 20), ("score", 15),
+                    ("val", 12), ("loss", 10), ("error", 10),
+                    ("rmse", 10), ("mae", 10),
+                ]:
+                    if pattern in name_lower:
+                        relevance = max(relevance, score)
+                if relevance == 0:
+                    relevance = 8  # unknown metric baseline
+            return coverage * relevance
+
+        best = max(metric_counts.keys(), key=_score)
+        return best
 
     @app.get("/experiments/list")
     async def list_experiments():
@@ -1514,6 +1622,16 @@ def _create_app():
         if changed:
             _state.save()
 
+        # Auto-rescan projects to pick up new runs from runs.jsonl
+        for pid, p in list(_state.projects.items()):
+            try:
+                await loop.run_in_executor(
+                    _executor, _rescan_project, pid, p,
+                )
+            except Exception:
+                pass
+
+        _state.reload()
         projects = _state.projects
         result = []
         for proj_id, proj in projects.items():
@@ -1561,6 +1679,35 @@ def _create_app():
 
         html = generate_html_notebook(proj, enrichment=enrichment)
         return HTMLResponse(html)
+
+    @app.get("/experiments/{project_id}/chart/export")
+    async def export_chart(project_id: str, metric: str = "", format: str = "png"):
+        """Generate a Karpathy-style clean chart PNG for sharing."""
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        from distillate.experiments import generate_export_chart
+        runs = list(proj.get("runs", {}).values())
+        if not metric:
+            # Use first available numeric metric
+            for r in runs:
+                for k, v in r.get("results", {}).items():
+                    if isinstance(v, (int, float)):
+                        metric = k
+                        break
+                if metric:
+                    break
+        if not metric:
+            return JSONResponse({"ok": False, "reason": "no_metric"}, status_code=400)
+
+        try:
+            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id))
+            from starlette.responses import Response
+            return Response(content=png_bytes, media_type="image/png")
+        except Exception as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
 
     @app.get("/papers")
     async def list_papers(status: str = None):

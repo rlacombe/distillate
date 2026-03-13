@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-desktop = ["fastapi", "uvicorn[standard]", "websockets"]
+desktop = ["fastapi", "uvicorn[standard]", "websockets", "matplotlib"]
 
 [project.urls]
 Homepage = "https://distillate.dev"

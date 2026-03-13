@@ -64,6 +64,7 @@ TOOL_LABELS = {
     "init_experiment": "\u2697\ufe0f Drafting experiment prompt",
     "continue_experiment": "\U0001F504 Continuing experiment",
     "sweep_experiment": "\U0001F9F9 Launching sweep",
+    "steer_experiment": "\U0001F9E7 Steering the experiment",
 }
 
 
@@ -287,6 +288,9 @@ def build_system_prompt(
             "met its goals. It launches a new session with prior-run context.\n"
             "- Use sweep_experiment to launch parallel ablations — provide a "
             "list of config dicts and each runs in its own tmux session.\n"
+            "- Use steer_experiment to write steering instructions for "
+            "the next session — e.g., 'try lower learning rate' or 'focus "
+            "on regularization'. Instructions are auto-injected.\n"
             "- Use annotate_run to add a hypothesis or note to a run — "
             "user-provided hypotheses take precedence over LLM enrichment.\n"
             "- Use delete_project/delete_run with confirm=false first, then "
@@ -385,6 +389,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "init_experiment": et.init_experiment_tool,
             "continue_experiment": et.continue_experiment_tool,
             "sweep_experiment": et.sweep_experiment_tool,
+            "steer_experiment": et.steer_experiment_tool,
         })
 
     fn = dispatch.get(name)

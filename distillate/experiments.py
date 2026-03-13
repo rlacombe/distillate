@@ -654,6 +654,12 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
     except OSError:
         pass
 
+    # Deduplicate by run name: last entry wins (append-only log semantics)
+    seen: dict[str, int] = {}
+    for i, run in enumerate(runs):
+        seen[run["name"]] = i
+    runs = [runs[i] for i in sorted(seen.values())]
+
     return runs
 
 
@@ -2659,3 +2665,80 @@ def slugify(name: str) -> str:
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = slug.strip("-")
     return slug
+
+
+def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> bytes:
+    """Generate a clean, Karpathy-style chart PNG for sharing.
+
+    White background, thin left+bottom spines only, minimal gridlines,
+    dots colored by decision (green=keep, red=discard, gray=other).
+    Returns PNG bytes.
+    """
+    import io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # Filter runs with numeric values for this metric
+    points = []
+    for i, run in enumerate(runs):
+        val = run.get("results", {}).get(metric)
+        if isinstance(val, (int, float)):
+            points.append({"index": i, "value": val, "run": run})
+
+    if len(points) < 1:
+        raise ValueError(f"No data for metric '{metric}'")
+
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=200)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    # Spines: only left and bottom
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(0.8)
+    ax.spines["bottom"].set_linewidth(0.8)
+    ax.spines["left"].set_color("#333")
+    ax.spines["bottom"].set_color("#333")
+
+    # Grid
+    ax.yaxis.grid(True, alpha=0.3, linewidth=0.5, color="#ccc")
+    ax.xaxis.grid(False)
+    ax.set_axisbelow(True)
+
+    # Font
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.size": 11,
+    })
+
+    xs = list(range(len(points)))
+    ys = [p["value"] for p in points]
+
+    # Line
+    ax.plot(xs, ys, color="#4F46E5", linewidth=1.5, alpha=0.7, zorder=2)
+
+    # Dots colored by decision
+    colors_map = {"keep": "#22c55e", "discard": "#ef4444", "crash": "#d29922"}
+    colors = [colors_map.get(p["run"].get("decision", ""), "#9ca3af") for p in points]
+    ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
+
+    # Labels
+    ax.set_xlabel("Run", fontsize=10, color="#666")
+    ax.set_ylabel(metric, fontsize=10, color="#666")
+    if title:
+        ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
+
+    ax.tick_params(colors="#666", labelsize=9)
+
+    # Y-axis starts at 0 if all values are non-negative
+    if min(ys) >= 0:
+        ax.set_ylim(bottom=0)
+
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()

@@ -77,6 +77,9 @@ Usage: distillate [question]
 Experiments:
   --new-experiment [tmpl] Scaffold a new experiment from a template
   --launch <name>         Launch an auto-research session (tmux)
+  --campaign start|status|stop <project>
+                          Run an autonomous campaign loop
+  --steer <project> "text"  Write steering instructions for next session
   --experiments           List all tracked experiments with status
   --attach <name>         Attach to a running experiment session
   --stop <name>           Stop a running experiment session
@@ -121,6 +124,7 @@ _KNOWN_FLAGS = {
     "--export-state", "--import-state", "--report",
     "--scan-projects", "--install-hooks", "--watch",
     "--new-experiment", "--launch", "--experiments", "--attach", "--stop",
+    "--campaign", "--steer",
     "--host", "--model", "--turns", "--target", "--name",
 }
 
@@ -269,6 +273,16 @@ def main():
     if "--stop" in sys.argv:
         idx = sys.argv.index("--stop")
         commands._stop_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--campaign" in sys.argv:
+        idx = sys.argv.index("--campaign")
+        commands._campaign(sys.argv[idx + 1:])
+        return
+
+    if "--steer" in sys.argv:
+        idx = sys.argv.index("--steer")
+        commands._steer(sys.argv[idx + 1:])
         return
 
     if "--scan-projects" in sys.argv:
