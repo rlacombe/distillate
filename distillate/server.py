@@ -1107,6 +1107,32 @@ def _create_app():
             task.cancel()
         return JSONResponse({"ok": True})
 
+    @app.delete("/experiments/{project_id}")
+    async def delete_experiment(project_id: str):
+        """Delete experiment from tracking. Does NOT delete files or remote repo."""
+        from distillate.launcher import _tmux_session_exists
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "Project not found"}, status_code=404)
+
+        # Refuse if sessions are running
+        for sess in proj.get("sessions", {}).values():
+            if sess.get("status") == "running":
+                tmux_name = sess.get("tmux_session", "")
+                if tmux_name and _tmux_session_exists(tmux_name):
+                    return JSONResponse(
+                        {"ok": False, "reason": f"Session '{tmux_name}' is still running. Stop it first."},
+                        status_code=409,
+                    )
+
+        name = proj.get("name", project_id)
+        run_count = len(proj.get("runs", {}))
+        _state.remove_project(project_id)
+        _state.save()
+        return JSONResponse({"ok": True, "message": f"Deleted '{name}' ({run_count} runs). Files and remote repo untouched."})
+
     @app.post("/experiments/{project_id}/steer")
     async def steer_experiment(project_id: str, request: Request):
         """Write steering instructions for the next session."""

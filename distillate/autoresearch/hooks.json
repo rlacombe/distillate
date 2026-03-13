@@ -18,6 +18,10 @@
           {
             "type": "command",
             "command": "python3 -m distillate.hooks.on_stop"
+          },
+          {
+            "type": "command",
+            "command": "git add -A && git diff --cached --quiet || git commit -m 'Auto-commit: experiment session end' && git push 2>/dev/null || true"
           }
         ]
       }

@@ -1991,8 +1991,12 @@ h1 {
   background: linear-gradient(135deg, #6366f1, #3b82f6);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
-.subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 0.75rem; }
 .subtitle code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
+.project-description { color: var(--text); font-size: 0.95rem; margin-bottom: 1rem; line-height: 1.6; padding: 0.75rem 1rem; background: var(--surface); border-radius: 8px; border-left: 3px solid var(--accent); }
+.hero-metric { display: flex; align-items: baseline; gap: 12px; margin-bottom: 1.5rem; }
+.hero-value { font-size: 2.25rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.hero-label { font-size: 0.85rem; color: var(--text-dim); }
 .stats-bar {
   display: flex; gap: 1.5rem; padding: 1rem 1.25rem;
   background: var(--surface); border: 1px solid var(--border);
@@ -2079,7 +2083,7 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .toolbar button:hover { border-color: var(--accent); color: var(--text); }
 .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
 .decision-keep { color: var(--green); font-weight: 600; }
-.decision-discard { color: var(--red); font-weight: 600; }
+.decision-discard { color: #888; font-weight: 600; }
 .decision-crash { color: var(--yellow); font-weight: 600; }
 .reasoning-block { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 0.85rem; }
 .reasoning-block .reasoning-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; }
@@ -2219,7 +2223,7 @@ def _render_metric_chart(runs: list[dict]) -> str:
                f'stroke-width="2"/>')
 
     # Decision markers
-    colors = {"keep": "#3fb950", "discard": "#f85149", "crash": "#d29922"}
+    colors = {"keep": "#3fb950", "discard": "#555555", "crash": "#d29922"}
     for idx, val, decision in points:
         color = colors.get(decision, "#8b949e")
         cx, cy = _x(idx), _y(val)
@@ -2278,6 +2282,32 @@ def generate_html_notebook(project: dict,
         f'<br><code>{_h(project.get("path", ""))}</code>'
     )
     parts.append(f'<div class="subtitle">{subtitle}</div>')
+
+    # --- Goal / Description ---
+    description = project.get("description", "")
+    if description:
+        parts.append(f'<div class="project-description">{_h(description)}</div>')
+
+    # --- North star metric ---
+    key_metric_name = project.get("key_metric_name", "")
+    if key_metric_name:
+        # Find best value from kept runs
+        lower_better = any(kw in key_metric_name.lower() for kw in
+                          ["loss", "error", "mae", "rmse", "mse", "perplexity"])
+        best_val = None
+        for r in runs:
+            if r.get("decision") != "keep":
+                continue
+            v = r.get("results", {}).get(key_metric_name)
+            if isinstance(v, (int, float)):
+                if best_val is None or (v < best_val if lower_better else v > best_val):
+                    best_val = v
+        if best_val is not None:
+            arrow = "&darr;" if lower_better else "&uarr;"
+            parts.append(f'<div class="hero-metric">'
+                         f'<span class="hero-value">{_h(_fmt_metric(key_metric_name, best_val))}</span>'
+                         f'<span class="hero-label">{_h(key_metric_name)} {arrow}</span>'
+                         f'</div>')
 
     # --- Stats bar ---
     completed = sum(1 for r in runs if r.get("status") == "completed")
@@ -2783,10 +2813,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
                   "time", "latency", "param", "count", "size", "flops", "cost"}
     lower_better = any(kw in metric.lower() for kw in _lower_kw)
 
-    # Raw run line (thin, dimmed)
-    ax.plot(xs, ys, color="#4F46E5", linewidth=1, alpha=0.25, zorder=1)
-
-    # Best-so-far frontier (bold, primary — only advances on "keep" runs)
+    # Best-so-far frontier (only advances on "keep" runs)
     best_so_far = None
     frontier_xs, frontier_ys = [], []
     for i, p in enumerate(points):

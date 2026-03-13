@@ -201,6 +201,7 @@ def scaffold_experiment(
             "permissions": {
                 "allow": [
                     "Bash(python3:*)",
+                    "Bash(git:*)",
                     "Bash(tail:*)",
                     "Bash(ls:*)",
                     "Bash(cat:*)",
@@ -533,7 +534,10 @@ def _build_claude_command(
     prompt = (
         "Read PROMPT.md and follow it precisely. "
         "You are fully autonomous. Do NOT pause to ask the human anything. "
-        "The human may be asleep. Work indefinitely until manually stopped."
+        "The human may be asleep. Work indefinitely until manually stopped. "
+        "CRITICAL: After EVERY experiment run (success, failure, or crash), "
+        "commit ALL code changes and results with `git add -A && git commit -m '<run_description>'` "
+        "then `git push`. Never leave uncommitted work."
     )
     parts = [
         "claude",
