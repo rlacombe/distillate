@@ -330,18 +330,111 @@ def _next_session_id(project: dict) -> str:
     return f"session_{n:03d}"
 
 
+def _generate_run_context(project_path: Path) -> Path | None:
+    """Read runs.jsonl and generate .distillate/context.md with prior-run history.
+
+    Returns the path to context.md if written, None otherwise.
+    Caps at last 20 runs to keep context manageable.
+    """
+    runs_file = project_path / ".distillate" / "runs.jsonl"
+    if not runs_file.exists():
+        return None
+
+    runs = []
+    try:
+        for line in runs_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                runs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return None
+
+    if not runs:
+        return None
+
+    # Cap at last 20 runs
+    recent = runs[-20:]
+
+    lines = [
+        "# Prior Run History",
+        "",
+        f"This experiment has **{len(runs)} prior run(s)**. "
+        f"Below are the most recent {len(recent)}.",
+        "",
+        "**IMPORTANT:** Review this history before starting. Build on what worked, "
+        "avoid repeating failed approaches. Reference specific run IDs when explaining "
+        "your reasoning.",
+        "",
+    ]
+
+    # Summarize each run
+    best_metric_val = None
+    best_metric_name = None
+    best_run_id = None
+
+    for run in recent:
+        run_id = run.get("id", "?")
+        status = run.get("status", "?")
+        hypothesis = run.get("hypothesis", "")
+        reasoning = run.get("reasoning", "")
+        results = run.get("results", {})
+        changes = run.get("changes", "")
+
+        results_str = ", ".join(f"{k}={v}" for k, v in results.items()
+                                if isinstance(v, (int, float)))
+
+        lines.append(f"### {run_id} [{status}]")
+        if hypothesis:
+            lines.append(f"**Hypothesis:** {hypothesis}")
+        if changes:
+            lines.append(f"**Changes:** {changes}")
+        if results_str:
+            lines.append(f"**Results:** {results_str}")
+        if reasoning:
+            lines.append(f"**Reasoning:** {reasoning}")
+        lines.append("")
+
+        # Track best metric (from kept runs)
+        if status == "keep":
+            for k, v in results.items():
+                if isinstance(v, (int, float)):
+                    if best_metric_val is None or v > best_metric_val:
+                        best_metric_val = v
+                        best_metric_name = k
+                        best_run_id = run_id
+
+    if best_metric_val is not None:
+        lines.insert(7, f"**Current best:** {best_metric_name}={best_metric_val} "
+                        f"(from {best_run_id})")
+        lines.insert(8, "")
+
+    context_path = project_path / ".distillate" / "context.md"
+    context_path.parent.mkdir(exist_ok=True)
+    context_path.write_text("\n".join(lines), encoding="utf-8")
+    return context_path
+
+
 def _build_claude_command(
     prompt_path: Path,
     *,
     model: str = "claude-sonnet-4-5-20250929",
     max_turns: int = 100,
     effort: str = "high",
+    has_context: bool = False,
 ) -> str:
     """Build the claude CLI invocation string."""
+    if has_context:
+        prompt_arg = f'"$(cat {prompt_path.name} .distillate/context.md .distillate/steering.md 2>/dev/null)"'
+    else:
+        prompt_arg = f'"$(cat {prompt_path.name})"'
     parts = [
         "claude",
         "-p",
-        f'"$(cat {prompt_path.name})"',
+        prompt_arg,
         "--allowedTools",
         "'Bash(python3:*)'",
         "'Bash(tail:*)'",
@@ -393,9 +486,13 @@ def launch_experiment(
     # Ensure hooks are always installed
     _install_hooks_into(project_path)
 
+    # Generate run context from prior runs (if any)
+    context_path = _generate_run_context(project_path)
+
     # Build command
     cmd = _build_claude_command(
         prompt, model=model, max_turns=max_turns, effort=effort,
+        has_context=context_path is not None,
     )
 
     # Determine session name
@@ -572,6 +669,222 @@ def list_sessions() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Refresh session statuses in state
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Auto-continuation
+# ---------------------------------------------------------------------------
+
+def should_continue(project: dict) -> bool:
+    """Check if project goals are unmet and another session should run.
+
+    Compares the best result from kept runs against each goal's threshold.
+    Returns True if any goal is not yet met.
+    """
+    goals = project.get("goals", [])
+    if not goals:
+        return False
+
+    runs = project.get("runs", {})
+    # Collect best metric values from kept runs
+    best: dict[str, float] = {}
+    for run in runs.values():
+        if run.get("status") != "keep" and run.get("decision") != "keep":
+            continue
+        for k, v in run.get("results", {}).items():
+            if not isinstance(v, (int, float)):
+                continue
+            if k not in best:
+                best[k] = v
+            else:
+                best[k] = max(best[k], v)  # will compare per-goal direction below
+
+    for goal in goals:
+        metric = goal.get("metric", "")
+        direction = goal.get("direction", "maximize")
+        threshold = goal.get("threshold")
+        if threshold is None or not metric:
+            continue
+
+        val = best.get(metric)
+        if val is None:
+            return True  # metric never measured → not met
+
+        if direction == "maximize" and val < threshold:
+            return True
+        if direction == "minimize" and val > threshold:
+            return True
+
+    return False
+
+
+def build_continuation_prompt(project: dict, original_prompt: str) -> str:
+    """Append prior-run context to the original PROMPT.md for a continuation session."""
+    runs = project.get("runs", {})
+    if not runs:
+        return original_prompt
+
+    lines = [
+        "",
+        "## Context from Previous Sessions",
+        "",
+        f"This experiment has **{len(runs)} prior run(s)**.",
+        "",
+    ]
+
+    # Summarize recent kept/discarded runs
+    sorted_runs = sorted(
+        runs.values(),
+        key=lambda r: r.get("started_at", "") or r.get("timestamp", ""),
+    )
+    for run in sorted_runs[-10:]:
+        run_id = run.get("id", "?")
+        status = run.get("status", run.get("decision", "?"))
+        hypothesis = run.get("hypothesis", "")
+        results = run.get("results", {})
+        reasoning = run.get("reasoning", "")
+
+        results_str = ", ".join(
+            f"{k}={v}" for k, v in results.items()
+            if isinstance(v, (int, float))
+        )
+
+        lines.append(f"### {run_id} [{status}]")
+        if hypothesis:
+            lines.append(f"**Hypothesis:** {hypothesis}")
+        if results_str:
+            lines.append(f"**Results:** {results_str}")
+        if reasoning:
+            lines.append(f"**Reasoning:** {reasoning}")
+        lines.append("")
+
+    # Append goals reminder
+    goals = project.get("goals", [])
+    if goals:
+        lines.append("### Goals Still to Meet")
+        for g in goals:
+            lines.append(
+                f"- {g.get('metric', '?')}: {g.get('direction', '?')} "
+                f"threshold {g.get('threshold', '?')}"
+            )
+        lines.append("")
+
+    lines.append(
+        "**Build on what worked, avoid repeating failed approaches. "
+        "Reference prior run IDs in your reasoning.**"
+    )
+
+    return original_prompt + "\n".join(lines)
+
+
+def launch_continuation(
+    project_path: Path,
+    project: dict,
+    *,
+    model: str = "claude-sonnet-4-5-20250929",
+    max_turns: int = 100,
+) -> dict:
+    """Launch a continuation session with enriched context.
+
+    Writes goal reminders into context.md (appended after the standard
+    run history that ``_generate_run_context`` produces), then delegates
+    to ``launch_experiment`` which already concatenates context.md with
+    PROMPT.md.
+    """
+    project_path = project_path.resolve()
+
+    # _generate_run_context is called inside launch_experiment, but we
+    # want to append goal reminders.  Generate it first, then append.
+    context_path = _generate_run_context(project_path)
+
+    goals = project.get("goals", [])
+    if goals and context_path:
+        extra = ["\n## Goals Still to Meet\n"]
+        for g in goals:
+            extra.append(
+                f"- {g.get('metric', '?')}: {g.get('direction', '?')} "
+                f"threshold {g.get('threshold', '?')}"
+            )
+        extra.append("")
+        extra.append(
+            "**Focus on meeting these goals. Build on what worked, "
+            "avoid repeating failed approaches.**"
+        )
+        with open(context_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(extra) + "\n")
+
+    return launch_experiment(
+        project_path,
+        model=model,
+        max_turns=max_turns,
+        project=project,
+    )
+
+
+def launch_sweep(
+    project_path: Path,
+    project: dict,
+    configs: list[dict],
+    *,
+    model: str = "claude-sonnet-4-5-20250929",
+    max_turns: int = 100,
+) -> list[dict]:
+    """Launch parallel ablation sessions, one per config variant.
+
+    Each config dict is injected into the PROMPT.md as a "## Sweep
+    Configuration" section.  Each session runs in its own tmux window.
+
+    Returns a list of session dicts (same shape as ``launch_experiment``).
+    """
+    project_path = project_path.resolve()
+    prompt_file = project_path / "PROMPT.md"
+    if not prompt_file.exists():
+        raise FileNotFoundError(f"No PROMPT.md found in {project_path}")
+
+    original_prompt = prompt_file.read_text(encoding="utf-8")
+    results = []
+
+    for i, cfg in enumerate(configs):
+        # Build variant PROMPT.md with config injected
+        variant_lines = [
+            original_prompt,
+            "",
+            "## Sweep Configuration",
+            "",
+            f"This is variant **{i + 1}** of a {len(configs)}-config sweep.",
+            "Use exactly these hyperparameters:",
+            "",
+        ]
+        for k, v in cfg.items():
+            variant_lines.append(f"- **{k}**: `{v}`")
+        variant_lines.append("")
+        variant_lines.append(
+            "Record results with a run ID prefixed with "
+            f"`sweep_{i + 1:02d}_` in `.distillate/runs.jsonl`."
+        )
+
+        variant_prompt = "\n".join(variant_lines)
+
+        # Write variant PROMPT.md to a temp location
+        variant_path = project_path / ".distillate" / f"PROMPT_sweep_{i + 1:02d}.md"
+        variant_path.parent.mkdir(exist_ok=True)
+        variant_path.write_text(variant_prompt, encoding="utf-8")
+
+        # Temporarily swap PROMPT.md for this launch
+        backup = prompt_file.read_text(encoding="utf-8")
+        try:
+            prompt_file.write_text(variant_prompt, encoding="utf-8")
+            session_data = launch_experiment(
+                project_path,
+                model=model,
+                max_turns=max_turns,
+                project=project,
+            )
+            results.append(session_data)
+        finally:
+            prompt_file.write_text(backup, encoding="utf-8")
+
+    return results
+
 
 def refresh_session_statuses(state) -> int:
     """Check all running sessions and update their status in state.

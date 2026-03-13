@@ -580,6 +580,71 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "required": ["path", "goal"],
         },
     },
+    {
+        "name": "sweep_experiment",
+        "description": (
+            "Launch a parallel hyperparameter sweep. Spawns one tmux session "
+            "per configuration variant, each with a modified PROMPT.md that "
+            "injects the specific hyperparameters. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "configs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "description": "Hyperparameter dict for this variant",
+                    },
+                    "description": (
+                        "List of config dicts, one per variant. "
+                        "Example: [{\"lr\": 0.001}, {\"lr\": 0.01}]"
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns per session (default: 100)",
+                },
+            },
+            "required": ["project", "configs"],
+        },
+    },
+    {
+        "name": "continue_experiment",
+        "description": (
+            "Continue an experiment that hasn't met its goals yet. "
+            "Launches a new session with prior-run context appended so "
+            "the agent builds on previous results. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns for the session (default: 100)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
 ]
 
 
@@ -1376,6 +1441,223 @@ def stop_experiment_tool(*, state, project: str) -> dict:
     }
 
 
+def sweep_experiment_tool(*, state, project: str,
+                          configs: list[dict],
+                          model: str = "claude-sonnet-4-5-20250929",
+                          max_turns: int = 100) -> dict:
+    """Launch a parallel hyperparameter sweep."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_sweep
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    if not configs or len(configs) < 2:
+        return {"error": "Provide at least 2 config variants for a sweep."}
+
+    try:
+        sessions = launch_sweep(
+            _Path(proj_path), proj, configs,
+            model=model, max_turns=max_turns,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    # Save all sessions to state
+    acquire_lock()
+    try:
+        state.reload()
+        for sd in sessions:
+            state.add_session(proj["id"], sd["session_id"], sd)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "variants": len(sessions),
+        "sessions": [s["tmux_session"] for s in sessions],
+        "model": model,
+        "message": (
+            f"Launched {len(sessions)}-variant sweep for "
+            f"'{proj.get('name', '')}'. Use experiment_status to monitor."
+        ),
+    }
+
+
+def continue_experiment_tool(*, state, project: str,
+                             model: str = "claude-sonnet-4-5-20250929",
+                             max_turns: int = 100) -> dict:
+    """Launch a continuation session with prior-run context."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_continuation, should_continue
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    if not should_continue(proj):
+        return {
+            "success": False,
+            "message": (
+                f"All goals for '{proj.get('name', '')}' appear to be met. "
+                "No continuation needed."
+            ),
+        }
+
+    try:
+        session_data = launch_continuation(
+            _Path(proj_path), proj, model=model, max_turns=max_turns,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    acquire_lock()
+    try:
+        state.reload()
+        state.add_session(proj["id"], session_data["session_id"], session_data)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "tmux_session": session_data["tmux_session"],
+        "model": model,
+        "max_turns": max_turns,
+        "message": (
+            f"Launched continuation session '{session_data['tmux_session']}' "
+            f"for '{proj.get('name', '')}' with prior-run context."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Goal auto-parsing from free-form text
+# ---------------------------------------------------------------------------
+
+# Metrics that should default to "minimize" direction
+_MINIMIZE_METRICS = frozenset({
+    "loss", "val_loss", "train_loss", "mse", "rmse", "mae",
+    "error", "perplexity",
+})
+
+# Known metric names we can recognise in text
+_KNOWN_METRICS = [
+    "test_accuracy", "val_accuracy", "val_loss", "train_loss",
+    "best_val_acc", "exact_match", "f1", "accuracy", "precision",
+    "recall", "perplexity", "bleu", "rouge", "auc", "mse", "rmse",
+    "mae", "error", "loss",
+]
+
+# Metrics whose thresholds are typically expressed as percentages (95% → 0.95)
+_PERCENT_METRICS = frozenset({
+    "accuracy", "test_accuracy", "val_accuracy", "best_val_acc",
+    "exact_match", "f1", "precision", "recall", "auc",
+})
+
+
+def _infer_direction(metric: str) -> str:
+    """Return 'minimize' or 'maximize' based on metric name."""
+    return "minimize" if metric in _MINIMIZE_METRICS else "maximize"
+
+
+def _normalise_threshold(value: float, metric: str, was_percent: bool) -> float:
+    """Convert percentage thresholds to decimals for accuracy-like metrics."""
+    if was_percent and metric in _PERCENT_METRICS:
+        return value / 100.0
+    # Heuristic: raw number > 1 for a percent-like metric is probably a %
+    if not was_percent and value > 1.0 and metric in _PERCENT_METRICS:
+        return value / 100.0
+    return value
+
+
+def _parse_goals_from_text(goal: str) -> list[dict]:
+    """Extract structured goals from a free-form goal string.
+
+    Supports patterns like:
+      - "accuracy > 95%"
+      - "loss < 0.1"
+      - "maximize accuracy to 90%"
+      - "minimize perplexity below 20"
+      - "f1 score above 0.85"
+    """
+    import re
+
+    if not goal:
+        return []
+
+    text = goal.lower()
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    # Build a regex alternation for known metrics (longest first to avoid
+    # partial matches like "loss" matching inside "val_loss")
+    sorted_metrics = sorted(_KNOWN_METRICS, key=len, reverse=True)
+    metric_pattern = "|".join(re.escape(m).replace("_", r"[\s_]") for m in sorted_metrics)
+
+    # Pattern 1: "metric_name >/>=/</<= threshold"
+    p1 = re.compile(
+        rf"({metric_pattern})\s*(?:score\s+)?([><]=?)\s*(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p1.finditer(text):
+        metric = re.sub(r"\s+", "_", m.group(1).strip())
+        op = m.group(2)
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        direction = "maximize" if op.startswith(">") else "minimize"
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    # Pattern 2: "maximize/minimize metric_name to/above/below threshold"
+    p2 = re.compile(
+        rf"(maximize|minimize)\s+({metric_pattern})"
+        rf"(?:\s+score)?\s+(?:to|above|over|below|under)\s+(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p2.finditer(text):
+        direction = m.group(1)
+        metric = re.sub(r"\s+", "_", m.group(2).strip())
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    # Pattern 3: "metric_name above/over/exceeding/below/under threshold"
+    p3 = re.compile(
+        rf"({metric_pattern})\s*(?:score\s+)?"
+        rf"(above|over|exceeding|below|under)\s+(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p3.finditer(text):
+        metric = re.sub(r"\s+", "_", m.group(1).strip())
+        word = m.group(2)
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        direction = "minimize" if word in ("below", "under") else "maximize"
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    return results
+
+
 def init_experiment_tool(*, state, path: str, goal: str,
                          name: str = "", constraints: str = "",
                          duration_minutes: int = 5) -> dict:
@@ -1492,6 +1774,10 @@ def init_experiment_tool(*, state, path: str, goal: str,
                 project_id,
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
             )
+            # Auto-parse goals from the free-form goal string
+            parsed_goals = _parse_goals_from_text(goal)
+            if parsed_goals:
+                state.update_project(project_id, goals=parsed_goals)
             state.save()
         finally:
             release_lock()
@@ -1595,6 +1881,13 @@ experiment iteration). Each iteration should fit within this budget.>
 
 ## Experiment Tracking (Distillate)
 
+### Prior Runs
+Before starting, **read `.distillate/runs.jsonl`** if it exists. It contains \
+the history of all prior experiment iterations. Build on what worked, avoid \
+repeating failed approaches. Reference prior run IDs in your reasoning. \
+If `.distillate/context.md` exists, read it for a formatted summary.
+
+### Recording Results
 After each experiment iteration, you MUST append one JSON line to \
 `.distillate/runs.jsonl`:
 

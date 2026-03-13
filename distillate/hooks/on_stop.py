@@ -61,6 +61,7 @@ def main() -> None:
             "ts": ts,
             "session_id": session_id,
             "stop_reason": stop_reason,
+            "project_path": str(project_root),
         })
 
     except Exception:

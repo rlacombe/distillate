@@ -1,5 +1,17 @@
 ## Experiment Reporting (Distillate)
 
+### Prior Run Awareness
+
+Before starting any new experiment iteration, **read `.distillate/runs.jsonl`** if it exists. This file contains the history of all prior runs. Use it to:
+- Understand what has already been tried
+- Build on successful approaches (status: "keep")
+- Avoid repeating failed approaches (status: "discard")
+- Reference specific run IDs in your hypothesis and reasoning
+
+If `.distillate/context.md` exists, it contains a formatted summary of prior runs that was injected at launch time. Read it for a quick overview.
+
+### Recording Results
+
 After each experiment iteration, append one JSON line to `.distillate/runs.jsonl`:
 
 ```json

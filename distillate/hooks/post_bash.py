@@ -55,6 +55,10 @@ _METRIC_RE = re.compile(
 # Config JSON block in stdout
 _CONFIG_BLOCK_RE = re.compile(r"Config:\s*(\{[^}]+\})", re.DOTALL)
 
+# Epoch/step markers in training output
+_EPOCH_RE = re.compile(r"[Ee]poch\s+(\d+)", re.IGNORECASE)
+_STEP_RE = re.compile(r"[Ss]tep\s+(\d+)", re.IGNORECASE)
+
 # Result file write detection
 _RESULT_FILE_RE = re.compile(
     r"(?:results?|test_results?|metrics).*\.json",
@@ -139,6 +143,49 @@ def _append_event(project_root: Path, event: dict) -> None:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def _emit_epoch_metrics(
+    project_root: Path,
+    tool_result: str,
+    ts: str,
+    session_id: str,
+) -> None:
+    """Emit per-epoch metric_update events from training output.
+
+    Scans each line of stdout for epoch/step markers and metrics.
+    Emits one event per line that has both a position marker and metrics.
+    """
+    for line in tool_result.splitlines():
+        # Look for epoch or step marker on this line
+        epoch_m = _EPOCH_RE.search(line)
+        step_m = _STEP_RE.search(line)
+        if not epoch_m and not step_m:
+            continue
+
+        # Extract metrics from this specific line
+        line_metrics = {}
+        for match in _METRIC_RE.finditer(line):
+            try:
+                line_metrics[match.group(1).lower()] = float(match.group(2))
+            except ValueError:
+                pass
+
+        if not line_metrics:
+            continue
+
+        evt: dict = {
+            "type": "metric_update",
+            "ts": ts,
+            "metrics": line_metrics,
+            "session_id": session_id,
+        }
+        if epoch_m:
+            evt["epoch"] = int(epoch_m.group(1))
+        if step_m:
+            evt["step"] = int(step_m.group(1))
+
+        _append_event(project_root, evt)
+
+
 def main() -> None:
     """Entry point: reads PostToolUse event from stdin."""
     try:
@@ -170,6 +217,12 @@ def main() -> None:
             config_hp = _extract_config_block(tool_result)
             cmd_hp = _extract_hyperparams(command)
             hp = {**config_hp, **cmd_hp}
+
+            # Emit per-epoch metric_update events
+            _emit_epoch_metrics(
+                project_root, tool_result, ts, session_id,
+            )
+
             metrics = _extract_metrics(tool_result)
 
             _append_event(project_root, {
