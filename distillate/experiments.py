@@ -2760,11 +2760,12 @@ def slugify(name: str) -> str:
     return slug
 
 
-def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> bytes:
+def generate_export_chart(runs: list[dict], metric: str, title: str = "",
+                          log_scale: bool = False) -> bytes:
     """Generate a clean, Karpathy-style chart PNG for sharing.
 
     White background, thin left+bottom spines only, minimal gridlines,
-    dots colored by decision (green=keep, red=discard, gray=other).
+    dots colored by decision (green=keep, gray=discard, orange=crash).
     Returns PNG bytes.
     """
     import io
@@ -2808,12 +2809,16 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
     xs = list(range(len(points)))
     ys = [p["value"] for p in points]
 
+    # Log scale
+    if log_scale:
+        ax.set_yscale("log")
+
     # Determine if lower is better
     _lower_kw = {"loss", "error", "mae", "rmse", "mse", "perplexity",
                   "time", "latency", "param", "count", "size", "flops", "cost"}
     lower_better = any(kw in metric.lower() for kw in _lower_kw)
 
-    # Best-so-far frontier (only advances on "keep" runs)
+    # Best-so-far frontier (only advances on "keep" runs, extends to left edge)
     best_so_far = None
     frontier_xs, frontier_ys = [], []
     for i, p in enumerate(points):
@@ -2822,6 +2827,9 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
         if decision == "keep":
             if best_so_far is None:
                 best_so_far = v
+                # Extend frontier to left edge
+                frontier_xs.append(0)
+                frontier_ys.append(best_so_far)
             elif (lower_better and v < best_so_far) or (not lower_better and v > best_so_far):
                 best_so_far = v
         if best_so_far is not None:
@@ -2831,22 +2839,38 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "") -> byt
         ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=2.5, alpha=0.9, zorder=2,
                 label=f"Best {metric}")
 
-    # Dots colored by decision
-    colors_map = {"keep": "#22c55e", "discard": "#ef4444", "crash": "#d29922"}
+    # Dots colored by decision (gray for discards — Karpathy convention)
+    colors_map = {"keep": "#22c55e", "discard": "#555555", "crash": "#d29922"}
     colors = [colors_map.get(p["run"].get("decision", ""), "#9ca3af") for p in points]
     ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
 
+    # Short description labels on kept runs
+    for i, p in enumerate(points):
+        if p["run"].get("decision") != "keep":
+            continue
+        desc = p["run"].get("description", "") or p["run"].get("name", "")
+        if not desc:
+            continue
+        # Truncate to ~30 chars
+        if len(desc) > 30:
+            desc = desc[:28] + "\u2026"
+        ax.annotate(desc, (i, p["value"]),
+                    textcoords="offset points", xytext=(4, 6),
+                    fontsize=6, color="#888", ha="left", va="bottom",
+                    rotation=20, zorder=4)
+
     # Labels
     direction = "\u2193" if lower_better else "\u2191"
+    scale_label = " (log)" if log_scale else ""
     ax.set_xlabel("Run", fontsize=10, color="#666")
-    ax.set_ylabel(f"{metric} {direction}", fontsize=10, color="#666")
+    ax.set_ylabel(f"{metric} {direction}{scale_label}", fontsize=10, color="#666")
     if title:
         ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
 
     ax.tick_params(colors="#666", labelsize=9)
 
-    # Y-axis starts at 0 if all values are non-negative
-    if min(ys) >= 0:
+    # Y-axis starts at 0 for linear scale with non-negative values
+    if not log_scale and min(ys) >= 0:
         ax.set_ylim(bottom=0)
 
     plt.tight_layout()

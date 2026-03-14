@@ -1629,6 +1629,11 @@ def _create_app():
         chart is meaningful, and favour "test > val > train" and
         "accuracy/f1/auc > loss/error" for relevance.
         """
+        # --- 0. Explicit user override (from PATCH or wizard) ---
+        explicit = proj.get("key_metric_name", "")
+        if explicit:
+            return explicit
+
         # --- 1. Goal metric ---
         goals = proj.get("goals", [])
         if goals:
@@ -1792,7 +1797,8 @@ def _create_app():
         return HTMLResponse(html)
 
     @app.get("/experiments/{project_id}/chart/export")
-    async def export_chart(project_id: str, metric: str = "", format: str = "png"):
+    async def export_chart(project_id: str, metric: str = "", format: str = "png",
+                           log_scale: str = ""):
         """Generate a Karpathy-style clean chart PNG for sharing."""
         _state.reload()
         proj = _state.find_project(project_id)
@@ -1807,7 +1813,9 @@ def _create_app():
             return JSONResponse({"ok": False, "reason": "no_metric"}, status_code=400)
 
         try:
-            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id))
+            use_log = log_scale in ("1", "true", "yes")
+            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id),
+                                              log_scale=use_log)
             from starlette.responses import Response
             return Response(content=png_bytes, media_type="image/png")
         except Exception as e:
