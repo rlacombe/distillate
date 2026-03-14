@@ -2868,35 +2868,10 @@ def slugify(name: str) -> str:
     return slug
 
 
-def _get_logo_image():
-    """Load the Distillate logo SVG as a matplotlib-compatible RGBA array."""
-    import io
-    from pathlib import Path
-
-    import cairosvg
-    import numpy as np
-    from PIL import Image
-
-    svg_path = Path(__file__).parent.parent / "docs" / "logo.svg"
-    if not svg_path.exists():
-        return None
-    png_bytes = cairosvg.svg2png(
-        url=str(svg_path), output_width=64, output_height=64,
-    )
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    return np.array(img) / 255.0
-
-
 def generate_export_chart(runs: list[dict], metric: str, title: str = "",
                           log_scale: bool = False, subtitle: str = "") -> bytes:
-    """Generate a clean, publication-grade chart PNG for sharing.
-
-    Karpathy-style: white background, open plot (left+bottom spines only),
-    step-function Pareto frontier, inline legend, milestone annotations
-    with leader lines, no clutter.  Returns PNG bytes.
-    """
+    """Generate a minimal, centered chart PNG for sharing. Returns PNG bytes."""
     import io
-    import math
 
     import matplotlib
     matplotlib.use("Agg")
@@ -2904,12 +2879,11 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     from matplotlib.font_manager import FontProperties, findfont
     from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator
 
-    # ── Data preparation ──
     points = []
     for i, run in enumerate(runs):
         val = run.get("results", {}).get(metric)
         if isinstance(val, (int, float)):
-            points.append({"index": i, "value": val, "run": run})
+            points.append({"value": val, "run": run})
     if not points:
         raise ValueError(f"No data for metric '{metric}'")
 
@@ -2917,23 +2891,21 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     ys = [p["value"] for p in points]
     lower_better = _is_lower_better(metric)
 
-    # ── Figure setup ──
+    # ── Figure ──
     fig, ax = plt.subplots(figsize=(10, 5), dpi=200)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
-    # Font: prefer clean sans-serif, fall back gracefully
-    chosen_font = "sans-serif"
-    for family in ("Inter", "Helvetica Neue", "Helvetica", "Arial"):
+    # Font
+    for fam in ("Inter", "Helvetica Neue", "Helvetica", "Arial"):
         try:
-            if findfont(FontProperties(family=family), fallback_to_default=False):
-                chosen_font = family
+            if findfont(FontProperties(family=fam), fallback_to_default=False):
+                plt.rcParams["font.family"] = fam
                 break
         except Exception:
             continue
-    plt.rcParams["font.family"] = chosen_font
 
-    # Spines: open plot (left + bottom only)
+    # Open plot: left + bottom spines only
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_linewidth(0.5)
@@ -2941,7 +2913,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     ax.spines["left"].set_color("#ccc")
     ax.spines["bottom"].set_color("#ccc")
 
-    # Grid: light horizontal dashes at major y-ticks, no vertical
+    # Grid: light dashed horizontal
     ax.yaxis.grid(True, alpha=0.25, linewidth=0.4, color="#bbb", linestyle="--")
     ax.xaxis.grid(False)
     ax.set_axisbelow(True)
@@ -2949,152 +2921,74 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if log_scale:
         ax.set_yscale("log")
 
-    # ── Color palette ──
-    ACCENT = "#4A90D9"      # frontier line + Pareto-best dots
-    GRAY = "#b0b0b0"        # non-frontier runs (faded)
-    CRASH_COLOR = "#E8913A"  # crash/error runs
-
-    # ── Pareto frontier (running best, step function) ──
-    # Compute as simple running min/max over ALL runs (not just "keep")
-    best_so_far = None
-    frontier_xs, frontier_ys = [], []
-    frontier_set = set()  # indices that set a new best
+    # ── Frontier (step function, running best over kept runs) ──
+    best = None
+    front_xs, front_ys = [], []
+    front_set = set()
     for i, p in enumerate(points):
+        if p["run"].get("decision") != "keep":
+            continue
         v = p["value"]
+        if best is None or (lower_better and v < best) or (not lower_better and v > best):
+            best = v
+            front_set.add(i)
+        if best is not None:
+            front_xs.append(i)
+            front_ys.append(best)
+
+    if len(front_xs) > 1:
+        ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
+                zorder=2, drawstyle="steps-post", solid_capstyle="round")
+
+    # ── Dots: green = kept, gray = everything else ──
+    for i, p in enumerate(points):
         decision = p["run"].get("decision", "")
         if decision == "keep":
-            if best_so_far is None:
-                best_so_far = v
-                frontier_set.add(i)
-            elif (lower_better and v < best_so_far) or (not lower_better and v > best_so_far):
-                best_so_far = v
-                frontier_set.add(i)
-        if best_so_far is not None:
-            frontier_xs.append(i)
-            frontier_ys.append(best_so_far)
-
-    if len(frontier_xs) > 1:
-        # Step function: drawstyle='steps-post' ensures flat segments
-        ax.plot(frontier_xs, frontier_ys, color=ACCENT, linewidth=2,
-                alpha=0.7, zorder=2, drawstyle="steps-post",
-                solid_capstyle="round", label="Best so far")
-
-    # ── Scatter dots: different sizes for frontier vs non-frontier ──
-    dot_colors = []
-    dot_sizes = []
-    for i, p in enumerate(points):
-        decision = p["run"].get("decision", "")
-        if decision == "crash":
-            dot_colors.append(CRASH_COLOR)
-            dot_sizes.append(18)
-        elif i in frontier_set:
-            dot_colors.append(ACCENT)
-            dot_sizes.append(44)
-        elif decision == "keep":
-            dot_colors.append("#22c55e")
-            dot_sizes.append(28)
+            ax.scatter(i, p["value"], c="#22c55e", s=30 if i in front_set else 24,
+                       zorder=4, edgecolors="white", linewidths=0.5)
         else:
-            dot_colors.append(GRAY)
-            dot_sizes.append(14)
+            ax.scatter(i, p["value"], c="#ccc", s=12, zorder=3,
+                       edgecolors="none", alpha=0.45)
 
-    # Non-frontier first (lower zorder), then frontier on top
-    non_frontier_idx = [i for i in range(len(points)) if i not in frontier_set]
-    frontier_idx = sorted(frontier_set)
+    # ── Milestone labels (max 6, leader lines) ──
+    milestones = [(i, points[i]) for i in sorted(front_set)]
+    if len(milestones) > 6:
+        step = (len(milestones) - 1) / 5
+        pick = sorted(set(round(j * step) for j in range(6)))
+        milestones = [milestones[j] for j in pick]
 
-    if non_frontier_idx:
-        ax.scatter(
-            [xs[i] for i in non_frontier_idx],
-            [ys[i] for i in non_frontier_idx],
-            c=[dot_colors[i] for i in non_frontier_idx],
-            s=[dot_sizes[i] for i in non_frontier_idx],
-            zorder=3, edgecolors="white", linewidths=0.3, alpha=0.5,
-        )
-    if frontier_idx:
-        ax.scatter(
-            [xs[i] for i in frontier_idx],
-            [ys[i] for i in frontier_idx],
-            c=[dot_colors[i] for i in frontier_idx],
-            s=[dot_sizes[i] for i in frontier_idx],
-            zorder=4, edgecolors="white", linewidths=0.6,
-        )
-
-    # ── Milestone annotations with leader lines ──
-    # Only annotate key threshold crossings, not every frontier point
-    frontier_pts = [(i, points[i]) for i in sorted(frontier_set)]
-
-    if len(frontier_pts) > 6:
-        # Pick ~5-6 milestones: first, last, and evenly spaced between
-        step = (len(frontier_pts) - 1) / 5
-        indices = sorted(set(round(j * step) for j in range(6)))
-        frontier_pts = [frontier_pts[j] for j in indices]
-
-    for idx, (i, p) in enumerate(frontier_pts):
+    for idx, (i, p) in enumerate(milestones):
         desc = p["run"].get("description", "") or p["run"].get("name", "")
         if not desc:
             continue
         if len(desc) > 22:
             desc = desc[:20] + "\u2026"
-
-        # Alternate label placement: above-right for odd, below-right for even
-        # to reduce overlap. Use leader lines.
-        y_offset = 12 if idx % 2 == 0 else -14
+        y_off = 12 if idx % 2 == 0 else -14
         ax.annotate(
             desc, (i, p["value"]),
-            textcoords="offset points", xytext=(6, y_offset),
-            fontsize=6, color="#666", ha="left",
-            va="bottom" if y_offset > 0 else "top",
+            textcoords="offset points", xytext=(6, y_off),
+            fontsize=6, color="#888", ha="left",
+            va="bottom" if y_off > 0 else "top",
             zorder=5, annotation_clip=True,
-            arrowprops=dict(
-                arrowstyle="-", color="#ccc", lw=0.6,
-                shrinkA=3, shrinkB=0,
-            ),
+            arrowprops=dict(arrowstyle="-", color="#ddd", lw=0.5,
+                            shrinkA=3, shrinkB=0),
         )
 
-    # ── Inline legend (top-right, semi-transparent background) ──
-    from matplotlib.lines import Line2D
-    legend_handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=ACCENT,
-               markersize=6, label="Frontier best", linestyle="None"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#22c55e",
-               markersize=5, label="Kept", linestyle="None"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=GRAY,
-               markersize=4, label="Discarded", linestyle="None", alpha=0.5),
-    ]
-    if any(p["run"].get("decision") == "crash" for p in points):
-        legend_handles.append(
-            Line2D([0], [0], marker="o", color="w", markerfacecolor=CRASH_COLOR,
-                   markersize=4, label="Crash", linestyle="None"),
-        )
-    leg = ax.legend(
-        handles=legend_handles, loc="upper right", frameon=True,
-        fontsize=7, labelcolor="#666", framealpha=0.85,
-        edgecolor="#eee", borderpad=0.6, handletextpad=0.4,
-        labelspacing=0.3,
-    )
-    leg.get_frame().set_linewidth(0.5)
-
-    # ── Axes labels ──
-    # Human-readable Y-axis label (no raw variable names)
+    # ── Axes ──
     metric_label = metric.replace("_", " ").title()
-    scale_suffix = " (log scale)" if log_scale else ""
-    ax.set_ylabel(f"{metric_label}{scale_suffix}", fontsize=9.5, color="#666",
-                  labelpad=8)
+    scale_note = " (log)" if log_scale else ""
+    ax.set_ylabel(f"{metric_label}{scale_note}", fontsize=9.5, color="#666", labelpad=8)
     ax.set_xlabel("Run", fontsize=9.5, color="#666", labelpad=8)
     ax.tick_params(colors="#888", labelsize=8, length=3, width=0.4)
 
-    # ── Y-axis ticks ──
+    # Y-axis ticks
     if log_scale:
-        # Major ticks at powers of 10, minor at 2× and 5× for density
-        ax.yaxis.set_major_locator(LogLocator(base=10, numticks=15))
-        ax.yaxis.set_minor_locator(LogLocator(base=10, subs=(2.0, 5.0), numticks=15))
-        ax.yaxis.grid(True, which="minor", alpha=0.1, linewidth=0.3,
-                       color="#ccc", linestyle=":")
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5), numticks=20))
     else:
         ax.yaxis.set_major_locator(MaxNLocator(nbins=10, steps=[1, 2, 2.5, 5, 10]))
 
-    # Clean tick formatter
     cat = classify_metric(metric)
-    def _tick_fmt(v, _pos):
+    def _tick(v, _):
         if cat == "ratio":
             return f"{v * 100:g}%" if 0 <= v <= 1 else f"{v:g}"
         if cat == "loss":
@@ -3109,52 +3003,19 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
                 return f"{iv / 1e3:g}K"
             return f"{iv:,}"
         return f"{v:g}"
-    ax.yaxis.set_major_formatter(FuncFormatter(_tick_fmt))
+    ax.yaxis.set_major_formatter(FuncFormatter(_tick))
 
     if not log_scale and min(ys) >= 0:
         ax.set_ylim(bottom=0)
 
-    # ── Title block ──
-    if title:
-        if subtitle:
-            # Bold title + lighter subtitle, centered together on one line
-            renderer = fig.canvas.get_renderer()
-            t1 = fig.text(0.5, 0.97, title + "  ", ha="right", va="top",
-                          fontsize=14, fontweight="bold", color="#222")
-            t2 = fig.text(0.5, 0.97, "  " + subtitle, ha="left", va="top",
-                          fontsize=12, fontweight="normal", color="#999")
-            fig.canvas.draw()
-            bb1 = t1.get_window_extent(renderer)
-            bb2 = t2.get_window_extent(renderer)
-            total_w = bb1.width + bb2.width
-            fig_w = fig.get_figwidth() * fig.dpi
-            offset = (total_w / 2 - bb1.width) / fig_w
-            t1.set_position((0.5 + offset, 0.97))
-            t2.set_position((0.5 + offset, 0.97))
-        else:
-            fig.text(0.5, 0.97, title, ha="center", va="top",
-                     fontsize=14, fontweight="bold", color="#222")
+    # ── Branding: muted bottom-right ──
+    fig.text(0.99, 0.01, "Distillate", ha="right", va="bottom",
+             fontsize=7, color="#6366f1", alpha=0.35, fontweight="600")
 
-    plt.tight_layout(rect=[0.01, 0.04, 0.99, 0.93])
-
-    # ── Branding: logo + "Distillate" in muted indigo ──
-    try:
-        logo_arr = _get_logo_image()
-        if logo_arr is not None:
-            logo_ax = fig.add_axes([0.89, 0.005, 0.022, 0.04],
-                                   anchor="SE", zorder=10)
-            logo_ax.imshow(logo_arr)
-            logo_ax.axis("off")
-            fig.text(0.918, 0.023, "Distillate", ha="left", va="center",
-                     fontsize=7, color="#6366f1", alpha=0.4, fontweight="600")
-        else:
-            raise FileNotFoundError
-    except Exception:
-        fig.text(0.97, 0.023, "Distillate", ha="right", va="center",
-                 fontsize=7, color="#6366f1", alpha=0.4, fontweight="600")
+    fig.tight_layout()
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", facecolor="white")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
