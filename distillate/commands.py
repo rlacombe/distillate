@@ -478,6 +478,7 @@ def _scan_projects() -> None:
 
     from distillate.experiments import (
         generate_notebook,
+        load_enrichment_cache,
         update_project,
     )
     from distillate.obsidian import write_experiment_notebook
@@ -486,7 +487,9 @@ def _scan_projects() -> None:
     for proj_id, proj in projects.items():
         print(f"  Scanning {proj.get('name', proj_id)}...")
         if update_project(proj, state):
-            notebook_md = generate_notebook(proj)
+            proj_path = proj.get("path", "")
+            enrichment = load_enrichment_cache(Path(proj_path)) if proj_path else {}
+            notebook_md = generate_notebook(proj, enrichment=enrichment)
             write_experiment_notebook(proj, notebook_md)
             updated += 1
 
@@ -732,7 +735,8 @@ def _launch_experiment(args: list[str]) -> None:
 
 
 def _list_experiments() -> None:
-    """List all tracked experiments with status."""
+    """List all tracked experiments with status and key insights."""
+    from distillate.experiments import load_enrichment_cache
     from distillate.launcher import refresh_session_statuses
     from distillate.state import State
 
@@ -753,6 +757,8 @@ def _list_experiments() -> None:
     print()
     print(f"  {'#':>3}  {'Name':<22} {'Status':<12} {'Runs':>5}  {'Best Metric':<20} {'Sessions'}")
     print(f"  {'─' * 3}  {'─' * 22} {'─' * 12} {'─' * 5}  {'─' * 20} {'─' * 12}")
+
+    insights_by_proj: list[tuple[str, dict]] = []
 
     for proj_id, proj in projects.items():
         idx = state.project_index_of(proj_id)
@@ -783,6 +789,31 @@ def _list_experiments() -> None:
         sess_str = f"{active} active" if active else "0 active"
 
         print(f"  {idx:>3}  {name:<22} {status:<12} {run_count:>5}  {best_metric:<20} {sess_str}")
+
+        # Load enrichment for insights
+        proj_path = proj.get("path", "")
+        if proj_path:
+            cache = load_enrichment_cache(Path(proj_path))
+            enr = cache.get("enrichment", cache)
+            project_insights = enr.get("project", {})
+            if project_insights:
+                insights_by_proj.append((proj.get("name", proj_id), project_insights))
+
+    # Print research insights below the table
+    if insights_by_proj:
+        print()
+        print(f"  {'─' * 60}")
+        for proj_name, insights in insights_by_proj:
+            breakthrough = insights.get("key_breakthrough", "")
+            lessons = insights.get("lessons_learned", [])
+            if breakthrough or lessons:
+                print(f"\n  {_bold(proj_name)} — Research Insights")
+                if breakthrough:
+                    print(f"  {_dim('Breakthrough:')} {breakthrough}")
+                if lessons:
+                    print(f"  {_dim('Lessons:')}")
+                    for i, lesson in enumerate(lessons, 1):
+                        print(f"    {i}. {lesson}")
 
     print()
 
@@ -868,8 +899,302 @@ def _stop_experiment(args: list[str]) -> None:
     state.save()
 
 
+def _campaign(args: list[str]) -> None:
+    """Manage autonomous campaign loops: start, status, stop."""
+    import signal
+    import threading
+    from datetime import datetime, timezone
+
+    from distillate.cli import _bold, _dim
+    from distillate.launcher import run_campaign, should_continue
+    from distillate.state import State
+
+    if not args:
+        print("Usage: distillate --campaign start|status|stop <project>")
+        return
+
+    action = args[0]
+    if action not in ("start", "status", "stop"):
+        print(f"Unknown campaign action: {action}")
+        print("Usage: distillate --campaign start|status|stop <project>")
+        return
+
+    if len(args) < 2:
+        print(f"Usage: distillate --campaign {action} <project>")
+        return
+
+    query = args[1]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+
+    # --- status ---
+    if action == "status":
+        campaign = proj.get("campaign", {})
+        if not campaign or not campaign.get("status"):
+            print(f"  No campaign running for '{proj_name}'.")
+            return
+        print()
+        print(f"  Campaign: {_bold(proj_name)}")
+        print(f"  Status:   {campaign.get('status', '?')}")
+        print(f"  Sessions: {campaign.get('sessions_launched', 0)}"
+              f" / {campaign.get('budget', {}).get('max_sessions', '?')}")
+        if campaign.get("objective"):
+            print(f"  Objective: {campaign['objective']}")
+        stop_reason = campaign.get("stop_reason")
+        if stop_reason:
+            print(f"  Stopped:  {stop_reason}")
+        # Show best metric from kept runs
+        runs = proj.get("runs", {})
+        best_val = None
+        best_name = None
+        for run in runs.values():
+            if run.get("status") != "keep" and run.get("decision") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    if best_val is None or v > best_val:
+                        best_val = v
+                        best_name = k
+        if best_val is not None:
+            print(f"  Best:     {best_name}={best_val}")
+        print()
+        return
+
+    # --- stop ---
+    if action == "stop":
+        campaign = proj.get("campaign", {})
+        if not campaign or campaign.get("status") not in ("running", "paused"):
+            print(f"  No active campaign for '{proj_name}'.")
+            return
+        campaign["status"] = "stopped"
+        campaign["stop_reason"] = "user_stopped"
+        campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
+        state.update_project(proj["id"], campaign=campaign)
+        state.save()
+        print(f"  Campaign stopped for '{proj_name}'.")
+        return
+
+    # --- start ---
+    if not proj.get("goals"):
+        print(f"  Cannot start campaign: '{proj_name}' has no goals set.")
+        print("  Set goals first with the agent REPL (update_goals tool).")
+        return
+
+    if not should_continue(proj):
+        print(f"  All goals for '{proj_name}' appear to be met already.")
+        return
+
+    existing = proj.get("campaign", {})
+    if existing.get("status") == "running":
+        print(f"  Campaign already running for '{proj_name}'.")
+        return
+
+    max_sessions = 10
+    model = "claude-sonnet-4-5-20250929"
+    max_turns = 100
+
+    # Parse optional flags
+    for i, a in enumerate(args[2:], start=2):
+        if a == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+        elif a == "--turns" and i + 1 < len(args):
+            max_turns = int(args[i + 1])
+        elif a.isdigit():
+            max_sessions = int(a)
+
+    campaign = {
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "objective": "",
+        "budget": {"max_sessions": max_sessions, "max_hours": 8},
+        "model": model,
+        "max_turns": max_turns,
+        "sessions_launched": 0,
+        "current_session_id": None,
+        "completed_at": None,
+        "stop_reason": None,
+    }
+    state.update_project(proj["id"], campaign=campaign, auto_continue=True)
+    state.save()
+
+    stop_flag = threading.Event()
+
+    def _on_sigint(sig, frame):
+        print("\n  Pausing campaign (finishing current session)...")
+        stop_flag.set()
+
+    old_handler = signal.signal(signal.SIGINT, _on_sigint)
+
+    def _on_event(event):
+        etype = event.get("type", "")
+        ts = event.get("ts", "")[:19]
+        if etype == "campaign_run_started":
+            n = event.get("sessions_launched", 0)
+            remaining = event.get("budget_remaining", "?")
+            print(f"  [{ts}] Session #{n} started ({remaining} remaining)")
+        elif etype == "goal_reached":
+            print(f"  [{ts}] \033[1;32mGoal reached!\033[0m")
+        elif etype == "campaign_completed":
+            reason = event.get("stop_reason", "?")
+            print(f"  [{ts}] Campaign completed: {reason}")
+
+    print()
+    print(f"  Starting campaign for {_bold(proj_name)}")
+    print(f"  Budget: {max_sessions} sessions, model: {model}")
+    print(f"  Press Ctrl+C to pause\n")
+
+    try:
+        result = run_campaign(
+            proj["id"],
+            state,
+            max_sessions=max_sessions,
+            model=model,
+            max_turns=max_turns,
+            on_event=_on_event,
+            stop_flag=stop_flag,
+        )
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+
+    reason = result.get("stop_reason", "unknown")
+    launched = result.get("sessions_launched", 0)
+    print(f"\n  Campaign ended: {reason} ({launched} session(s) launched)")
+
+    # Update campaign status in state
+    state.reload()
+    p = state.get_project(proj["id"])
+    if p:
+        c = dict(p.get("campaign", {}))
+        c["status"] = "completed" if reason != "user_stopped" else "paused"
+        c["stop_reason"] = reason
+        c["completed_at"] = datetime.now(timezone.utc).isoformat()
+        state.update_project(proj["id"], campaign=c)
+        state.save()
+
+
+def _steer(args: list[str]) -> None:
+    """Write steering instructions for the next experiment session."""
+    from distillate.launcher import write_steering
+    from distillate.state import State
+
+    if len(args) < 2:
+        print("Usage: distillate --steer <project> \"text\"")
+        return
+
+    query = args[0]
+    text = " ".join(args[1:])
+
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj.get('name', query)}' has no path set.")
+        return
+
+    path = write_steering(Path(proj_path), text)
+    print(f"  Steering written: {path}")
+    preview = text[:120] + ("..." if len(text) > 120 else "")
+    print(f"  → {preview}")
+
+
+def _sparkline(values: list[float], width: int = 8) -> str:
+    """Render a list of floats as a Unicode sparkline."""
+    if not values:
+        return ""
+    bars = "▁▂▃▄▅▆▇█"
+    lo, hi = min(values), max(values)
+    span = hi - lo if hi != lo else 1.0
+    recent = values[-width:]
+    return "".join(bars[min(int((v - lo) / span * (len(bars) - 1)), len(bars) - 1)]
+                   for v in recent)
+
+
+def _tail_jsonl(path: Path, offset: int) -> tuple[list[dict], int]:
+    """Read new lines from a JSONL file starting at byte *offset*.
+
+    Returns (parsed_events, new_offset).
+    """
+    if not path.exists():
+        return [], offset
+    try:
+        size = path.stat().st_size
+        if size <= offset:
+            return [], offset
+        with open(path, "r", encoding="utf-8") as f:
+            f.seek(offset)
+            lines = f.readlines()
+        new_offset = path.stat().st_size
+    except OSError:
+        return [], offset
+
+    events = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events, new_offset
+
+
+def _format_watch_event(event: dict) -> str | None:
+    """Format a JSONL event for terminal display. Returns colored string or None."""
+    etype = event.get("type", "")
+    ts = event.get("ts", "")[:19]
+
+    if etype == "metric_update":
+        metric = event.get("metric", "?")
+        value = event.get("value", "?")
+        history = event.get("history", [])
+        spark = _sparkline(history) if history else ""
+        return f"  \033[36m[{ts}]\033[0m {metric}={value} {spark}"
+
+    if etype == "run_completed":
+        run_id = event.get("run_id", "?")
+        results = event.get("results", {})
+        status = event.get("status", "?")
+        metrics_str = ", ".join(f"{k}={v}" for k, v in results.items()
+                                if isinstance(v, (int, float)))
+        color = "\033[32m" if status == "keep" else "\033[33m"
+        return f"  {color}[{ts}]\033[0m Run {run_id}: {metrics_str} [{status}]"
+
+    if etype == "session_end":
+        reason = event.get("stop_reason", event.get("reason", "?"))
+        return f"  \033[2m[{ts}]\033[0m Session ended: {reason}"
+
+    if etype == "goal_reached":
+        return f"  \033[1;32m[{ts}] Goal reached!\033[0m"
+
+    if etype == "campaign_run_started":
+        n = event.get("sessions_launched", 0)
+        remaining = event.get("budget_remaining", "?")
+        return f"  \033[34m[{ts}]\033[0m Campaign session #{n} started ({remaining} remaining)"
+
+    if etype == "campaign_completed":
+        reason = event.get("stop_reason", "?")
+        return f"  \033[1m[{ts}]\033[0m Campaign completed: {reason}"
+
+    # Generic fallback for unknown event types
+    return f"  \033[2m[{ts}]\033[0m {etype}"
+
+
 def _watch(args: list[str]) -> None:
-    """Watch an experiment repo and regenerate notebooks on changes."""
+    """Watch an experiment repo and regenerate notebooks on changes.
+
+    Also tails events.jsonl, runs.jsonl, and live_metrics.jsonl for
+    live event display with sparklines.
+    """
     import time
     import webbrowser
 
@@ -877,6 +1202,7 @@ def _watch(args: list[str]) -> None:
     from distillate.experiments import (
         generate_html_notebook,
         generate_notebook,
+        load_enrichment_cache,
         scan_project,
         watch_project_artifacts,
     )
@@ -903,32 +1229,58 @@ def _watch(args: list[str]) -> None:
     runs_count = len(project.get("runs", {}))
     print(f"  Found {runs_count} experiment(s)")
 
+    # Load LLM enrichment (insights, lessons learned)
+    enrichment = load_enrichment_cache(project_path)
+
     # Generate initial notebook
-    html = generate_html_notebook(project)
+    html = generate_html_notebook(project, enrichment=enrichment)
     html_path = project_path / ".distillate" / "notebook.html"
     html_path.parent.mkdir(exist_ok=True)
     html_path.write_text(html, encoding="utf-8")
 
-    md = generate_notebook(project)
+    md = generate_notebook(project, enrichment=enrichment)
     md_path = project_path / ".distillate" / "notebook.md"
     md_path.write_text(md, encoding="utf-8")
 
     print(f"  Generated notebook: {html_path}")
     webbrowser.open(f"file://{html_path}")
 
+    # Initialize JSONL tail offsets
+    distillate_dir = project_path / ".distillate"
+    tail_files = {
+        "events": distillate_dir / "events.jsonl",
+        "runs": distillate_dir / "runs.jsonl",
+        "metrics": distillate_dir / "live_metrics.jsonl",
+    }
+    offsets: dict[str, int] = {}
+    for key, fpath in tail_files.items():
+        offsets[key] = fpath.stat().st_size if fpath.exists() else 0
+
     # Watch loop
     print("  Watching for changes (Ctrl+C to stop)...")
     try:
         while True:
             time.sleep(5)
+
+            # Tail JSONL files for live events
+            for key, fpath in tail_files.items():
+                new_events, new_offset = _tail_jsonl(fpath, offsets[key])
+                offsets[key] = new_offset
+                for evt in new_events:
+                    line = _format_watch_event(evt)
+                    if line:
+                        print(line)
+
+            # Check for artifact changes (notebook regen)
             new_data = watch_project_artifacts(project_path)
             if new_data:
                 print(f"  Detected {len(new_data)} new event(s), regenerating...")
                 project = scan_project(project_path)
+                enrichment = load_enrichment_cache(project_path)
                 if "error" not in project:
-                    html = generate_html_notebook(project)
+                    html = generate_html_notebook(project, enrichment=enrichment)
                     html_path.write_text(html, encoding="utf-8")
-                    md = generate_notebook(project)
+                    md = generate_notebook(project, enrichment=enrichment)
                     md_path.write_text(md, encoding="utf-8")
                     new_runs = len(project.get("runs", {}))
                     print(f"  Updated: {new_runs} experiment(s)")

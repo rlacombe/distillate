@@ -361,8 +361,9 @@ EXPERIMENT_TOOL_SCHEMAS = [
     {
         "name": "update_project",
         "description": (
-            "Update a project's description, tags, or status. "
-            "Only provided fields are changed."
+            "Update a project's description, tags, status, or primary metric. "
+            "Only provided fields are changed. Use key_metric_name to set "
+            "the north star metric displayed in the experiment dashboard."
         ),
         "input_schema": {
             "type": "object",
@@ -384,8 +385,35 @@ EXPERIMENT_TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "New status (tracking, paused, archived, completed)",
                 },
+                "key_metric_name": {
+                    "type": "string",
+                    "description": "Primary metric name for the project (e.g. 'param_count', 'test_accuracy'). Shown as the hero metric in the dashboard.",
+                },
             },
             "required": ["identifier"],
+        },
+    },
+    {
+        "name": "get_run_details",
+        "description": (
+            "Get full details for a single experiment run including all "
+            "hyperparameters, results/metrics, hypothesis, reasoning, "
+            "decision, tags, and timing. Use when the user asks about "
+            "a specific run's parameters or results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id, name substring, or run number (e.g. '3' for run #003)",
+                },
+            },
+            "required": ["project", "run"],
         },
     },
     {
@@ -643,6 +671,30 @@ EXPERIMENT_TOOL_SCHEMAS = [
                 },
             },
             "required": ["project"],
+        },
+    },
+    {
+        "name": "steer_experiment",
+        "description": (
+            "Write steering instructions for the next experiment session. "
+            "The text is saved to .distillate/steering.md and automatically "
+            "injected into the next session's prompt. Use when the user wants "
+            "to guide the experiment in a specific direction (e.g., 'try lower "
+            "learning rate', 'focus on regularization')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Steering instructions for the next session",
+                },
+            },
+            "required": ["project", "text"],
         },
     },
 ]
@@ -1123,8 +1175,9 @@ def delete_run_tool(*, state, project: str, run: str, confirm: bool = False) -> 
 def update_project_tool(*, state, identifier: str,
                         description: str | None = None,
                         tags: list[str] | None = None,
-                        status: str | None = None) -> dict:
-    """Update a project's description, tags, or status."""
+                        status: str | None = None,
+                        key_metric_name: str | None = None) -> dict:
+    """Update a project's description, tags, status, or primary metric."""
     proj, err = _resolve_project(state, identifier)
     if err:
         return err
@@ -1139,9 +1192,11 @@ def update_project_tool(*, state, identifier: str,
         if status not in valid_statuses:
             return {"error": f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"}
         updates["status"] = status
+    if key_metric_name is not None:
+        updates["key_metric_name"] = key_metric_name
 
     if not updates:
-        return {"error": "No fields to update. Provide description, tags, or status."}
+        return {"error": "No fields to update. Provide description, tags, status, or key_metric_name."}
 
     state.update_project(proj["id"], **updates)
     state.save()
@@ -1238,6 +1293,40 @@ def update_goals_tool(*, state, project: str, goals: list[dict]) -> dict:
         "project": proj.get("name", ""),
         "goals_count": len(goals),
         "message": f"Set {len(goals)} goal(s) for '{proj.get('name', '')}'.",
+    }
+
+
+def get_run_details_tool(*, state, project: str, run: str) -> dict:
+    """Get full details for a single experiment run."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    return {
+        "found": True,
+        "project": proj.get("name", ""),
+        "run": {
+            "id": run_obj.get("id", ""),
+            "name": run_obj.get("name", ""),
+            "status": run_obj.get("status", ""),
+            "decision": run_obj.get("decision", ""),
+            "hypothesis": run_obj.get("hypothesis", ""),
+            "reasoning": run_obj.get("reasoning", ""),
+            "changes": run_obj.get("changes", ""),
+            "hyperparameters": run_obj.get("hyperparameters", {}),
+            "results": run_obj.get("results", {}),
+            "tags": run_obj.get("tags", []),
+            "notes": run_obj.get("notes", []),
+            "started_at": run_obj.get("started_at", ""),
+            "completed_at": run_obj.get("completed_at", ""),
+            "duration_minutes": run_obj.get("duration_minutes", 0),
+            "baseline_comparison": run_obj.get("baseline_comparison", {}),
+        },
     }
 
 
@@ -1545,6 +1634,33 @@ def continue_experiment_tool(*, state, project: str,
     }
 
 
+def steer_experiment_tool(*, state, project: str, text: str) -> dict:
+    """Write steering instructions for the next experiment session."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import write_steering
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    path = write_steering(_Path(proj_path), text)
+    preview = text[:200] + ("..." if len(text) > 200 else "")
+    return {
+        "success": True,
+        "path": str(path),
+        "preview": preview,
+        "message": (
+            f"Steering instructions written for '{proj.get('name', '')}'. "
+            "They'll be injected into the next session's prompt."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Goal auto-parsing from free-form text
 # ---------------------------------------------------------------------------
@@ -1660,7 +1776,10 @@ def _parse_goals_from_text(goal: str) -> list[dict]:
 
 def init_experiment_tool(*, state, path: str, goal: str,
                          name: str = "", constraints: str = "",
-                         duration_minutes: int = 5) -> dict:
+                         duration_minutes: int = 5,
+                         primary_metric: str = "",
+                         metric_direction: str = "",
+                         metric_constraint: str = "") -> dict:
     """Initialize an experiment project with LLM-drafted PROMPT.md."""
     import json as _json
     import subprocess
@@ -1695,7 +1814,8 @@ def init_experiment_tool(*, state, path: str, goal: str,
     scan = _scan_directory_for_init(project_path)
 
     # --- Step 2: Call Claude to draft PROMPT.md ---
-    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes)
+    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes,
+                                    primary_metric, metric_direction, metric_constraint)
     if prompt_md is None:
         return {
             "success": False,
@@ -1778,6 +1898,9 @@ def init_experiment_tool(*, state, path: str, goal: str,
             parsed_goals = _parse_goals_from_text(goal)
             if parsed_goals:
                 state.update_project(project_id, goals=parsed_goals)
+            # Store primary metric name for hero display
+            if primary_metric:
+                state.update_project(project_id, key_metric_name=primary_metric)
             state.save()
         finally:
             release_lock()
@@ -1879,6 +2002,12 @@ autonomy requirements, no reward hacking, allowed tools and libraries. \
 IMPORTANT: include the time budget the user specified (default: 5 minutes per \
 experiment iteration). Each iteration should fit within this budget.>
 
+**CRITICAL: File Size Limit.** When using the Read tool, tool results must \
+not exceed 51,200 bytes. For files longer than ~400 lines, always use \
+`offset` and `limit` parameters to read in chunks. When writing code, \
+keep individual Python files under 400 lines — split large scripts into \
+separate modules.
+
 ## Experiment Tracking (Distillate)
 
 ### Prior Runs
@@ -1906,9 +2035,27 @@ failure. Include `reasoning` to explain your decision. Create the \
 <Numbered list of deliverables — model, training curves, evaluation, \
 written log of decisions>
 
+## Primary Metric
+
+**You MUST explicitly declare the primary metric in this section.** State:
+1. The metric name (e.g. `test_accuracy`, `param_count`, `val_loss`)
+2. The optimization direction: minimize or maximize
+3. Any conditional constraints (e.g. "minimize param_count, subject to \
+test_accuracy >= 99%")
+
+Use this exact format:
+```
+Primary metric: <metric_name> (minimize|maximize)
+Constraints: <metric> >= <threshold> (if any)
+```
+
+This is what Distillate uses as the north star metric for charts and \
+progress tracking. Getting this wrong means the agent optimizes in the \
+wrong direction.
+
 ## Evaluation Criteria
 
-<Primary metric with threshold, secondary criteria like methodology quality>
+<Secondary criteria like methodology quality, code quality, reproducibility>
 
 Write in second person ("you must..."). Be direct and specific. Include \
 concrete numbers for targets where the user provided them. The prompt should \
@@ -1924,7 +2071,10 @@ PROMPT.md content. Output ONLY the markdown content of the PROMPT.md file."""
 
 def _generate_prompt_md(goal: str, scan: dict, name: str,
                         constraints: str,
-                        duration_minutes: int = 5) -> str | None:
+                        duration_minutes: int = 5,
+                        primary_metric: str = "",
+                        metric_direction: str = "",
+                        metric_constraint: str = "") -> str | None:
     """Call Claude to generate PROMPT.md content."""
     from distillate.agent_core import create_client
 
@@ -1937,6 +2087,13 @@ def _generate_prompt_md(goal: str, scan: dict, name: str,
 
     if name:
         parts.append(f"**Project name:** {name}")
+
+    if primary_metric:
+        direction = metric_direction or "maximize"
+        metric_line = f"**Primary metric:** `{primary_metric}` ({direction})"
+        if metric_constraint:
+            metric_line += f"\n**Metric constraint:** {metric_constraint}"
+        parts.append(metric_line)
 
     if constraints:
         parts.append(f"**Constraints:** {constraints}")

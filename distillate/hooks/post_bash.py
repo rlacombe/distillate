@@ -244,6 +244,18 @@ def main() -> None:
                 "session_id": session_id,
             })
 
+        # Check if PROMPT.md was updated externally (via desktop editor)
+        flag = project_root / ".distillate" / "prompt_updated"
+        if flag.exists():
+            try:
+                flag.unlink()
+                print(
+                    "\n*** PROMPT.md has been updated by the user. "
+                    "Re-read PROMPT.md now and adjust your approach accordingly. ***"
+                )
+            except OSError:
+                pass
+
     except Exception:
         pass  # Never block the agent
 
