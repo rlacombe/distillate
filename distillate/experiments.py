@@ -2844,16 +2844,17 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     colors = [colors_map.get(p["run"].get("decision", ""), "#9ca3af") for p in points]
     ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
 
-    # Short description labels on kept runs
+    # Short description labels on kept runs (3-7 words, commit-message style)
     for i, p in enumerate(points):
         if p["run"].get("decision") != "keep":
             continue
         desc = p["run"].get("description", "") or p["run"].get("hypothesis", "") or p["run"].get("name", "")
         if not desc:
             continue
-        # Truncate to ~30 chars
-        if len(desc) > 30:
-            desc = desc[:28] + "\u2026"
+        # Truncate to first 7 words
+        words = desc.split()
+        if len(words) > 7:
+            desc = " ".join(words[:7]) + "\u2026"
         ax.annotate(desc, (i, p["value"]),
                     textcoords="offset points", xytext=(4, 6),
                     fontsize=6, color="#888", ha="left", va="bottom",
