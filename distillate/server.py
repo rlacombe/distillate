@@ -754,13 +754,15 @@ def _create_app():
                     _state.add_run(proj_id, run_id, run_data)
                     new_runs += 1
                 else:
-                    # Update existing run if newer timestamp
+                    # Merge scan data into existing run (preserves state,
+                    # picks up new fields like backfilled descriptions)
                     for eid, erun in old_runs.items():
                         if erun["name"] == run_data["name"]:
-                            new_ts = run_data.get("started_at", "")
-                            old_ts = erun.get("started_at", "")
-                            if new_ts > old_ts:
-                                _state.update_run(proj_id, eid, **run_data)
+                            for k, v in run_data.items():
+                                if k == "id":
+                                    continue
+                                if v and not erun.get(k):
+                                    erun[k] = v
                             break
             _state.update_project(
                 proj_id,
@@ -1885,8 +1887,27 @@ def _create_app():
 
         try:
             use_log = log_scale in ("1", "true", "yes")
+            # Get experiment summary for chart subtitle
+            subtitle = ""
+            proj_path_str = proj.get("path", "")
+            if proj_path_str:
+                from pathlib import Path as _PP
+                prompt_md = _PP(proj_path_str) / "PROMPT.md"
+                if prompt_md.exists():
+                    try:
+                        for line in prompt_md.read_text(encoding="utf-8").splitlines():
+                            line = line.strip()
+                            if line and not line.startswith("#") and not line.startswith("```"):
+                                # Strip markdown bold
+                                import re
+                                subtitle = re.sub(r'\*\*([^*]+)\*\*', r'\1', line)
+                                if len(subtitle) > 80:
+                                    subtitle = subtitle[:78] + "\u2026"
+                                break
+                    except OSError:
+                        pass
             png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id),
-                                              log_scale=use_log)
+                                              log_scale=use_log, subtitle=subtitle)
             from starlette.responses import Response
             return Response(content=png_bytes, media_type="image/png")
         except Exception as e:

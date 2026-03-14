@@ -2869,11 +2869,11 @@ def slugify(name: str) -> str:
 
 
 def generate_export_chart(runs: list[dict], metric: str, title: str = "",
-                          log_scale: bool = False) -> bytes:
+                          log_scale: bool = False, subtitle: str = "") -> bytes:
     """Generate a clean, Karpathy-style chart PNG for sharing.
 
     White background, thin left+bottom spines only, minimal gridlines,
-    dots colored by decision (green=keep, gray=discard, orange=crash).
+    dots colored by decision (green=keep, lighter gray=discard, orange=crash).
     Returns PNG bytes.
     """
     import io
@@ -2891,7 +2891,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if len(points) < 1:
         raise ValueError(f"No data for metric '{metric}'")
 
-    fig, ax = plt.subplots(figsize=(8, 4), dpi=200)
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
@@ -2904,7 +2904,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     ax.spines["bottom"].set_color("#333")
 
     # Grid
-    ax.yaxis.grid(True, alpha=0.3, linewidth=0.5, color="#ccc")
+    ax.yaxis.grid(True, alpha=0.2, linewidth=0.5, color="#ccc")
     ax.xaxis.grid(False)
     ax.set_axisbelow(True)
 
@@ -2942,37 +2942,50 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             frontier_xs.append(i)
             frontier_ys.append(best_so_far)
     if len(frontier_xs) > 1:
-        ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=2.5, alpha=0.9, zorder=2,
+        ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=3, alpha=1.0, zorder=2,
                 label=f"Best {metric}")
 
-    # Dots colored by decision (gray for discards — Karpathy convention)
-    colors_map = {"keep": "#22c55e", "discard": "#555555", "crash": "#d29922"}
-    colors = [colors_map.get(p["run"].get("decision", ""), "#9ca3af") for p in points]
+    # Dots colored by decision (lighter gray for discards)
+    colors_map = {"keep": "#22c55e", "discard": "#c0c0c0", "crash": "#d29922"}
+    colors = [colors_map.get(p["run"].get("decision", ""), "#d0d0d0") for p in points]
     ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
 
-    # Short description labels on kept runs (3-7 words, commit-message style)
+    # Short description labels on kept runs (clip to chart width)
     for i, p in enumerate(points):
         if p["run"].get("decision") != "keep":
             continue
-        desc = p["run"].get("description", "") or p["run"].get("hypothesis", "") or p["run"].get("name", "")
+        desc = p["run"].get("description", "") or p["run"].get("name", "")
         if not desc:
             continue
-        # Truncate to first 7 words
-        words = desc.split()
-        if len(words) > 7:
-            desc = " ".join(words[:7]) + "\u2026"
+        # Truncate to 20 chars max for readability
+        if len(desc) > 20:
+            desc = desc[:18] + "\u2026"
         ax.annotate(desc, (i, p["value"]),
                     textcoords="offset points", xytext=(4, 6),
-                    fontsize=6, color="#888", ha="left", va="bottom",
-                    rotation=40, zorder=4)
+                    fontsize=5.5, color="#888", ha="left", va="bottom",
+                    rotation=40, zorder=4,
+                    annotation_clip=True)
 
     # Labels
     direction = "\u2193" if lower_better else "\u2191"
     scale_label = " (log)" if log_scale else ""
     ax.set_xlabel("Run", fontsize=10, color="#666")
     ax.set_ylabel(f"{metric} {direction}{scale_label}", fontsize=10, color="#666")
+
+    # Title + subtitle
     if title:
-        ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
+        if subtitle:
+            ax.set_title(f"{title}\n{subtitle}",
+                         fontsize=12, fontweight="bold", color="#333", pad=14,
+                         linespacing=1.6)
+            # Make subtitle smaller and lighter
+            ax.title.set_fontsize(12)
+            # Use text for subtitle instead
+            ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=14)
+            fig.text(0.5, 0.94, subtitle, ha="center", fontsize=8, color="#888",
+                     style="italic")
+        else:
+            ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
 
     ax.tick_params(colors="#666", labelsize=9)
 
@@ -2984,7 +2997,11 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if not log_scale and min(ys) >= 0:
         ax.set_ylim(bottom=0)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.93] if subtitle else [0, 0.03, 1, 0.97])
+
+    # Branding: "powered by Distillate" in bottom-right
+    fig.text(0.98, 0.01, "powered by Distillate", ha="right", va="bottom",
+             fontsize=7, color="#bbb", style="italic")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
