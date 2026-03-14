@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — 2026-03-09
+## 0.314.0 — 2026-03-14 (Pi Day 🥧)
 
 Auto-research control plane: live experiment capture, desktop lab dashboard, and Claude Code hooks.
 
