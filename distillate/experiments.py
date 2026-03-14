@@ -543,10 +543,19 @@ def scan_project(path: Path) -> dict:
 
     # Ingest structured reports + hook events
     ingested = ingest_runs(path)
+    has_structured = any(r.get("source") == "structured" for r in ingested)
+    if has_structured:
+        # Structured runs (runs.jsonl) are the canonical experiment log.
+        # Drop ALL artifact-scanned runs — they're redundant noise when
+        # the agent is actively logging via the protocol.
+        artifact_keys = [k for k, v in runs.items()
+                         if v.get("source") != "structured" and v.get("source") != "hooks"]
+        for k in artifact_keys:
+            del runs[k]
     for run in ingested:
-        # Structured runs (from runs.jsonl) have explicit unique IDs —
-        # skip dedup which can merge distinct runs sharing hyperparameters.
-        if run.get("source") == "structured" or not _is_duplicate_run(runs, run):
+        if run.get("source") == "structured":
+            runs[run["id"]] = run
+        elif not _is_duplicate_run(runs, run):
             runs[run["id"]] = run
 
     # Ingest .mlnotebook/state.json (structured experiment tracker)
@@ -677,10 +686,23 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
     except OSError:
         pass
 
-    # Deduplicate by run name: last entry wins (append-only log semantics)
+    # Deduplicate by run name: prefer terminal status, then latest timestamp
     seen: dict[str, int] = {}
+    _terminal = {"keep", "discard", "crash"}
     for i, run in enumerate(runs):
-        seen[run["name"]] = i
+        name = run["name"]
+        if name not in seen:
+            seen[name] = i
+        else:
+            prev = runs[seen[name]]
+            prev_terminal = prev.get("decision") in _terminal or prev.get("status") in ("completed", "failed")
+            curr_terminal = run.get("decision") in _terminal or run.get("status") in ("completed", "failed")
+            prev_ts = prev.get("started_at", "")
+            curr_ts = run.get("started_at", "")
+            # Prefer terminal over running; among same finality, prefer later timestamp
+            if (curr_terminal and not prev_terminal) or \
+               (curr_terminal == prev_terminal and curr_ts > prev_ts):
+                seen[name] = i
     runs = [runs[i] for i in sorted(seen.values())]
 
     return runs
@@ -788,6 +810,100 @@ def ingest_runs(project_path: Path) -> list[dict]:
     return result
 
 
+def backfill_runs_from_events(project_path: Path) -> int:
+    """Auto-create runs.jsonl entries for training events that weren't logged.
+
+    Reads events.jsonl for ``run_completed`` events that have metrics,
+    checks runs.jsonl for existing entries covering those events
+    (by timestamp proximity), and appends new entries for unmatched events.
+
+    Returns count of new entries added.
+    """
+    project_path = Path(project_path).resolve()
+    distillate_dir = project_path / ".distillate"
+    events_file = distillate_dir / "events.jsonl"
+    runs_file = distillate_dir / "runs.jsonl"
+
+    if not events_file.exists():
+        return 0
+
+    # Parse existing completed runs from runs.jsonl
+    existing_timestamps: set[str] = set()
+    existing_run_ids: set[str] = set()
+    next_run_num = 1
+    if runs_file.exists():
+        for line in runs_file.read_text(encoding="utf-8").strip().splitlines():
+            try:
+                entry = json.loads(line)
+                if entry.get("status") in ("keep", "discard", "crash"):
+                    ts = entry.get("timestamp", "")
+                    if ts:
+                        existing_timestamps.add(ts[:16])  # match to minute
+                rid = entry.get("id", "")
+                if rid:
+                    existing_run_ids.add(rid)
+                    # Track highest run number
+                    m = re.match(r"run_(\d+)", rid)
+                    if m:
+                        next_run_num = max(next_run_num, int(m.group(1)) + 1)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+    # Parse training events
+    new_entries: list[dict] = []
+    for line in events_file.read_text(encoding="utf-8").strip().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "run_completed":
+            continue
+        metrics = event.get("results", {})
+        if not metrics:
+            continue
+
+        ts = event.get("ts", "")
+        # Skip if we already have a runs.jsonl entry near this timestamp
+        if ts and ts[:16] in existing_timestamps:
+            continue
+
+        # Extract script name from command
+        command = event.get("command", "")
+        script_name = ""
+        m = re.search(r"python[3]?\s+(\S+\.py)", command)
+        if m:
+            script_name = Path(m.group(1)).stem
+
+        run_id = f"run_{next_run_num:03d}"
+        next_run_num += 1
+
+        entry = {
+            "$schema": "distillate/run/v1",
+            "id": run_id,
+            "timestamp": ts,
+            "status": "keep",
+            "description": f"Backfilled from {script_name}" if script_name else "Backfilled from training event",
+            "hyperparameters": event.get("hyperparameters", {}),
+            "results": metrics,
+            "reasoning": f"Auto-logged by rescan. Command: {command[:100]}" if command else "Auto-logged by rescan from events.jsonl",
+        }
+        new_entries.append(entry)
+        if ts:
+            existing_timestamps.add(ts[:16])
+
+    if not new_entries:
+        return 0
+
+    # Append to runs.jsonl
+    distillate_dir.mkdir(exist_ok=True)
+    with open(runs_file, "a", encoding="utf-8") as f:
+        for entry in new_entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    log.info("Backfilled %d run(s) from events.jsonl into runs.jsonl", len(new_entries))
+    return len(new_entries)
+
+
 def watch_project_artifacts(project_path: Path) -> list[dict]:
     """Check for new data since last scan.
 
@@ -878,6 +994,10 @@ _TRAIN_FILENAME_RE = re.compile(
 _CMD_KV_RE = re.compile(
     r"(?<![/\w])(\w+)\s*=\s*([\d.eE+-]+|[Tt]rue|[Ff]alse)"
 )
+# --key value pairs (argparse style, e.g. --d_model 64 --lr 1e-3)
+_ARGPARSE_RE = re.compile(
+    r"--(\w+)\s+([\d.eE+-]+|[Tt]rue|[Ff]alse)(?=\s|$)"
+)
 
 # Known hyperparameter names (for filtering noise from key=value extraction)
 _KNOWN_HYPERPARAMS = {
@@ -893,7 +1013,9 @@ _METRIC_RE = re.compile(
     r"(?:^|[|\s,])\s*"
     r"(accuracy|loss|exact_match|val_loss|val_accuracy|test_accuracy|"
     r"train_loss|train_accuracy|val_exact_match|f1|precision|recall|"
-    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss)"
+    r"perplexity|bleu|rouge|auc|best_val_acc|final_loss|"
+    r"test_acc|train_acc|val_acc|param_count|n_params|total_params|"
+    r"params|mse|rmse|mae|val_bpb|train_bpb|bpb)"
     r"\s*[=:]\s*([\d.]+)%?",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -935,15 +1057,19 @@ def _parse_training_command(command: str) -> Optional[dict]:
 
     script = full_path
 
-    # Extract key=value pairs
+    # Extract key=value and --key value pairs
     hyperparams: dict[str, Any] = {}
     for key, val in _CMD_KV_RE.findall(command):
         key_lower = key.lower()
-        # Only keep known hyperparameter names or numeric-valued keys
         if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
             hyperparams[key] = _coerce_value(val)
         elif re.match(r"^[\d.eE+-]+$", val):
-            # Keep any numeric key=value — likely a hyperparameter
+            hyperparams[key] = _coerce_value(val)
+    for key, val in _ARGPARSE_RE.findall(command):
+        key_lower = key.lower()
+        if key_lower in _KNOWN_HYPERPARAMS or key in _KNOWN_HYPERPARAMS:
+            hyperparams[key] = _coerce_value(val)
+        elif re.match(r"^[\d.eE+-]+$", val):
             hyperparams[key] = _coerce_value(val)
 
     return {"script": script, "hyperparameters": hyperparams}
@@ -1060,25 +1186,19 @@ def _merge_into_run(target: dict, source: dict) -> None:
 
 
 def _run_sort_key(run: dict) -> tuple:
-    """Sort key that orders runs by version number, then by timestamp.
+    """Sort key that orders runs by run number extracted from the ID.
 
-    Version extraction: 'v5' -> 5, 'final' -> 9999, unversioned -> 0.
-    Falls back to started_at/completed_at timestamp.
+    Extracts the number from run_NNN patterns (e.g. run_042 -> 42,
+    run_004a -> (4, 'a')).  Non-numeric IDs sort first (number=0)
+    with timestamp as tiebreaker.
     """
     name = run.get("name", "")
-    tags = run.get("tags", [])
-    tag = tags[0] if tags else name
-
-    # Extract version number from tag or name
-    version = 0
-    m = re.search(r"v(\d+)", tag, re.IGNORECASE)
+    m = re.match(r"(?:run_?)(\d+)([a-z]?)", name)
     if m:
-        version = int(m.group(1))
-    elif "final" in tag.lower():
-        version = 9999
-
+        return (int(m.group(1)), m.group(2), "")
+    # Non-numeric IDs sort first, ordered by timestamp
     ts = run.get("started_at") or run.get("completed_at") or ""
-    return (version, ts)
+    return (0, "", ts)
 
 
 def _is_experiment_run(run: dict) -> bool:
@@ -1262,7 +1382,7 @@ def _save_enrichment_cache(project_path: Path, data: dict) -> None:
     )
 
 
-def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
+def _build_enrichment_prompt(runs: dict, project_name: str, results_md: str = "") -> str:
     """Build the Sonnet prompt for enriching experiment runs."""
     # Sort runs by version number, then chronologically
     sorted_runs = sorted(runs.items(), key=lambda kv: _run_sort_key(kv[1]))
@@ -1293,7 +1413,10 @@ def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
         )
         diff_str = "; ".join(diff_parts) if diff_parts else "(first experiment)"
 
-        desc = f"Experiment {i} [{rid}]: {run.get('name', '?')}\n"
+        # Use run number from ID if available, otherwise positional
+        m = re.match(r"(?:run_?)(\d+)", rid)
+        num_label = f"#{m.group(1)}" if m else f"#{i}"
+        desc = f"Experiment {num_label} [{rid}]: {run.get('name', '?')}\n"
         desc += f"  Hyperparameters: {hp_str}\n"
         desc += f"  Metrics: {metric_str}\n"
         desc += f"  Changes from previous: {diff_str}\n"
@@ -1305,6 +1428,19 @@ def _build_enrichment_prompt(runs: dict, project_name: str) -> str:
 
     run_ids_json = json.dumps([rid for rid, _ in sorted_runs])
 
+    results_section = ""
+    if results_md:
+        truncated = results_md[:10000]
+        if len(results_md) > 10000:
+            truncated += "\n\n[... truncated ...]"
+        results_section = f"""
+The agent also wrote this research summary (RESULTS.md):
+
+{truncated}
+
+Use the agent's own observations to inform your analysis. Prefer the agent's phrasing when accurate.
+"""
+
     return f"""You are a research scientist writing a lab notebook for an ML experiment series.
 
 Project: {project_name}
@@ -1312,7 +1448,7 @@ Project: {project_name}
 Experiment timeline (chronological order):
 
 {chr(10).join(run_descriptions)}
-
+{results_section}
 For each experiment, generate:
 1. name: A descriptive human-readable name (e.g. "Baseline Character-Level Transformer", "Scaled-Up Model", "Triplet Tokenization Breakthrough"). Keep it short (3-6 words).
 2. hypothesis: Why this experiment was tried (1-2 sentences). For the first experiment, describe the baseline rationale.
@@ -1327,7 +1463,7 @@ Also generate project-level insights:
 9. lessons_learned: 3-5 bullets of deeper insights connecting the experiments. Reference concrete numbers, not vague claims.
 
 Output ONLY valid JSON in this exact format (no markdown, no code blocks):
-{{"runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}, "project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}}}
+{{"project": {{"key_breakthrough": "...", "lessons_learned": ["..."]}}, "runs": {{{run_ids_json[1:-1].replace('"', '')}: see below}}}}
 
 The "runs" object must have keys matching these exact run IDs: {run_ids_json}
 Each run value: {{"name": "...", "hypothesis": "...", "approach": "...", "analysis": "...", "next_steps": "...", "params": "...", "validation": "..."}}"""
@@ -1359,8 +1495,17 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         log.info("Using cached LLM enrichment for %s", project_name)
         return cache["enrichment"]
 
+    # Read RESULTS.md if available
+    results_md = ""
+    results_path = project_path / "RESULTS.md"
+    if results_path.exists():
+        try:
+            results_md = results_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
     # Build prompt and call Sonnet
-    prompt = _build_enrichment_prompt(runs, project_name)
+    prompt = _build_enrichment_prompt(runs, project_name, results_md=results_md)
 
     # Guard against overly large prompts (rough estimate: ~4 chars per token)
     _MAX_ENRICHMENT_CHARS = 400_000  # ~100K tokens, well under 200K limit
@@ -1381,14 +1526,15 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
         response = client.messages.create(
             model=config.CLAUDE_SMART_MODEL,
-            max_tokens=4096,
+            max_tokens=16384,
             messages=[{"role": "user", "content": prompt}],
         )
         if not response.content or not hasattr(response.content[0], "text"):
             log.error("Unexpected API response: no content blocks")
             return None
         text = response.content[0].text.strip()
-        log.info("LLM enrichment response: %d chars", len(text))
+        stop_reason = response.stop_reason
+        log.info("LLM enrichment response: %d chars, stop=%s", len(text), stop_reason)
     except (anthropic.APIError, anthropic.APIConnectionError) as e:
         log.error("Claude API error during LLM enrichment: %s", e)
         return None
@@ -1398,17 +1544,40 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
         text = text.split("\n", 1)[1]
         if "```" in text:
             text = text.rsplit("```", 1)[0]
+
+    # If response was truncated (end_turn not reached), try to close JSON
+    if stop_reason == "max_tokens":
+        log.warning("LLM enrichment truncated — attempting to repair JSON")
+        # Count unclosed braces and brackets
+        open_braces = text.count("{") - text.count("}")
+        open_brackets = text.count("[") - text.count("]")
+        # Strip trailing incomplete string/value
+        text = text.rstrip()
+        if text and text[-1] not in "{}[],":
+            # Likely mid-value — find last complete entry
+            for trim_char in [",", "}", "]"]:
+                last_pos = text.rfind(trim_char)
+                if last_pos > 0:
+                    text = text[:last_pos + 1]
+                    break
+        # Close brackets/braces
+        text += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+
+    enrichment = None
     try:
         enrichment = json.loads(text)
     except json.JSONDecodeError:
-        # Try to extract JSON object
+        # Try to extract JSON object from surrounding text
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
             try:
                 enrichment = json.loads(text[start:end + 1])
             except json.JSONDecodeError:
-                log.error("Failed to parse LLM enrichment JSON")
+                log.error(
+                    "Failed to parse LLM enrichment JSON "
+                    "(first 200 chars: %s)", text[:200],
+                )
                 return None
         else:
             log.error("No JSON found in LLM enrichment response")
@@ -1417,6 +1586,10 @@ def enrich_runs_with_llm(runs: dict, project_name: str,
     if not isinstance(enrichment, dict) or "runs" not in enrichment:
         log.error("LLM enrichment missing 'runs' key")
         return None
+
+    if "project" not in enrichment:
+        log.warning("LLM enrichment missing 'project' key — not caching (will retry)")
+        return enrichment  # Return partial result but don't cache
 
     # Cache the result
     _save_enrichment_cache(project_path, {
@@ -1645,7 +1818,7 @@ def generate_notebook(project: dict, section: str = "main",
     run_enrichments = _enr.get("runs", {})
     project_insights = _enr.get("project", {})
 
-    # Sort runs by version number, then chronologically
+    # Sort runs by run number (run_NNN → NNN)
     runs.sort(key=_run_sort_key)
 
     # Factorize hyperparameters
@@ -2380,9 +2553,23 @@ def generate_html_notebook(project: dict,
                     best_val = v
         if best_val is not None:
             arrow = "&darr;" if lower_better else "&uarr;"
-            parts.append(f'<div class="hero-metric">'
+            # Check if best value meets goal threshold
+            goal_met = True
+            goal_label = ""
+            goals = project.get("goals", [])
+            for g in goals:
+                if g.get("metric") == key_metric_name:
+                    thresh = g.get("threshold")
+                    if thresh is not None:
+                        goal_label = f" (goal: {_h(_fmt_metric(key_metric_name, thresh))})"
+                        if g.get("direction") == "maximize" and best_val < thresh:
+                            goal_met = False
+                        elif g.get("direction") != "maximize" and best_val > thresh:
+                            goal_met = False
+            color_class = "" if goal_met else ' style="opacity:0.6"'
+            parts.append(f'<div class="hero-metric"{color_class}>'
                          f'<span class="hero-value">{_h(_fmt_metric(key_metric_name, best_val))}</span>'
-                         f'<span class="hero-label">{_h(key_metric_name)} {arrow}</span>'
+                         f'<span class="hero-label">{_h(key_metric_name)} {arrow}{goal_label}</span>'
                          f'</div>')
 
     # --- Research Insights (above stats for prominence) ---
@@ -2883,11 +3070,14 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     for i, run in enumerate(runs):
         val = run.get("results", {}).get(metric)
         if isinstance(val, (int, float)):
-            points.append({"value": val, "run": run})
+            # Extract run number for x-axis label
+            m = re.match(r"(?:run_?)(\d+)", run.get("name", ""))
+            run_num = int(m.group(1)) if m else i
+            points.append({"value": val, "run": run, "run_num": run_num})
     if not points:
         raise ValueError(f"No data for metric '{metric}'")
 
-    xs = list(range(len(points)))
+    xs = [p["run_num"] for p in points]
     ys = [p["value"] for p in points]
     lower_better = _is_lower_better(metric)
 
@@ -2922,49 +3112,66 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         ax.set_yscale("log")
 
     # ── Frontier (step function, running best over kept runs) ──
-    # Starts at Y-axis and extends to the right edge
+    # Seeded from first keep, advances only on subsequent keeps (monotonic)
+    first_keep_idx = next(
+        (i for i, p in enumerate(points)
+         if p["run"].get("decision", p["run"].get("status")) == "keep"),
+        None,
+    )
+    front_xs: list = []
+    front_ys: list = []
+    front_set: set = set()
     best = None
-    front_xs, front_ys = [], []
-    front_set = set()
-    for i, p in enumerate(points):
-        if p["run"].get("decision", p["run"].get("status")) != "keep":
-            continue
-        v = p["value"]
-        if best is None or (lower_better and v < best) or (not lower_better and v > best):
-            best = v
-            front_set.add(i)
-        if best is not None:
-            front_xs.append(i)
+
+    if first_keep_idx is not None:
+        best = points[first_keep_idx]["value"]
+        # Anchor from x=0 at the worst value among runs up to first keep
+        if first_keep_idx > 0:
+            anchor = points[0]["value"]
+            for j in range(1, first_keep_idx + 1):
+                v = points[j]["value"]
+                if (lower_better and v > anchor) or (not lower_better and v < anchor):
+                    anchor = v
+            front_xs.append(xs[0])
+            front_ys.append(anchor)
+            front_xs.append(xs[first_keep_idx])
+            front_ys.append(anchor)
+        front_xs.append(xs[first_keep_idx])
+        front_ys.append(best)
+        front_set.add(first_keep_idx)
+
+        for i in range(first_keep_idx + 1, len(points)):
+            p = points[i]
+            if p["run"].get("decision", p["run"].get("status")) == "keep":
+                v = p["value"]
+                if (lower_better and v < best) or (not lower_better and v > best):
+                    best = v
+                    front_set.add(i)
+            front_xs.append(xs[i])
             front_ys.append(best)
 
     if front_xs:
-        # Extend left to Y-axis
-        if front_xs[0] > 0:
-            front_xs.insert(0, 0)
-            front_ys.insert(0, front_ys[0])
         # Extend right to last run
-        if front_xs[-1] < len(points) - 1:
-            front_xs.append(len(points) - 1)
+        if front_xs[-1] < xs[-1]:
+            front_xs.append(xs[-1])
             front_ys.append(front_ys[-1])
 
     if len(front_xs) > 1:
         ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
                 zorder=2, drawstyle="steps-post", solid_capstyle="round")
 
-    # ── Dots: green = kept, gray = everything else ──
+    # ── Dots: green = frontier-improving keeps, gray = everything else ──
     for i, p in enumerate(points):
-        decision = p["run"].get("decision", p["run"].get("status", ""))
-        if decision == "keep":
-            ax.scatter(i, p["value"], c="#22c55e", s=30 if i in front_set else 24,
+        if i in front_set:
+            ax.scatter(xs[i], p["value"], c="#22c55e", s=30,
                        zorder=4, edgecolors="white", linewidths=0.5)
         else:
-            ax.scatter(i, p["value"], c="#ccc", s=12, zorder=3,
+            ax.scatter(xs[i], p["value"], c="#ccc", s=12, zorder=3,
                        edgecolors="none", alpha=0.45)
 
-    # ── Tilted labels on every kept run ──
+    # ── Tilted labels on frontier-improving keeps ──
     for i, p in enumerate(points):
-        decision = p["run"].get("decision", p["run"].get("status", ""))
-        if decision != "keep":
+        if i not in front_set:
             continue
         desc = p["run"].get("description", "") or p["run"].get("name", "")
         if not desc:
@@ -2972,7 +3179,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         if len(desc) > 24:
             desc = desc[:22] + "\u2026"
         ax.annotate(
-            desc, (i, p["value"]),
+            desc, (xs[i], p["value"]),
             textcoords="offset points", xytext=(5, 6),
             fontsize=5.5, color="#aaa", ha="left", va="bottom",
             rotation=30, rotation_mode="anchor",

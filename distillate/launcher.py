@@ -190,6 +190,11 @@ def scaffold_experiment(
     if reporting_src.exists():
         shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
 
+    # Install CLAUDE.md (consolidated protocol — auto-loaded by Claude Code)
+    claude_md_src = Path(__file__).parent / "autoresearch" / "CLAUDE.md"
+    if claude_md_src.exists():
+        shutil.copy2(claude_md_src, target / "CLAUDE.md")
+
     # Install hooks via the shared function
     _install_hooks_into(target)
 
@@ -520,6 +525,14 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         f"(from {best_run_id})")
         lines.insert(8, "")
 
+    results_path = project_path / "RESULTS.md"
+    if results_path.exists():
+        lines.append("## RESULTS.md")
+        lines.append("")
+        lines.append("A RESULTS.md file exists in the repo root. "
+                      "Update it after each run with your current findings summary.")
+        lines.append("")
+
     context_path = project_path / ".distillate" / "context.md"
     context_path.parent.mkdir(exist_ok=True)
     context_path.write_text("\n".join(lines), encoding="utf-8")
@@ -583,33 +596,24 @@ def _build_claude_command(
     model: str = "claude-sonnet-4-5-20250929",
     effort: str = "high",
     has_context: bool = False,
+    prompt_override: str | None = None,
 ) -> str:
     """Build the claude CLI invocation string.
 
     Runs claude interactively (no -p) so the full TUI is visible in
     the tmux session / xterm.js. The prompt just tells claude to read
     PROMPT.md — all experiment logic lives in that file.
+
+    If *prompt_override* is given, it replaces the default prompt text.
     """
-    prompt = (
-        "Read PROMPT.md and follow it precisely. "
-        "You are fully autonomous. Do NOT pause to ask the human anything. "
-        "The human may be asleep. Work indefinitely until manually stopped.\n\n"
-        "TIME DISCIPLINE: Every training script MUST include a wall-clock "
-        "time check (see .distillate/REPORTING.md). Use time.time() to break "
-        "the training loop when the budget from PROMPT.md is reached, then "
-        "evaluate and log results normally. Never let a run exceed its budget. "
-        "Do not spend more than 2 minutes debugging a single error — try a "
-        "different approach instead.\n\n"
-        "CRITICAL: For EVERY experiment run, follow this exact sequence:\n"
-        "0. BEFORE implementing: append a 'running' entry to .distillate/runs.jsonl "
-        "with a one-sentence description of what you're about to try and why\n"
-        "1. After results: append a completed entry to .distillate/runs.jsonl "
-        "(see .distillate/REPORTING.md) with 'reasoning' and 'description'\n"
-        "2. git add -A && git commit -m '<shortest change desc>: <metric>=<value> [keep|discard]'\n"
-        "3. git push\n"
-        "4. /clear (frees context for the next run)\n\n"
-        "Your commit history IS the experiment tracker. Each commit = one run."
-    )
+    if prompt_override:
+        prompt = prompt_override
+    else:
+        prompt = (
+            "Read CLAUDE.md (the experiment protocol) and PROMPT.md (the experiment spec). "
+            "Follow both precisely. You are fully autonomous — do NOT pause to ask the human. "
+            "Work indefinitely until manually stopped."
+        )
     parts = [
         "claude",
         "--permission-mode", "auto",
@@ -625,6 +629,7 @@ def launch_experiment(
     model: str = "claude-sonnet-4-5-20250929",
     effort: str = "high",
     project: dict | None = None,
+    prompt_override: str | None = None,
 ) -> dict:
     """Launch a Claude Code session for the experiment.
 
@@ -633,6 +638,9 @@ def launch_experiment(
     3. Build claude command
     4. Spawn tmux session (local or via SSH)
     5. Return session dict for state tracking
+
+    If *prompt_override* is given, it replaces the default prompt
+    (e.g. for backfill tasks).
     """
     project_path = project_path.resolve()
     ensure_tmux()
@@ -661,6 +669,7 @@ def launch_experiment(
     cmd = _build_claude_command(
         prompt, model=model, effort=effort,
         has_context=context_path is not None,
+        prompt_override=prompt_override,
     )
 
     # Determine session name

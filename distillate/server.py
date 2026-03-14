@@ -551,6 +551,23 @@ def _create_app():
 
         return JSONResponse({"ok": True, "detected_metric": detected_metric})
 
+    @app.get("/experiments/{project_id}/results")
+    async def get_experiment_results(project_id: str):
+        """Get the RESULTS.md content for a project."""
+        from pathlib import Path
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        results_path = Path(proj.get("path", "")) / "RESULTS.md"
+        if not results_path.exists():
+            return JSONResponse({"ok": False, "reason": "no_results"})
+
+        content = results_path.read_text(encoding="utf-8")
+        return JSONResponse({"ok": True, "content": content, "path": str(results_path)})
+
     @app.get("/experiments/{project_id}/session")
     async def get_session_output(project_id: str):
         """Get parsed session output for the project.
@@ -661,6 +678,7 @@ def _create_app():
             return JSONResponse({"ok": False, "reason": "path_not_found"}, status_code=404)
 
         model = body.get("model", "claude-sonnet-4-6")
+        prompt_override = body.get("prompt_override")
 
         try:
             loop = asyncio.get_event_loop()
@@ -668,6 +686,7 @@ def _create_app():
                 _executor,
                 lambda: launch_experiment(
                     proj_path, model=model, project=proj,
+                    prompt_override=prompt_override,
                 ),
             )
             # Persist session to state
@@ -729,11 +748,20 @@ def _create_app():
         """Rescan a project, update state, return summary or None."""
         from pathlib import Path
 
-        from distillate.experiments import scan_project, slugify
+        from distillate.experiments import (
+            backfill_runs_from_events,
+            scan_project,
+            slugify,
+        )
 
         proj_path = Path(proj.get("path", ""))
         if not proj_path.is_dir():
             return None
+
+        # Backfill runs.jsonl from events.jsonl before scanning
+        backfilled = backfill_runs_from_events(proj_path)
+        if backfilled:
+            log.info("Backfilled %d run(s) for %s", backfilled, proj_id)
 
         result = scan_project(proj_path)
         if "error" in result:
@@ -747,7 +775,18 @@ def _create_app():
                 return None
             old_runs = existing.get("runs", {})
             old_count = len(old_runs)
+            scan_names = {r["name"] for r in result.get("runs", {}).values()}
             existing_names = {r["name"] for r in old_runs.values()}
+
+            # Remove stale runs no longer in scan results (e.g. artifact-
+            # scanned duplicates superseded by structured runs)
+            stale_keys = [
+                eid for eid, erun in old_runs.items()
+                if erun["name"] not in scan_names
+            ]
+            for k in stale_keys:
+                del old_runs[k]
+
             new_runs = 0
             for run_id, run_data in result.get("runs", {}).items():
                 if run_data["name"] not in existing_names:
@@ -761,7 +800,13 @@ def _create_app():
                             for k, v in run_data.items():
                                 if k == "id":
                                     continue
-                                if v and not erun.get(k):
+                                if k in ("decision", "status", "results",
+                                         "agent_reasoning", "description",
+                                         "hypothesis", "reasoning"):
+                                    # Always take latest value for mutable fields
+                                    if v:
+                                        erun[k] = v
+                                elif v and not erun.get(k):
                                     erun[k] = v
                             break
             _state.update_project(
@@ -789,15 +834,25 @@ def _create_app():
             "new_runs": new_runs,
             "total_runs": old_count + new_runs,
             "best_metric": best_metric,
+            "backfilled": backfilled,
         }
 
     @app.post("/experiments/{project_id}/scan")
-    async def scan_experiment(project_id: str):
+    async def scan_experiment(project_id: str, full: str = ""):
         """Manually trigger a rescan for a project."""
         _state.reload()
         proj = _state.find_project(project_id)
         if not proj:
             return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        # Full rescan: clear watch state + scan state to force re-read
+        if full:
+            from pathlib import Path
+            proj_path = Path(proj.get("path", ""))
+            for state_file in ("watch_state.json", "scan_state.json"):
+                sf = proj_path / ".distillate" / state_file
+                if sf.exists():
+                    sf.unlink()
 
         loop = asyncio.get_event_loop()
         summary = await loop.run_in_executor(
@@ -1142,6 +1197,8 @@ def _create_app():
         actual_id = proj.get("id", project_id)
         body = await request.json()
         updates = {}
+        if "name" in body:
+            updates["name"] = body["name"]
         if "key_metric_name" in body:
             updates["key_metric_name"] = body["key_metric_name"]
         if "description" in body:
@@ -1566,6 +1623,18 @@ def _create_app():
     # Data endpoints for desktop app tabs
     # -------------------------------------------------------------------
 
+    def _extract_run_number(name: str) -> tuple:
+        """Extract sortable (number, suffix) from run name like 'run_122' or 'run_004a'.
+
+        Returns (number, suffix) for run_NNN patterns, or (0, "") for others
+        so non-numeric IDs sort first by timestamp fallback.
+        """
+        import re
+        m = re.match(r"(?:run_?)(\d+)([a-z]?)", name)
+        if m:
+            return (int(m.group(1)), m.group(2))
+        return (0, "")
+
     def _run_summary(run: dict) -> dict:
         """Build a concise run summary dict."""
         results = run.get("results", {})
@@ -1579,9 +1648,12 @@ def _create_app():
             k, v = next(iter(results.items()))
             if isinstance(v, (int, float)):
                 key_metric = f"{k}={v}"
+        num, suffix = _extract_run_number(run.get("name", ""))
         return {
             "id": run.get("id", ""),
             "name": run.get("name", ""),
+            "run_number": num,
+            "run_suffix": suffix,
             "status": run.get("status", ""),
             "decision": run.get("decision", ""),
             "key_metric": key_metric,
@@ -1688,6 +1760,7 @@ def _create_app():
         }
 
         def _score(metric_name: str) -> float:
+            from distillate.experiments import classify_metric
             coverage = metric_counts[metric_name] / total_runs
             name_lower = metric_name.lower().replace("-", "_")
             # Exact match first
@@ -1704,6 +1777,10 @@ def _create_app():
                         relevance = max(relevance, score)
                 if relevance == 0:
                     relevance = 8  # unknown metric baseline
+            # Penalize non-optimization metrics (counts, times, costs)
+            cat = classify_metric(metric_name)
+            if cat in ("count", "time", "cost"):
+                relevance = min(relevance, 1)
             return coverage * relevance
 
         best = max(metric_counts.keys(), key=_score)
@@ -1765,7 +1842,8 @@ def _create_app():
                 "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
                 "runs": [_run_summary(r) for r in sorted(
-                    runs.values(), key=lambda r: r.get("started_at", ""),
+                    runs.values(),
+                    key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
                 )],
             }
             campaign = proj.get("campaign")
@@ -1824,13 +1902,14 @@ def _create_app():
                                 entry["latest_learning"] = rr["reasoning"]
                                 found_learning = True
 
-                        # Total experiment time: sum of gaps between
-                        # consecutive entries, skipping session breaks
-                        # (gaps > 30 min).  More robust than pair-matching.
+                        # Total experiment time: pair-matching for
+                        # running→completed, gap-based for remainder
                         MAX_GAP = 1800  # 30 min = session break
-                        total_secs = 0.0
-                        prev_dt = None
+                        run_starts: dict[str, datetime] = {}
+                        pair_secs = 0.0
+                        unpaired_dts: list[datetime] = []
                         active_run_start = ""
+
                         for fwd_line in all_lines:
                             fwd_line = fwd_line.strip()
                             if not fwd_line:
@@ -1841,30 +1920,60 @@ def _create_app():
                                 continue
                             ts = rr.get("timestamp", "")
                             st = rr.get("status", "")
+                            rid = rr.get("id", "")
                             if not ts:
                                 continue
                             try:
                                 dt = datetime.fromisoformat(
                                     ts.replace("Z", "+00:00"))
-                                # Normalize to naive UTC for comparison
                                 if dt.tzinfo is not None:
                                     dt = dt.replace(tzinfo=None)
                             except (ValueError, TypeError):
                                 continue
+
                             if st == "running":
                                 active_run_start = ts
+                                run_starts[rid] = dt
                             elif st in ("keep", "discard", "crash"):
                                 active_run_start = ""
+                                if rid in run_starts:
+                                    pair_secs += (
+                                        dt - run_starts[rid]
+                                    ).total_seconds()
+                                    del run_starts[rid]
+                                else:
+                                    unpaired_dts.append(dt)
+                            else:
+                                unpaired_dts.append(dt)
+
+                        # Gap-based for unpaired entries
+                        gap_secs = 0.0
+                        prev_dt = None
+                        for udt in sorted(unpaired_dts):
                             if prev_dt is not None:
-                                gap = (dt - prev_dt).total_seconds()
+                                gap = (udt - prev_dt).total_seconds()
                                 if 0 < gap <= MAX_GAP:
-                                    total_secs += gap
-                            prev_dt = dt
-                        entry["experiment_total_secs"] = total_secs
+                                    gap_secs += gap
+                            prev_dt = udt
+
+                        entry["experiment_total_secs"] = (
+                            pair_secs + gap_secs
+                        )
                         if active_run_start:
                             entry["active_run_start"] = active_run_start
                     except OSError:
                         pass
+
+                # Only report current_run/active_run_start for active sessions
+                if active == 0:
+                    entry.pop("current_run", None)
+                    entry.pop("current_run_started", None)
+                    entry["active_run_start"] = ""
+                elif active > 0 and not entry.get("current_run"):
+                    # Active session but no unresolved running entry
+                    sess = next(iter(active_sessions.values()), {})
+                    entry["current_run"] = "Session active"
+                    entry["current_run_started"] = sess.get("started_at", "")
 
                 # Experiment summary from PROMPT.md first meaningful line
                 prompt_md = proj_p / "PROMPT.md"
@@ -1904,23 +2013,21 @@ def _create_app():
         proj_path = Path(proj.get("path", ""))
         enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
 
-        # Auto-trigger LLM enrichment if cache is empty/missing/stale
+        # Return notebook immediately with cached enrichment
+        html = generate_html_notebook(proj, enrichment=enrichment)
+
+        # Trigger LLM enrichment in background (don't block response)
         if proj_path.exists():
             runs = proj.get("runs", {})
             if runs:
-                try:
-                    loop = asyncio.get_event_loop()
-                    enr_result = await loop.run_in_executor(
-                        _executor,
-                        enrich_runs_with_llm,
-                        runs, proj.get("name", project_id), proj_path,
-                    )
-                    if enr_result:
-                        enrichment = load_enrichment_cache(proj_path)
-                except Exception:
-                    log.debug("LLM enrichment failed for notebook", exc_info=True)
+                import threading
+                def _bg_enrich(r=runs, n=proj.get("name", project_id), p=proj_path):
+                    try:
+                        enrich_runs_with_llm(r, n, p)
+                    except Exception:
+                        log.debug("Background LLM enrichment failed", exc_info=True)
+                threading.Thread(target=_bg_enrich, daemon=True).start()
 
-        html = generate_html_notebook(proj, enrichment=enrichment)
         return HTMLResponse(html)
 
     @app.get("/experiments/{project_id}/chart/export")

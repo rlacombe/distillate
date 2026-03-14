@@ -1,5 +1,11 @@
 ## Experiment Reporting (Distillate)
 
+### One Config Per Run
+
+Each training script invocation MUST train exactly **ONE model configuration**. Do NOT write scripts that loop over multiple hyperparameter configurations or architectures. To try multiple configs, run the script multiple times with different arguments. Sweep scripts defeat the tracking system — each distinct experiment must be a separate run with its own `runs.jsonl` entry and git commit.
+
+If you discover a qualitatively different approach (new architecture, new technique), that MUST be a separate run with its own commit even if found during exploration.
+
 ### Prior Run Awareness
 
 Before starting, **read `.distillate/runs.jsonl`** and `.distillate/context.md` if they exist. Build on what worked, avoid repeating failures.
@@ -75,4 +81,15 @@ If a run exceeds the budget despite the check (e.g. a single epoch takes too lon
 - `discard` — did not improve
 - `crash` — failed with error
 
-Create the `.distillate/` directory if it doesn't exist. This enables live experiment tracking, notebook generation, and cross-session awareness.
+Create the `.distillate/` directory if it doesn't exist. This enables live experiment tracking and cross-session awareness.
+
+### Updating RESULTS.md
+
+After each run, update `RESULTS.md` at the repo root. This is your research narrative, displayed in the Distillate app. Write in first person as the researcher. Structure:
+
+- Current best result (metric = value, from which run)
+- Key findings with specific numbers
+- Failed approaches and why
+- Next hypothesis
+
+Overwrite the full file each run. Keep it under 500 words.
