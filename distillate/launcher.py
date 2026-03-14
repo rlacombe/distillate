@@ -643,6 +643,10 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
     print(f"[launch] command: {full_command}")
 
+    # Set tmux options before creating the session to avoid green bar flash
+    # -g sets global defaults that apply to new sessions
+    subprocess.run(["tmux", "set-option", "-g", "status", "off"], capture_output=True)
+
     result = subprocess.run(
         [
             "tmux", "new-session", "-d",

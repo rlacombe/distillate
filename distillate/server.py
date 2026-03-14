@@ -1124,7 +1124,7 @@ def _create_app():
             task.cancel()
         return JSONResponse({"ok": True})
 
-    @app.delete("/experiments/{project_id}")
+    @app.delete("/experiments/{project_id:path}")
     async def delete_experiment(project_id: str):
         """Delete experiment from tracking. Does NOT delete files or remote repo."""
         from distillate.launcher import _tmux_session_exists
@@ -1133,6 +1133,9 @@ def _create_app():
         proj = _state.find_project(project_id)
         if not proj:
             return JSONResponse({"ok": False, "reason": "Project not found"}, status_code=404)
+
+        # Use the actual state key, not the URL param
+        actual_id = proj.get("id", project_id)
 
         # Refuse if sessions are running
         for sess in proj.get("sessions", {}).values():
@@ -1144,9 +1147,9 @@ def _create_app():
                         status_code=409,
                     )
 
-        name = proj.get("name", project_id)
+        name = proj.get("name", actual_id)
         run_count = len(proj.get("runs", {}))
-        _state.remove_project(project_id)
+        _state.remove_project(actual_id)
         _state.save()
         return JSONResponse({"ok": True, "message": f"Deleted '{name}' ({run_count} runs). Files and remote repo untouched."})
 
