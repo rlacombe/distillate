@@ -1130,7 +1130,7 @@ def _create_app():
             task.cancel()
         return JSONResponse({"ok": True})
 
-    @app.patch("/experiments/{project_id}")
+    @app.patch("/experiments/{project_id:path}")
     async def patch_experiment(project_id: str, request: Request):
         """Update experiment fields (key_metric_name, description, etc.)."""
         _state.reload()
