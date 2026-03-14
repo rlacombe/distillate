@@ -2,31 +2,57 @@
 
 ### Prior Run Awareness
 
-Before starting any new experiment iteration, **read `.distillate/runs.jsonl`** if it exists. This file contains the history of all prior runs. Use it to:
-- Understand what has already been tried
-- Build on successful approaches (status: "keep")
-- Avoid repeating failed approaches (status: "discard")
-- Reference specific run IDs in your hypothesis and reasoning
+Before starting, **read `.distillate/runs.jsonl`** and `.distillate/context.md` if they exist. Build on what worked, avoid repeating failures.
 
-If `.distillate/context.md` exists, it contains a formatted summary of prior runs that was injected at launch time. Read it for a quick overview.
+### Announcing a Run
+
+BEFORE implementing each experiment, announce it by appending a `"running"` entry to `.distillate/runs.jsonl`:
+
+```json
+{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", "status":"running", "description":"one sentence: what you're about to try and why"}
+```
+
+This lets the user see what you're attempting while the run trains. Keep the description to one sentence — what changed and the hypothesis (e.g. "Double d_model to 128 — testing if capacity is the bottleneck").
 
 ### Recording Results
 
-After each experiment iteration, append one JSON line to `.distillate/runs.jsonl`:
+After EACH experiment run completes, append a NEW line to `.distillate/runs.jsonl` with the same `id` and full results:
 
 ```json
-{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", "status":"keep|discard|crash", "hypothesis":"...", "changes":"...", "hyperparameters":{...}, "results":{...}, "reasoning":"..."}
+{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", "status":"keep|discard|crash", "description":"shortest change summary", "hypothesis":"why you tried this", "changes":"what changed from previous", "hyperparameters":{...}, "results":{...}, "reasoning":"2-3 sentences: what worked, what didn't, what you learned. Be specific with numbers."}
 ```
 
-**Required fields:** `id`, `timestamp`, `status`, `hypothesis`, `results`.
+**Required fields:** `id`, `timestamp`, `status`, `results`, `reasoning`.
 
-**Optional fields:** `hyperparameters`, `changes`, `duration_seconds`, `reasoning`, `commit`, `baseline_comparison` (object with `metric`, `baseline`, `delta`).
+**Recommended fields:**
+- `description` — shortest possible change summary (e.g. "seed: 42→137", "d_model: 64→128", "baseline")
+- `reasoning` — 2-3 sentences interpreting results: what worked, what didn't, why. Reference metric values.
+- `hypothesis` — why you tried this approach
+- `learnings` — Array of key takeaways that future sessions should know
 
-**Status values:**
-- `keep` — experiment improved on baseline or is the new baseline
-- `discard` — experiment did not improve, reverting
-- `crash` — experiment failed with an error
-- `running` — experiment is still in progress
+**Optional fields:** `hyperparameters`, `changes`, `duration_seconds`, `commit`, `baseline_comparison` (object with `metric`, `baseline`, `delta`).
+
+### Committing
+
+After each run, IMMEDIATELY commit:
+
+```bash
+git add -A && git commit -m '<shortest possible change description>: <key_metric>=<value> [<status>]' && git push
+```
+
+Examples:
+- `git commit -m 'seed: 42->137: val_bpb=1.05 [keep]'`
+- `git commit -m 'd_model: 64->128: loss=0.03 [keep]'`
+- `git commit -m 'add dropout 0.1: val_bpb=1.12 [discard]'`
+- `git commit -m 'baseline: val_bpb=1.45 [keep]'`
+
+Keep descriptions as short as possible — focus on what changed (e.g. "seed: 42→137", "lr: 3e-4→1e-3"). Your commit messages ARE the experiment log. Each commit = one run. Then push.
+
+### Status values
+
+- `keep` — improved on baseline or is the new baseline
+- `discard` — did not improve
+- `crash` — failed with error
 
 Create the `.distillate/` directory if it doesn't exist. This enables live experiment tracking, notebook generation, and cross-session awareness.
 

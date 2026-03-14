@@ -1585,8 +1585,10 @@ def _create_app():
             "key_metric": key_metric,
             "results": {k: v for k, v in results.items() if isinstance(v, (int, float))},
             "hyperparameters": run.get("hyperparameters", {}),
+            "description": run.get("description", ""),
             "hypothesis": run.get("hypothesis", ""),
             "reasoning": run.get("reasoning", ""),
+            "agent_reasoning": run.get("agent_reasoning", ""),
             "baseline_comparison": run.get("baseline_comparison"),
             "started_at": run.get("started_at", ""),
             "duration_minutes": run.get("duration_minutes", 0),
@@ -1769,11 +1771,53 @@ def _create_app():
             if proj_path_str:
                 from pathlib import Path as _P
                 from distillate.experiments import load_enrichment_cache
-                cache = load_enrichment_cache(_P(proj_path_str))
+                proj_p = _P(proj_path_str)
+                cache = load_enrichment_cache(proj_p)
                 enr = cache.get("enrichment", cache)
                 project_insights = enr.get("project", {})
                 if project_insights:
                     entry["insights"] = project_insights
+
+                # Latest learning + current run from runs.jsonl
+                runs_jsonl = proj_p / ".distillate" / "runs.jsonl"
+                if runs_jsonl.exists():
+                    try:
+                        for line in reversed(
+                            runs_jsonl.read_text(encoding="utf-8").splitlines()
+                        ):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                rr = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            # Surface what the agent is currently attempting
+                            if (rr.get("status") == "running"
+                                    and rr.get("description")
+                                    and "current_run" not in entry):
+                                entry["current_run"] = rr["description"]
+                            if rr.get("status") == "keep" and rr.get("reasoning"):
+                                entry["latest_learning"] = rr["reasoning"]
+                                break
+                    except OSError:
+                        pass
+
+                # Experiment summary from PROMPT.md first meaningful line
+                prompt_md = proj_p / "PROMPT.md"
+                if prompt_md.exists():
+                    try:
+                        for pline in prompt_md.read_text(
+                            encoding="utf-8"
+                        ).splitlines():
+                            pline = pline.strip()
+                            if (pline and not pline.startswith("#")
+                                    and not pline.startswith("```")):
+                                entry["experiment_summary"] = pline[:200]
+                                break
+                    except OSError:
+                        pass
+
             result.append(entry)
         return JSONResponse({"ok": True, "projects": result})
 
@@ -1783,7 +1827,11 @@ def _create_app():
 
         from starlette.responses import HTMLResponse
 
-        from distillate.experiments import generate_html_notebook, load_enrichment_cache
+        from distillate.experiments import (
+            enrich_runs_with_llm,
+            generate_html_notebook,
+            load_enrichment_cache,
+        )
 
         _state.reload()
         proj = _state.find_project(project_id)
@@ -1792,6 +1840,16 @@ def _create_app():
 
         proj_path = Path(proj.get("path", ""))
         enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
+
+        # Auto-trigger LLM enrichment if cache is empty/missing/stale
+        if proj_path.exists():
+            runs = proj.get("runs", {})
+            if runs:
+                result = enrich_runs_with_llm(
+                    runs, proj.get("name", project_id), proj_path
+                )
+                if result:
+                    enrichment = load_enrichment_cache(proj_path)
 
         html = generate_html_notebook(proj, enrichment=enrichment)
         return HTMLResponse(html)

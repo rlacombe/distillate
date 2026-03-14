@@ -21,7 +21,7 @@
           },
           {
             "type": "command",
-            "command": "git add -A && git diff --cached --quiet || git commit -m 'Auto-commit: experiment session end' && git push 2>/dev/null || true"
+            "command": "git add -A && git diff --cached --quiet || git commit -m \"Session end: $(tail -1 .distillate/runs.jsonl 2>/dev/null | python3 -c 'import sys,json; r=json.load(sys.stdin); print(r.get(\"description\",r.get(\"id\",\"cleanup\")))' 2>/dev/null || echo cleanup)\" && git push 2>/dev/null || true"
           }
         ]
       }

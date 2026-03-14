@@ -424,6 +424,31 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         best_metric_name = k
                         best_run_id = run_id
 
+    # --- Key learnings from kept runs ---
+    learnings: list[str] = []
+    for run in recent:
+        if run.get("status") != "keep":
+            continue
+        reasoning = run.get("reasoning", "")
+        if reasoning:
+            learnings.append(reasoning)
+        for lr in run.get("learnings", []):
+            if isinstance(lr, str) and lr:
+                learnings.append(lr)
+
+    if learnings:
+        lines.append("## Key Learnings So Far")
+        lines.append("")
+        # Deduplicate while preserving order, cap at 10
+        seen_lr: set[str] = set()
+        for lr in learnings:
+            if lr not in seen_lr:
+                seen_lr.add(lr)
+                lines.append(f"- {lr}")
+            if len(seen_lr) >= 10:
+                break
+        lines.append("")
+
     # --- Infer key metric and optimization direction ---
     key_metric, key_direction = _infer_key_metric(runs)
     if key_metric:
@@ -468,13 +493,16 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
     Returns (metric_name, direction) where direction is "higher" or "lower".
     Returns ("", "") if no metric can be inferred.
 
-    Uses scoring: test > val > train, accuracy/f1 > loss/error,
-    and prefers metrics present in most runs.
+    Uses ``classify_metric()`` from experiments.py for category-aware scoring:
+    ratio > loss > generic, and prefers metrics present in most runs.
     """
     if not runs:
         return ("", "")
 
     from collections import Counter
+
+    from distillate.experiments import classify_metric
+
     metric_counts: Counter = Counter()
     for run in runs:
         for k, v in run.get("results", {}).items():
@@ -485,36 +513,28 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
 
     total = len(runs)
 
-    # Lower-is-better keywords
-    _LOWER_KW = {"loss", "error", "mae", "rmse", "mse", "perplexity",
-                  "time", "latency", "param", "count", "size", "flops", "cost"}
-
-    _RELEVANCE = {
-        "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
-        "test_auc": 90, "test_loss": 70, "test_error": 70,
-        "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
-        "val_loss": 45, "accuracy": 40, "f1": 38,
-        "loss": 20, "error": 20, "param_count": 15,
-        "total_params": 15, "params": 15,
+    # Category-based relevance scores
+    _CATEGORY_RELEVANCE = {
+        "ratio": 50, "loss": 30, "count": 10,
+        "time": 5, "cost": 5, "hyperparameter": 1, "generic": 15,
     }
+    # Prefix boosts (test > val > train)
+    _PREFIX_BOOST = {"test_": 40, "val_": 20, "train_": 5}
 
     def _score(name: str) -> float:
         coverage = metric_counts[name] / total
-        lower_name = name.lower().replace("-", "_")
-        rel = _RELEVANCE.get(lower_name, 0)
-        if rel == 0:
-            for pat, sc in [("test", 30), ("accuracy", 25), ("acc", 25),
-                            ("f1", 20), ("auc", 20), ("val", 12),
-                            ("loss", 10), ("error", 10), ("param", 10)]:
-                if pat in lower_name:
-                    rel = max(rel, sc)
-            if rel == 0:
-                rel = 5
+        cat = classify_metric(name)
+        rel = _CATEGORY_RELEVANCE.get(cat, 15)
+        lower_name = name.lower()
+        for prefix, boost in _PREFIX_BOOST.items():
+            if lower_name.startswith(prefix):
+                rel += boost
+                break
         return coverage * rel
 
     best = max(metric_counts.keys(), key=_score)
-    lower_best = best.lower().replace("-", "_")
-    direction = "lower" if any(kw in lower_best for kw in _LOWER_KW) else "higher"
+    cat = classify_metric(best)
+    direction = "lower" if cat in ("loss", "count", "time", "cost") else "higher"
     return (best, direction)
 
 
@@ -535,9 +555,14 @@ def _build_claude_command(
         "Read PROMPT.md and follow it precisely. "
         "You are fully autonomous. Do NOT pause to ask the human anything. "
         "The human may be asleep. Work indefinitely until manually stopped. "
-        "CRITICAL: After EVERY experiment run (success, failure, or crash), "
-        "commit ALL code changes and results with `git add -A && git commit -m '<run_description>'` "
-        "then `git push`. Never leave uncommitted work."
+        "CRITICAL: For EVERY experiment run, follow this exact sequence:\n"
+        "0. BEFORE implementing: append a 'running' entry to .distillate/runs.jsonl "
+        "with a one-sentence description of what you're about to try and why\n"
+        "1. After results: append a completed entry to .distillate/runs.jsonl "
+        "(see .distillate/REPORTING.md) with 'reasoning' and 'description'\n"
+        "2. git add -A && git commit -m '<shortest change desc>: <metric>=<value> [keep|discard]'\n"
+        "3. git push\n"
+        "Your commit history IS the experiment tracker. Each commit = one run."
     )
     parts = [
         "claude",

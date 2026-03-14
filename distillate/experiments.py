@@ -661,6 +661,7 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                     duration_minutes=duration_mins,
                     source="structured",
                     decision=decision,
+                    description=entry.get("description", ""),
                     agent_reasoning=entry.get("reasoning", ""),
                     hypothesis=entry.get("hypothesis", ""),
                     changes=entry.get("changes", ""),
@@ -1912,14 +1913,15 @@ def _fmt_metric(name: str, val: Any) -> str:
                 return f"{val:.4f}"
         return f"{val:.2f}"
     if cat == "count":
-        v = abs(val)
-        if v >= 1e9:
-            return f"{val / 1e9:.2f}B"
-        if v >= 1e6:
-            return f"{val / 1e6:.2f}M"
-        if v >= 1e3:
-            return f"{val / 1e3:.2f}K"
-        return f"{int(val):,}" if val == int(val) else f"{val:.2f}"
+        if isinstance(val, int) or (isinstance(val, float) and val == int(val)):
+            iv = int(val)
+            v = abs(iv)
+            if v >= 1e9:
+                return f"{iv / 1e9:.2f}B ({iv:,})"
+            if v >= 1e6:
+                return f"{iv / 1e6:.2f}M ({iv:,})"
+            return f"{iv:,}"
+        return f"{val:.2f}"
     if cat == "time":
         v = abs(val)
         if v >= 3600:
@@ -1970,18 +1972,23 @@ def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
             return ", ".join(parts)
     if not results:
         return "-"
-    # Priority order for key metrics
-    priority = ["exact_match", "val_exact_match", "accuracy", "test_accuracy",
-                 "val_accuracy", "best_val_acc", "f1", "bleu", "rouge",
-                 "loss", "final_loss", "val_loss"]
-    for key in priority:
-        if key in results and isinstance(results[key], (int, float)):
-            return f"{key}={_fmt_metric(key, results[key])}"
-    # Fallback: first numeric metric (skip metadata-like fields)
-    skip = {"n_params", "duration_minutes", "num_examples", "n_samples",
-            "num_classes", "vocab_size", "num_papers"}
+    # Select best metric by category priority (loss/ratio first, skip counts/hyperparams)
+    _CAT_PRIORITY = {"loss": 0, "ratio": 1, "generic": 2, "time": 3, "cost": 4}
+    candidates = []
     for k, v in results.items():
-        if isinstance(v, (int, float)) and k not in skip:
+        if not isinstance(v, (int, float)):
+            continue
+        cat = classify_metric(k)
+        if cat in ("count", "hyperparameter"):
+            continue
+        candidates.append((k, v, _CAT_PRIORITY.get(cat, 99)))
+    if candidates:
+        candidates.sort(key=lambda x: x[2])
+        k, v, _ = candidates[0]
+        return f"{k}={_fmt_metric(k, v)}"
+    # Last resort: first numeric metric
+    for k, v in results.items():
+        if isinstance(v, (int, float)):
             return f"{k}={_fmt_metric(k, v)}"
     return "-"
 
@@ -2138,6 +2145,11 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .toolbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 .toolbar button { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
 .toolbar button:hover { border-color: var(--accent); color: var(--text); }
+.toolbar button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.run-desc { color: var(--text-dim); font-size: 0.8rem; font-style: italic; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.section-header { display: flex; align-items: center; justify-content: space-between; }
+.section-header h2 { border-bottom: none; margin-bottom: 0; flex: 1; }
+.section-header .toolbar { margin-bottom: 0; }
 .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
 .decision-keep { color: var(--green); font-weight: 600; }
 .decision-discard { color: #888; font-weight: 600; }
@@ -2198,35 +2210,31 @@ def _sparkline_svg(values: list[float], width: int = 60, height: int = 16,
     )
 
 
-def _render_metric_chart(runs: list[dict]) -> str:
+def _render_metric_chart(runs: list[dict],
+                         key_metric: str = "") -> str:
     """Render an inline SVG polyline chart of the primary metric over time.
 
     Each point is colored by decision (green=keep, red=discard, yellow=crash).
     Pure SVG — no JS library needed.
     """
-    # Find the primary metric across runs
-    metric_name = ""
-    for run in runs:
-        results = run.get("results", {})
-        if not results:
-            continue
-        priority = ["val_bpb", "val_loss", "loss", "accuracy", "val_accuracy",
-                     "test_accuracy", "exact_match", "f1"]
-        for key in priority:
-            if key in results:
-                metric_name = key
-                break
-        if metric_name:
-            break
+    # Use key_metric if provided, otherwise auto-detect
+    metric_name = key_metric
     if not metric_name:
-        # Fallback: first numeric metric
+        # Auto-detect: prefer loss/ratio metrics (the ones people chart),
+        # then any other non-count/non-hyperparameter metric
+        all_numeric = {}
         for run in runs:
             for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)):
-                    metric_name = k
-                    break
-            if metric_name:
-                break
+                if isinstance(v, (int, float)) and k not in all_numeric:
+                    all_numeric[k] = classify_metric(k)
+        # Priority: loss > ratio > generic > time > cost > count
+        _CAT_PRIORITY = {"loss": 0, "ratio": 1, "generic": 2,
+                         "time": 3, "cost": 4, "count": 5}
+        candidates = [(k, cat) for k, cat in all_numeric.items()
+                      if cat not in ("hyperparameter",)]
+        if candidates:
+            candidates.sort(key=lambda kc: _CAT_PRIORITY.get(kc[1], 99))
+            metric_name = candidates[0][0]
     if not metric_name:
         return ""
 
@@ -2279,12 +2287,20 @@ def _render_metric_chart(runs: list[dict]) -> str:
     svg.append(f'<polyline points="{line_points}" fill="none" stroke="#6366f1" '
                f'stroke-width="2"/>')
 
-    # Decision markers
+    # Decision markers with tooltips
     colors = {"keep": "#3fb950", "discard": "#555555", "crash": "#d29922"}
     for idx, val, decision in points:
         color = colors.get(decision, "#8b949e")
         cx, cy = _x(idx), _y(val)
-        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="{color}" stroke="#0d1117" stroke-width="2"/>')
+        # Get run description for tooltip
+        run = runs[idx] if idx < len(runs) else {}
+        desc = run.get("description", "") or run.get("hypothesis", "")
+        run_id = run.get("name", run.get("id", f"#{idx + 1}"))
+        tip = f"{_h(run_id)}: {_h(_fmt_metric(metric_name, val))} [{_h(decision or '?')}]"
+        if desc:
+            tip += f" — {_h(desc)}"
+        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="{color}" stroke="#0d1117" stroke-width="2">'
+                   f'<title>{tip}</title></circle>')
 
     # Axis label
     svg.append(f'<text x="{w / 2}" y="{h - 2}" text-anchor="middle" '
@@ -2311,7 +2327,7 @@ def generate_html_notebook(project: dict,
     run_enrichments = _enr.get("runs", {})
     project_insights = _enr.get("project", {})
 
-    runs.sort(key=_run_sort_key)
+    runs.sort(key=_run_sort_key, reverse=True)  # newest first by default
     common_params, varying_keys = _factorize_hyperparams(runs)
 
     def _enrich(run: dict, field: str) -> str:
@@ -2348,13 +2364,12 @@ def generate_html_notebook(project: dict,
     # --- North star metric ---
     key_metric_name = project.get("key_metric_name", "")
     if key_metric_name:
-        # Find best value from kept runs
-        lower_better = any(kw in key_metric_name.lower() for kw in
-                          ["loss", "error", "mae", "rmse", "mse", "perplexity"])
+        # Find best value from kept runs (or all runs if no decisions)
+        lower_better = _is_lower_better(key_metric_name)
         best_val = None
-        for r in runs:
-            if r.get("decision") != "keep":
-                continue
+        kept_runs = [r for r in runs if r.get("decision") == "keep"]
+        search_runs = kept_runs if kept_runs else runs
+        for r in search_runs:
             v = r.get("results", {}).get(key_metric_name)
             if isinstance(v, (int, float)):
                 if best_val is None or (v < best_val if lower_better else v > best_val):
@@ -2365,6 +2380,23 @@ def generate_html_notebook(project: dict,
                          f'<span class="hero-value">{_h(_fmt_metric(key_metric_name, best_val))}</span>'
                          f'<span class="hero-label">{_h(key_metric_name)} {arrow}</span>'
                          f'</div>')
+
+    # --- Research Insights (above stats for prominence) ---
+    breakthrough = project_insights.get("key_breakthrough", "")
+    lessons = project_insights.get("lessons_learned", [])
+    if breakthrough or lessons:
+        parts.append("<h2>Research Insights</h2>")
+        parts.append('<div class="insights">')
+        if breakthrough:
+            parts.append('<h3>Key Breakthrough</h3>')
+            parts.append(f'<p class="breakthrough">{_h(breakthrough)}</p>')
+        if lessons:
+            parts.append('<h3>Lessons Learned</h3>')
+            parts.append('<ul class="lessons">')
+            for lesson in lessons:
+                parts.append(f"<li>{_h(lesson)}</li>")
+            parts.append("</ul>")
+        parts.append("</div>")
 
     # --- Stats bar ---
     completed = sum(1 for r in runs if r.get("status") == "completed")
@@ -2395,35 +2427,19 @@ def generate_html_notebook(project: dict,
                      '<div class="stat-label">Running</div></div>')
     parts.append(f'<div class="stat"><div class="stat-value">{unique_configs}</div>'
                  '<div class="stat-label">Configs Tested</div></div>')
-    # Key metric sparkline in stats bar
-    if metric_histories:
-        # Pick the most common metric, or first one
-        best_key = max(metric_histories, key=lambda k: len(metric_histories[k]))
-        history = metric_histories[best_key]
+    # Key metric sparkline in stats bar (use key_metric_name if set)
+    spark_key = key_metric_name
+    if not spark_key and metric_histories:
+        spark_key = max(metric_histories, key=lambda k: len(metric_histories[k]))
+    if spark_key and spark_key in metric_histories:
+        history = metric_histories[spark_key]
         if len(history) >= 2:
             spark = _sparkline_svg(history, width=80, height=20, color="#6366f1")
             parts.append(f'<div class="stat"><div class="stat-value" '
-                         f'style="font-size:0.85rem">{_h(best_key)}</div>'
+                         f'style="font-size:0.85rem">{_h(spark_key)}</div>'
                          f'{spark}'
                          f'<div class="stat-label">Trend</div></div>')
     parts.append("</div>")
-
-    # --- Research Insights ---
-    breakthrough = project_insights.get("key_breakthrough", "")
-    lessons = project_insights.get("lessons_learned", [])
-    if breakthrough or lessons:
-        parts.append("<h2>Research Insights</h2>")
-        parts.append('<div class="insights">')
-        if breakthrough:
-            parts.append('<h3>Key Breakthrough</h3>')
-            parts.append(f'<p class="breakthrough">{_h(breakthrough)}</p>')
-        if lessons:
-            parts.append('<h3>Lessons Learned</h3>')
-            parts.append('<ul class="lessons">')
-            for lesson in lessons:
-                parts.append(f"<li>{_h(lesson)}</li>")
-            parts.append("</ul>")
-        parts.append("</div>")
 
     # --- Goals ---
     goals = project.get("goals", [])
@@ -2441,25 +2457,55 @@ def generate_html_notebook(project: dict,
 
     # --- Metric progression chart ---
     if has_decisions and len(runs) >= 2:
-        chart_svg = _render_metric_chart(runs)
+        chart_svg = _render_metric_chart(runs, key_metric=key_metric_name)
         if chart_svg:
             parts.append("<h2>Metric Progression</h2>")
             parts.append(f'<div class="metric-chart">{chart_svg}</div>')
 
     # --- Timeline table ---
     if runs:
+        # Sort toggle + header
+        parts.append('<div class="section-header">')
         parts.append("<h2>Experiment Timeline</h2>")
+        parts.append('<div class="toolbar">')
+        parts.append(
+            '<button id="sort-toggle" onclick="'
+            "var tb=document.getElementById('timeline-body');"
+            "var rows=Array.from(tb.rows);"
+            "rows.reverse();"
+            "rows.forEach(function(r){tb.appendChild(r)});"
+            "var btn=document.getElementById('sort-toggle');"
+            "btn.textContent=btn.textContent==='↑ Oldest first'?'↓ Newest first':'↑ Oldest first';"
+            '">&#8595; Newest first</button>')
+        parts.append("</div></div>")
+
         parts.append("<table><thead><tr>")
         if has_decisions:
-            parts.append("<th>#</th><th>Experiment</th><th>Decision</th><th>Params</th><th>Validation</th>")
+            parts.append("<th>#</th><th>Experiment</th><th>What</th>"
+                         "<th>Decision</th><th>Params</th><th>Validation</th>")
         else:
-            parts.append("<th>#</th><th>Experiment</th><th>Params</th><th>Validation</th>")
-        parts.append("</tr></thead><tbody>")
+            parts.append("<th>#</th><th>Experiment</th><th>What</th>"
+                         "<th>Params</th><th>Validation</th>")
+        parts.append("</tr></thead><tbody id='timeline-body'>")
         for i, run in enumerate(runs, 1):
             run_enr = run_enrichments.get(run.get("id", ""), {})
             key_metric = _pick_key_metric(run.get("results", {}), run_enr or None)
             raw_name = run.get("name", "?")
             enriched_label = _enrich(run, "name")
+
+            # Short description: enriched name > hypothesis > changes > commit
+            desc = (
+                _enrich(run, "name")
+                or run.get("hypothesis", "")
+                or run.get("changes", "")
+                or run.get("description", "")
+                or ""
+            )
+            # Truncate to 7 words
+            if desc:
+                words = desc.split()
+                if len(words) > 7:
+                    desc = " ".join(words[:7]) + "\u2026"
 
             # Split key_metric into params/validation columns
             params_col = _h(run_enr.get("params", ""))
@@ -2485,6 +2531,7 @@ def generate_html_notebook(project: dict,
             parts.append(f'<tr onclick="{onclick}">')
             parts.append(f"<td>{i}</td>")
             parts.append(f"<td>{_h(raw_name)}{enriched_span}</td>")
+            parts.append(f'<td class="run-desc" title="{_h(desc)}">{_h(desc)}</td>')
             if has_decisions:
                 decision = run.get("decision", "")
                 decision_html = _decision_icon(decision)
