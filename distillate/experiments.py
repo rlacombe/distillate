@@ -2868,20 +2868,39 @@ def slugify(name: str) -> str:
     return slug
 
 
+def _get_logo_image():
+    """Load the Distillate logo SVG as a matplotlib-compatible RGBA array."""
+    import io
+    from pathlib import Path
+
+    import cairosvg
+    import numpy as np
+    from PIL import Image
+
+    svg_path = Path(__file__).parent.parent / "docs" / "logo.svg"
+    if not svg_path.exists():
+        return None
+    png_bytes = cairosvg.svg2png(
+        url=str(svg_path), output_width=64, output_height=64,
+    )
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    return np.array(img) / 255.0
+
+
 def generate_export_chart(runs: list[dict], metric: str, title: str = "",
                           log_scale: bool = False, subtitle: str = "") -> bytes:
-    """Generate a clean, Karpathy-style chart PNG for sharing.
+    """Generate a clean chart PNG for sharing on social media.
 
     White background, thin left+bottom spines only, dense gridlines,
     dots colored by decision (green=keep, lighter gray=discard, orange=crash).
     Returns PNG bytes.
     """
     import io
-    import math
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import FuncFormatter, MaxNLocator, LogLocator
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator
 
     # Filter runs with numeric values for this metric
     points = []
@@ -2893,40 +2912,42 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if len(points) < 1:
         raise ValueError(f"No data for metric '{metric}'")
 
+    # ── Figure setup ──
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
-    # Spines: only left and bottom
+    # Prefer a clean system font
+    for family in ("Inter", "Helvetica Neue", "Helvetica", "Arial", "sans-serif"):
+        try:
+            from matplotlib.font_manager import findfont, FontProperties
+            if findfont(FontProperties(family=family), fallback_to_default=False):
+                plt.rcParams["font.family"] = family
+                break
+        except Exception:
+            continue
+
+    # Spines: only left and bottom, thin
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_linewidth(0.8)
-    ax.spines["bottom"].set_linewidth(0.8)
-    ax.spines["left"].set_color("#333")
-    ax.spines["bottom"].set_color("#333")
+    ax.spines["left"].set_linewidth(0.6)
+    ax.spines["bottom"].set_linewidth(0.6)
+    ax.spines["left"].set_color("#aaa")
+    ax.spines["bottom"].set_color("#aaa")
 
-    # Grid — denser to match canvas chart
-    ax.yaxis.grid(True, alpha=0.15, linewidth=0.5, color="#999")
+    # Grid
+    ax.yaxis.grid(True, alpha=0.12, linewidth=0.4, color="#999")
     ax.xaxis.grid(False)
     ax.set_axisbelow(True)
 
-    # Font
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.size": 11,
-    })
-
     xs = list(range(len(points)))
     ys = [p["value"] for p in points]
-
-    # Log scale
     if log_scale:
         ax.set_yscale("log")
 
-    # Determine if lower is better
     lower_better = _is_lower_better(metric)
 
-    # Best-so-far frontier (only advances on "keep" runs, extends to left edge)
+    # ── Best-so-far frontier line ──
     best_so_far = None
     frontier_xs, frontier_ys = [], []
     for i, p in enumerate(points):
@@ -2935,7 +2956,6 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         if decision == "keep":
             if best_so_far is None:
                 best_so_far = v
-                # Extend frontier to left edge
                 frontier_xs.append(0)
                 frontier_ys.append(best_so_far)
             elif (lower_better and v < best_so_far) or (not lower_better and v > best_so_far):
@@ -2944,15 +2964,15 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             frontier_xs.append(i)
             frontier_ys.append(best_so_far)
     if len(frontier_xs) > 1:
-        ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=3, alpha=1.0, zorder=2,
-                label=f"Best {metric}")
+        ax.plot(frontier_xs, frontier_ys, color="#4F46E5", linewidth=2.5,
+                alpha=0.9, zorder=2, solid_capstyle="round")
 
-    # Dots colored by decision (lighter gray for discards)
-    colors_map = {"keep": "#22c55e", "discard": "#c0c0c0", "crash": "#d29922"}
-    colors = [colors_map.get(p["run"].get("decision", ""), "#d0d0d0") for p in points]
-    ax.scatter(xs, ys, c=colors, s=40, zorder=3, edgecolors="white", linewidths=0.8)
+    # ── Scatter dots ──
+    colors_map = {"keep": "#22c55e", "discard": "#d4d4d4", "crash": "#d29922"}
+    colors = [colors_map.get(p["run"].get("decision", ""), "#d4d4d4") for p in points]
+    ax.scatter(xs, ys, c=colors, s=36, zorder=3, edgecolors="white", linewidths=0.6)
 
-    # Description labels on frontier improvements only
+    # ── Description labels on frontier improvements only ──
     prev_best = None
     frontier_pts = []
     for i, p in enumerate(points):
@@ -2966,10 +2986,9 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             prev_best = v
             frontier_pts.append((i, p))
 
-    # Thin to max ~8 labels if too many
+    # Thin to max ~8 labels
     MAX_LABELS = 8
     if len(frontier_pts) > MAX_LABELS:
-        # Always keep first and last, sample evenly between
         step = (len(frontier_pts) - 1) / (MAX_LABELS - 1)
         indices = [round(j * step) for j in range(MAX_LABELS)]
         frontier_pts = [frontier_pts[j] for j in sorted(set(indices))]
@@ -2978,69 +2997,97 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         desc = p["run"].get("description", "") or p["run"].get("name", "")
         if not desc:
             continue
-        if len(desc) > 16:
-            desc = desc[:14] + "\u2026"
+        if len(desc) > 18:
+            desc = desc[:16] + "\u2026"
         ax.annotate(desc, (i, p["value"]),
                     textcoords="offset points", xytext=(4, 6),
-                    fontsize=5.5, color="#888", ha="left", va="bottom",
-                    rotation=35, zorder=4,
-                    annotation_clip=True)
+                    fontsize=5.5, color="#999", ha="left", va="bottom",
+                    rotation=30, zorder=4, annotation_clip=True)
 
-    # Axis labels
-    direction = "\u2193" if lower_better else "\u2191"
-    scale_label = " (log)" if log_scale else ""
-    ax.set_xlabel("Run", fontsize=10, color="#666")
-    ax.set_ylabel(f"{metric} {direction}{scale_label}", fontsize=10, color="#666")
+    # ── Axes ──
+    arrow = "\u2193" if lower_better else "\u2191"
+    hint = "lower is better" if lower_better else "higher is better"
+    scale_label = ", log" if log_scale else ""
+    ax.set_xlabel("Run", fontsize=9.5, color="#888", labelpad=6)
+    # DejaVu Sans has arrow glyphs; use it for the label
+    from matplotlib.font_manager import FontProperties
+    label_font = FontProperties(family="DejaVu Sans", size=9.5)
+    ax.set_ylabel(f"{metric} {arrow} ({hint}{scale_label})", fontproperties=label_font,
+                  color="#888", labelpad=6)
+    ax.tick_params(colors="#888", labelsize=8.5, length=3, width=0.5)
 
-    # Title + subtitle (Karpathy-style)
-    has_subtitle = bool(title and subtitle)
-    if title:
-        if subtitle:
-            fig.suptitle(title, fontsize=13, fontweight="bold", color="#333", y=0.98)
-            fig.text(0.5, 0.93, subtitle, ha="center", fontsize=8.5,
-                     color="#888", style="italic")
-        else:
-            ax.set_title(title, fontsize=13, fontweight="bold", color="#333", pad=12)
-
-    ax.tick_params(colors="#666", labelsize=9)
-
-    # Dense Y-axis ticks to match canvas chart (~8-10 ticks)
+    # Dense Y-axis ticks
     if log_scale:
         ax.yaxis.set_major_locator(LogLocator(base=10, numticks=12))
     else:
         ax.yaxis.set_major_locator(MaxNLocator(nbins=10, steps=[1, 2, 2.5, 5, 10]))
 
-    # Smart Y-axis tick labels (cleaner than _fmt_metric for ticks)
+    # Clean tick formatter
     cat = classify_metric(metric)
     def _tick_fmt(v, _pos):
         if cat == "ratio":
-            if 0 <= v <= 1:
-                pct = v * 100
-                return f"{pct:g}%"
-            return f"{v:g}"
+            return f"{v * 100:g}%" if 0 <= v <= 1 else f"{v:g}"
         if cat == "loss":
-            if abs(v) < 0.001:
-                return f"{v:.2e}"
-            return f"{v:g}"
+            return f"{v:.2e}" if abs(v) < 0.001 else f"{v:g}"
         if cat == "count":
             iv = int(v) if v == int(v) else v
             if isinstance(iv, int):
-                if abs(iv) >= 1e6:
-                    return f"{iv/1e6:g}M"
-                return f"{iv:,}"
+                return f"{iv / 1e6:g}M" if abs(iv) >= 1e6 else f"{iv:,}"
             return f"{v:g}"
         return f"{v:g}"
     ax.yaxis.set_major_formatter(FuncFormatter(_tick_fmt))
 
-    # Y-axis starts at 0 for linear scale with non-negative values
     if not log_scale and min(ys) >= 0:
         ax.set_ylim(bottom=0)
 
-    plt.tight_layout(rect=[0, 0.02, 1, 0.90] if has_subtitle else [0, 0.02, 1, 0.97])
+    # ── Title: "Title — subtitle" on one line, mixed weights ──
+    if title:
+        if subtitle:
+            # Render bold title + lighter subtitle on one line
+            # Use a dry render to measure title width, then place subtitle after
+            renderer = fig.canvas.get_renderer()
+            # Full combined string centered, but with two text objects
+            combined = f"{title}  \u2014  {subtitle}"
+            # Place as single text for centering, use color trick:
+            # Can't mix weights in one text, so place title bold then subtitle
+            t1 = fig.text(0.5, 0.965, title + "  ", ha="right", va="top",
+                          fontsize=13, fontweight="bold", color="#222",
+                          transform=fig.transFigure)
+            t2 = fig.text(0.5, 0.965, "  " + subtitle, ha="left", va="top",
+                          fontsize=13, fontweight="normal", color="#aaa",
+                          transform=fig.transFigure)
+            # Measure to re-center: shift both so the pair is centered
+            fig.canvas.draw()
+            bb1 = t1.get_window_extent(renderer)
+            bb2 = t2.get_window_extent(renderer)
+            total_w = bb1.width + bb2.width
+            fig_w = fig.get_figwidth() * fig.dpi
+            offset = (total_w / 2 - bb1.width) / fig_w
+            t1.set_position((0.5 + offset, 0.965))
+            t2.set_position((0.5 + offset, 0.965))
+        else:
+            fig.text(0.5, 0.965, title, ha="center", va="top",
+                     fontsize=13, fontweight="bold", color="#222")
 
-    # Branding: "Distillate" in brand indigo, bottom-right inside plot area
-    fig.text(0.95, 0.06, "\u2697\uFE0F Distillate", ha="right", va="bottom",
-             fontsize=8, color="#6366f1", fontweight="600")
+    plt.tight_layout(rect=[0, 0.04, 1, 0.92])
+
+    # ── Branding: logo icon + "Distillate" in brand indigo ──
+    try:
+        logo_arr = _get_logo_image()
+        if logo_arr is not None:
+            # Place logo as a small icon in bottom-right
+            logo_ax = fig.add_axes([0.88, 0.005, 0.025, 0.045],
+                                   anchor="SE", zorder=10)
+            logo_ax.imshow(logo_arr)
+            logo_ax.axis("off")
+            # "Distillate" text right of logo
+            fig.text(0.912, 0.025, "Distillate", ha="left", va="center",
+                     fontsize=7.5, color="#6366f1", fontweight="600")
+        else:
+            raise FileNotFoundError
+    except Exception:
+        fig.text(0.97, 0.025, "Distillate", ha="right", va="center",
+                 fontsize=7.5, color="#6366f1", fontweight="600")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
