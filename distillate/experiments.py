@@ -544,7 +544,9 @@ def scan_project(path: Path) -> dict:
     # Ingest structured reports + hook events
     ingested = ingest_runs(path)
     for run in ingested:
-        if not _is_duplicate_run(runs, run):
+        # Structured runs (from runs.jsonl) have explicit unique IDs —
+        # skip dedup which can merge distinct runs sharing hyperparameters.
+        if run.get("source") == "structured" or not _is_duplicate_run(runs, run):
             runs[run["id"]] = run
 
     # Ingest .mlnotebook/state.json (structured experiment tracker)
