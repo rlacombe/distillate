@@ -1077,6 +1077,585 @@ def _campaign(args: list[str]) -> None:
         state.save()
 
 
+def _goals(args: list[str]) -> None:
+    """View or set metric goals for a project."""
+    from distillate.experiment_tools import _parse_goals_from_text
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --goals <project> [\"metric>0.95\" ...]")
+        return
+
+    query = args[0]
+    goal_strs = [a for a in args[1:] if not a.startswith("-")]
+
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+
+    # --- Set goals ---
+    if goal_strs:
+        goals: list[dict] = []
+        for g in goal_strs:
+            # Simple "metric>threshold" / "metric<threshold" syntax
+            parsed = _parse_goals_from_text(g)
+            if parsed:
+                goals.extend(parsed)
+            else:
+                print(f"  Could not parse goal: '{g}'")
+                print("  Expected format: \"accuracy>0.95\" or \"loss<0.05\"")
+                return
+
+        state.update_project(proj["id"], goals=goals)
+        state.save()
+        print(f"\n  Set {len(goals)} goal(s) for {_bold(proj_name)}:\n")
+        for g in goals:
+            arrow = "↑" if g["direction"] == "maximize" else "↓"
+            op = ">" if g["direction"] == "maximize" else "<"
+            print(f"    {arrow} {g['metric']} {op} {g['threshold']}")
+        print()
+        return
+
+    # --- View goals ---
+    goals = proj.get("goals", [])
+    if not goals:
+        print(f"\n  No goals set for '{proj_name}'.")
+        print("  Set with: distillate --goals " + query + ' "accuracy>0.95"')
+        print()
+        return
+
+    # Gather best values from kept runs
+    runs = proj.get("runs", {})
+    best: dict[str, float] = {}
+    for run in runs.values():
+        if run.get("status") != "keep" and run.get("decision") != "keep":
+            continue
+        for k, v in run.get("results", {}).items():
+            if not isinstance(v, (int, float)):
+                continue
+            if k not in best:
+                best[k] = v
+            else:
+                # Track best based on goal direction
+                goal_dir = next(
+                    (g["direction"] for g in goals if g["metric"] == k), "maximize"
+                )
+                if goal_dir == "maximize":
+                    best[k] = max(best[k], v)
+                else:
+                    best[k] = min(best[k], v)
+
+    print(f"\n  Goals for {_bold(proj_name)}:\n")
+    for g in goals:
+        metric = g["metric"]
+        direction = g["direction"]
+        threshold = g["threshold"]
+        arrow = "↑" if direction == "maximize" else "↓"
+        op = ">" if direction == "maximize" else "<"
+
+        val = best.get(metric)
+        if val is not None:
+            if direction == "maximize":
+                met = val >= threshold
+            else:
+                met = val <= threshold
+            status = "\033[1;32m✓\033[0m" if met else "\033[33m·\033[0m"
+            dist = abs(val - threshold)
+            dist_str = f"({'+' if met else '-'}{dist:.4f})"
+            print(f"    {status} {arrow} {metric} {op} {threshold}  "
+                  f"best: {val:.4f} {_dim(dist_str)}")
+        else:
+            print(f"    · {arrow} {metric} {op} {threshold}  {_dim('(no data)')}")
+    print()
+
+
+def _show_experiment(args: list[str]) -> None:
+    """Show detailed experiment dashboard."""
+    from datetime import datetime
+    from pathlib import Path
+
+    from distillate.experiments import load_enrichment_cache
+    from distillate.launcher import refresh_session_statuses
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --show <project>")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    # Refresh sessions
+    changed = refresh_session_statuses(state)
+    if changed:
+        state.save()
+
+    proj_name = proj.get("name", query)
+    proj_path = proj.get("path", "")
+    runs = proj.get("runs", {})
+    sessions = proj.get("sessions", {})
+    goals = proj.get("goals", [])
+    campaign = proj.get("campaign", {})
+
+    # --- Header ---
+    print()
+    print(f"  {_bold(proj_name)}")
+    if proj.get("description"):
+        print(f"  {proj['description']}")
+    print(f"  {_dim('Path:')} {proj_path}")
+    status = proj.get("status", "tracking")
+    print(f"  {_dim('Status:')} {status}  {_dim('Runs:')} {len(runs)}")
+    tags = proj.get("tags", [])
+    if tags:
+        print(f"  {_dim('Tags:')} {', '.join(tags)}")
+    added = proj.get("added_at", "")[:10]
+    if added:
+        print(f"  {_dim('Added:')} {added}")
+
+    # --- Goals ---
+    if goals:
+        # Gather best values from kept runs
+        best: dict[str, float] = {}
+        for run in runs.values():
+            if run.get("status") != "keep" and run.get("decision") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if not isinstance(v, (int, float)):
+                    continue
+                if k not in best:
+                    best[k] = v
+                else:
+                    goal_dir = next(
+                        (g["direction"] for g in goals if g["metric"] == k),
+                        "maximize",
+                    )
+                    if goal_dir == "maximize":
+                        best[k] = max(best[k], v)
+                    else:
+                        best[k] = min(best[k], v)
+
+        print(f"\n  {_bold('Goals')}")
+        for g in goals:
+            metric = g["metric"]
+            direction = g["direction"]
+            threshold = g["threshold"]
+            arrow = "↑" if direction == "maximize" else "↓"
+            op = ">" if direction == "maximize" else "<"
+            val = best.get(metric)
+            if val is not None:
+                met = (val >= threshold) if direction == "maximize" else (val <= threshold)
+                status_ch = "\033[1;32m✓\033[0m" if met else "\033[33m·\033[0m"
+                print(f"    {status_ch} {arrow} {metric} {op} {threshold}  "
+                      f"best: {val:.4f}")
+            else:
+                print(f"    · {arrow} {metric} {op} {threshold}  {_dim('(no data)')}")
+
+    # --- Campaign ---
+    if campaign and campaign.get("status"):
+        print(f"\n  {_bold('Campaign')}")
+        print(f"    Status:   {campaign.get('status', '?')}")
+        launched = campaign.get("sessions_launched", 0)
+        budget = campaign.get("budget", {}).get("max_sessions", "?")
+        print(f"    Sessions: {launched} / {budget}")
+        if campaign.get("objective"):
+            print(f"    Objective: {campaign['objective']}")
+        if campaign.get("stop_reason"):
+            print(f"    Stopped:  {campaign['stop_reason']}")
+
+    # --- Active sessions ---
+    active_sessions = [
+        (sid, s) for sid, s in sessions.items() if s.get("status") == "running"
+    ]
+    if active_sessions:
+        print(f"\n  {_bold('Active Sessions')}")
+        for sid, s in active_sessions:
+            tmux = s.get("tmux_session", sid)
+            model = s.get("model", "?")
+            started = s.get("started_at", "")[:16].replace("T", " ")
+            print(f"    {tmux}  {_dim(model)}  {_dim(started)}")
+
+    # --- Runs (last 10) ---
+    if runs:
+        sorted_runs = sorted(
+            runs.values(),
+            key=lambda r: r.get("started_at", r.get("completed_at", "")),
+        )
+
+        # Key metric sparkline
+        key_vals: list[float] = []
+        key_metric_name = ""
+        for r in sorted_runs:
+            results = r.get("results", {})
+            for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                       "best_val_acc", "f1", "loss", "val_bpb", "rmse"):
+                if k in results and isinstance(results[k], (int, float)):
+                    if not key_metric_name:
+                        key_metric_name = k
+                    if k == key_metric_name:
+                        key_vals.append(results[k])
+                    break
+
+        print(f"\n  {_bold('Runs')} ({len(runs)} total)")
+        if key_vals:
+            print(f"    {_dim(key_metric_name + ':')} {_sparkline(key_vals, 20)}")
+
+        # Table: last 10
+        recent = sorted_runs[-10:]
+        print(f"\n    {'Name':<22} {'Decision':<10} {'Key Metric':<20} {'Duration'}")
+        print(f"    {'─' * 22} {'─' * 10} {'─' * 20} {'─' * 10}")
+        for r in recent:
+            name = (r.get("name") or r.get("id", "?"))[:22]
+            decision = r.get("decision", r.get("status", "?"))
+            dur = r.get("duration_minutes", 0)
+            dur_str = f"{dur}m" if dur else "?"
+
+            # Key metric
+            results = r.get("results", {})
+            km = ""
+            for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                       "best_val_acc", "f1", "loss", "val_bpb", "rmse"):
+                if k in results:
+                    v = results[k]
+                    km = f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                    break
+            if not km and results:
+                k2, v2 = next(iter(results.items()))
+                if isinstance(v2, (int, float)):
+                    km = f"{k2}={v2:.4f}" if isinstance(v2, float) else f"{k2}={v2}"
+
+            print(f"    {name:<22} {decision:<10} {km:<20} {dur_str}")
+
+    # --- Research Insights ---
+    if proj_path:
+        cache = load_enrichment_cache(Path(proj_path))
+        enr = cache.get("enrichment", cache)
+        project_insights = enr.get("project", {})
+        breakthrough = project_insights.get("key_breakthrough", "")
+        lessons = project_insights.get("lessons_learned", [])
+        if breakthrough or lessons:
+            print(f"\n  {_bold('Research Insights')}")
+            if breakthrough:
+                print(f"    {_dim('Breakthrough:')} {breakthrough}")
+            if lessons:
+                print(f"    {_dim('Lessons:')}")
+                for i, lesson in enumerate(lessons, 1):
+                    print(f"      {i}. {lesson}")
+
+    # --- Steering ---
+    if proj_path:
+        steering_path = Path(proj_path) / ".distillate" / "steering.md"
+        if steering_path.exists():
+            content = steering_path.read_text(encoding="utf-8").strip()
+            if content:
+                print(f"\n  {_bold('Steering')}")
+                for line in content.splitlines()[:5]:
+                    print(f"    {line}")
+                if len(content.splitlines()) > 5:
+                    print(f"    {_dim('...')}")
+
+    print()
+
+
+def _show_runs(args: list[str]) -> None:
+    """Show full run history for a project."""
+    from pathlib import Path
+
+    from distillate.experiments import load_enrichment_cache
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --runs <project>")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+    proj_path = proj.get("path", "")
+    runs = proj.get("runs", {})
+
+    if not runs:
+        print(f"\n  No runs recorded for '{proj_name}'.\n")
+        return
+
+    sorted_runs = sorted(
+        runs.values(),
+        key=lambda r: r.get("started_at", r.get("completed_at", "")),
+    )
+
+    # Load enrichment for hypothesis/changes
+    enrichment: dict = {}
+    if proj_path:
+        cache = load_enrichment_cache(Path(proj_path))
+        enrichment = cache.get("enrichment", cache)
+    run_enrichments = enrichment.get("runs", {})
+
+    # Key metric sparkline across all runs
+    key_vals: list[float] = []
+    key_metric_name = ""
+    for r in sorted_runs:
+        results = r.get("results", {})
+        for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+                   "best_val_acc", "f1", "loss", "val_bpb", "rmse"):
+            if k in results and isinstance(results[k], (int, float)):
+                if not key_metric_name:
+                    key_metric_name = k
+                if k == key_metric_name:
+                    key_vals.append(results[k])
+                break
+
+    print(f"\n  {_bold(proj_name)} — Run History ({len(runs)} runs)")
+    if key_vals:
+        print(f"  {_dim(key_metric_name + ':')} {_sparkline(key_vals, 30)}")
+    print()
+
+    for i, r in enumerate(sorted_runs, 1):
+        name = r.get("name") or r.get("id", "?")
+        decision = r.get("decision", r.get("status", "?"))
+        started = r.get("started_at", "")[:10]
+        dur = r.get("duration_minutes", 0)
+        dur_str = f"{dur}m" if dur else ""
+
+        # Decision coloring
+        if decision == "keep":
+            dec_str = "\033[1;32mkeep\033[0m"
+        elif decision == "discard":
+            dec_str = "\033[2mdiscard\033[0m"
+        else:
+            dec_str = decision
+
+        print(f"  {_dim(f'#{i:>3}')}  {_bold(name)}  {dec_str}"
+              f"  {_dim(started)}  {_dim(dur_str)}")
+
+        # Metrics
+        results = r.get("results", {})
+        numeric = {k: v for k, v in results.items() if isinstance(v, (int, float))}
+        if numeric:
+            parts = []
+            for k, v in numeric.items():
+                parts.append(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}")
+            print(f"        {_dim('Metrics:')} {', '.join(parts)}")
+
+        # Hypothesis (from annotation or enrichment)
+        hypothesis = r.get("hypothesis", "")
+        if not hypothesis:
+            run_enr = run_enrichments.get(r.get("id", ""), {})
+            hypothesis = run_enr.get("hypothesis", "")
+        if hypothesis:
+            print(f"        {_dim('Hypothesis:')} {hypothesis[:120]}")
+
+        # Changes (from enrichment)
+        run_enr = run_enrichments.get(r.get("id", ""), {})
+        changes = run_enr.get("changes", run_enr.get("approach", ""))
+        if changes:
+            change_str = changes if isinstance(changes, str) else "; ".join(changes)
+            print(f"        {_dim('Changes:')} {change_str[:120]}")
+
+        print()
+
+    print()
+
+
+def _open_notebook(args: list[str]) -> None:
+    """Generate HTML+MD notebooks and open in browser."""
+    import webbrowser
+    from pathlib import Path
+
+    from distillate.experiments import (
+        generate_html_notebook,
+        generate_notebook,
+        load_enrichment_cache,
+    )
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --notebook <project>")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj_name}' has no path set.")
+        return
+
+    project_path = Path(proj_path)
+
+    # Load enrichment cache
+    cache = load_enrichment_cache(project_path)
+    enrichment = cache.get("enrichment", cache)
+
+    # Generate HTML notebook
+    html_content = generate_html_notebook(proj, enrichment=enrichment)
+    html_path = project_path / ".distillate" / "notebook.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html_content, encoding="utf-8")
+
+    # Generate MD notebook
+    md_content = generate_notebook(proj, enrichment=enrichment)
+    md_path = project_path / ".distillate" / "notebook.md"
+    md_path.write_text(md_content, encoding="utf-8")
+
+    print(f"\n  Generated notebooks for {_bold(proj_name)}:")
+    print(f"    HTML: {html_path}")
+    print(f"    MD:   {md_path}")
+
+    # Open in browser
+    try:
+        webbrowser.open(f"file://{html_path}")
+        print(f"\n  Opened in browser.")
+    except Exception:
+        print(f"\n  Open manually: file://{html_path}")
+    print()
+
+
+def _continue_experiment(args: list[str]) -> None:
+    """Launch a continuation session for an experiment."""
+    from pathlib import Path
+
+    from distillate.launcher import launch_continuation, should_continue
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --continue <project> [--model <model>] [--turns <N>]")
+        return
+
+    query = args[0]
+    model = _opt("--model") or "claude-sonnet-4-5-20250929"
+    turns = int(_opt("--turns") or "100")
+
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj_name}' has no path set.")
+        return
+
+    # Check if goals are met
+    if not should_continue(proj):
+        if not proj.get("goals"):
+            print(f"  No goals set for '{proj_name}'.")
+            print(f"  Set goals first: distillate --goals {query} \"accuracy>0.95\"")
+        else:
+            print(f"  All goals for '{proj_name}' appear to be met.")
+        return
+
+    try:
+        session_data = launch_continuation(
+            Path(proj_path), proj, model=model, max_turns=turns,
+        )
+
+        # Save session to state
+        state.add_session(proj["id"], session_data["session_id"], session_data)
+        state.save()
+
+        tmux_name = session_data["tmux_session"]
+        print(f"\n  Continuation session launched: {tmux_name}")
+        print(f"  Model: {model} | Max turns: {turns}")
+        print(f"\n  Attach:")
+        print(f"    distillate --attach {query}")
+        print(f"\n  Stop:")
+        print(f"    distillate --stop {query}")
+
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"  Error: {e}")
+
+
+def _sweep_experiment(args: list[str]) -> None:
+    """Launch a parallel sweep from a config file."""
+    from pathlib import Path
+
+    from distillate.launcher import launch_sweep
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --sweep <project> --config <sweep.json>")
+        return
+
+    query = args[0]
+    config_path = _opt("--config")
+    if not config_path:
+        print("Usage: distillate --sweep <project> --config <sweep.json>")
+        return
+
+    model = _opt("--model") or "claude-sonnet-4-5-20250929"
+    turns = int(_opt("--turns") or "100")
+
+    # Load config
+    config_file = Path(config_path)
+    if not config_file.exists():
+        print(f"  Config file not found: {config_path}")
+        return
+
+    try:
+        configs = json.loads(config_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"  Invalid JSON in config file: {e}")
+        return
+
+    if not isinstance(configs, list) or not configs:
+        print("  Config must be a JSON array of hyperparameter dicts.")
+        return
+
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_name = proj.get("name", query)
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj_name}' has no path set.")
+        return
+
+    try:
+        sessions = launch_sweep(
+            Path(proj_path), proj, configs, model=model, max_turns=turns,
+        )
+
+        # Save all sessions
+        for s in sessions:
+            state.add_session(proj["id"], s["session_id"], s)
+        state.save()
+
+        print(f"\n  Launched {len(sessions)} sweep variant(s) for {_bold(proj_name)}:\n")
+        for s in sessions:
+            tmux_name = s["tmux_session"]
+            print(f"    {tmux_name}")
+
+        print(f"\n  Attach to any:")
+        print(f"    distillate --attach {query}")
+        print(f"\n  Stop all:")
+        print(f"    distillate --stop {query}")
+
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"  Error: {e}")
+
+
 def _steer(args: list[str]) -> None:
     """Write steering instructions for the next experiment session."""
     from distillate.launcher import write_steering

@@ -77,8 +77,16 @@ Usage: distillate [question]
 Experiments:
   --new-experiment [tmpl] Scaffold a new experiment from a template
   --launch <name>         Launch an auto-research session (tmux)
+  --continue <project>    Launch continuation session (checks goals first)
+  --sweep <project> --config <sweep.json>
+                          Launch parallel sweep from config file
   --campaign start|status|stop <project>
                           Run an autonomous campaign loop
+  --goals <project> ["metric>0.95" ...]
+                          View or set metric goals for a project
+  --show <project>        Detailed experiment dashboard
+  --runs <project>        Full run history with metrics
+  --notebook <project>    Generate and open HTML notebook
   --steer <project> "text"  Write steering instructions for next session
   --experiments           List all tracked experiments with status
   --attach <name>         Attach to a running experiment session
@@ -124,7 +132,8 @@ _KNOWN_FLAGS = {
     "--export-state", "--import-state", "--report",
     "--scan-projects", "--install-hooks", "--watch",
     "--new-experiment", "--launch", "--experiments", "--attach", "--stop",
-    "--campaign", "--steer",
+    "--campaign", "--steer", "--show", "--runs", "--notebook",
+    "--continue", "--sweep", "--goals", "--config",
     "--host", "--model", "--turns", "--target", "--name",
 }
 
@@ -273,6 +282,36 @@ def main():
     if "--stop" in sys.argv:
         idx = sys.argv.index("--stop")
         commands._stop_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--goals" in sys.argv:
+        idx = sys.argv.index("--goals")
+        commands._goals(sys.argv[idx + 1:])
+        return
+
+    if "--show" in sys.argv:
+        idx = sys.argv.index("--show")
+        commands._show_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--runs" in sys.argv:
+        idx = sys.argv.index("--runs")
+        commands._show_runs(sys.argv[idx + 1:])
+        return
+
+    if "--notebook" in sys.argv:
+        idx = sys.argv.index("--notebook")
+        commands._open_notebook(sys.argv[idx + 1:])
+        return
+
+    if "--continue" in sys.argv:
+        idx = sys.argv.index("--continue")
+        commands._continue_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--sweep" in sys.argv:
+        idx = sys.argv.index("--sweep")
+        commands._sweep_experiment(sys.argv[idx + 1:])
         return
 
     if "--campaign" in sys.argv:

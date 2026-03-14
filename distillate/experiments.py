@@ -49,12 +49,30 @@ _ML_IMPORT_KEYWORDS = {
     "transformers", "lightning", "sklearn",
 }
 
-# Lower-is-better metric names
-_LOWER_BETTER_KEYWORDS = (
-    "loss", "error", "mae", "rmse", "mse",
-    "time", "duration", "seconds", "minutes",
-    "latency", "perplexity",
+# Metric classification — checked in priority order (first match wins)
+_METRIC_CATEGORIES = (
+    ("ratio", ("accuracy", "precision", "recall", "f1", "auc", "map", "ap",
+               "iou", "dice", "bleu", "rouge", "meteor", "exact_match", "score")),
+    ("loss", ("loss", "error", "mae", "rmse", "mse", "perplexity", "nll",
+              "cross_entropy", "bpb")),
+    ("count", ("param", "count", "num_", "flops", "size", "steps", "epochs",
+               "samples", "vocab")),
+    ("time", ("time", "duration", "seconds", "minutes", "latency")),
+    ("cost", ("cost", "price")),
+    ("hyperparameter", ("lr", "learning_rate", "weight_decay", "dropout",
+                        "momentum", "beta", "epsilon", "warmup")),
 )
+
+_LOWER_BETTER_CATEGORIES = {"loss", "count", "time", "cost"}
+
+
+def classify_metric(name: str) -> str:
+    """Classify a metric name into a category."""
+    nl = name.lower()
+    for category, keywords in _METRIC_CATEGORIES:
+        if any(kw in nl for kw in keywords):
+            return category
+    return "generic"
 
 
 def _create_run(
@@ -1516,8 +1534,7 @@ def update_project(project: dict, state: Any) -> bool:
 
 def _is_lower_better(metric_name: str) -> bool:
     """Return True if lower values are better for this metric."""
-    name = metric_name.lower()
-    return any(kw in name for kw in _LOWER_BETTER_KEYWORDS)
+    return classify_metric(metric_name) in _LOWER_BETTER_CATEGORIES
 
 
 def diff_runs(run_a: dict, run_b: dict) -> dict:
@@ -1879,18 +1896,58 @@ def _fmt_duration(minutes: int) -> str:
 
 
 def _fmt_metric(name: str, val: Any) -> str:
-    """Format a metric value with adaptive precision."""
-    if isinstance(val, float):
-        nl = name.lower()
-        no_pct = ("loss", "mae", "rmse", "mse", "error", "time", "seconds")
-        if 0 < val <= 1 and not any(k in nl for k in no_pct):
-            return f"{val:.1%}" if val < 0.9995 else f"{val:.2%}"
-        if val == int(val) and abs(val) >= 1:
-            return f"{int(val):,}"
-        return f"{val:.6f}" if abs(val) < 0.01 else f"{val:.4f}"
+    """Format a metric value based on its category."""
+    if not isinstance(val, (int, float)):
+        return str(val)
+    cat = classify_metric(name)
+    if cat == "ratio":
+        if isinstance(val, float) and 0 < val <= 1:
+            return f"{val:.2%}"
+        return f"{val:.2f}"
+    if cat == "loss":
+        if isinstance(val, float):
+            if abs(val) < 0.001:
+                return f"{val:.2e}"
+            if abs(val) < 1:
+                return f"{val:.4f}"
+        return f"{val:.2f}"
+    if cat == "count":
+        v = abs(val)
+        if v >= 1e9:
+            return f"{val / 1e9:.2f}B"
+        if v >= 1e6:
+            return f"{val / 1e6:.2f}M"
+        if v >= 1e3:
+            return f"{val / 1e3:.2f}K"
+        return f"{int(val):,}" if val == int(val) else f"{val:.2f}"
+    if cat == "time":
+        v = abs(val)
+        if v >= 3600:
+            h = int(v // 3600)
+            m = int((v % 3600) // 60)
+            return f"{h}h {m}m"
+        if v >= 60:
+            m = int(v // 60)
+            s = int(v % 60)
+            return f"{m}m {s}s"
+        return f"{val:.2f}s"
+    if cat == "cost":
+        return f"${val:.2f}"
+    if cat == "hyperparameter":
+        if isinstance(val, float) and (abs(val) < 0.01 or abs(val) >= 1000):
+            return f"{val:.2e}"
+        return f"{val:.4g}"
+    # generic
     if isinstance(val, int):
         return f"{val:,}"
-    return str(val)
+    if isinstance(val, float):
+        if 0 < val <= 1:
+            return f"{val:.2%}"
+        if abs(val) < 0.001:
+            return f"{val:.2e}"
+        if abs(val) < 1:
+            return f"{val:.4f}"
+    return f"{val:.2f}"
 
 
 def _pick_key_metric(results: dict, enrichment: dict | None = None) -> str:
@@ -2215,7 +2272,7 @@ def _render_metric_chart(runs: list[dict]) -> str:
         svg.append(f'<line x1="{pad_x}" y1="{y}" x2="{w - pad_x}" y2="{y}" '
                    f'stroke="#30363d" stroke-dasharray="4,4"/>')
         svg.append(f'<text x="{pad_x - 8}" y="{y + 4}" text-anchor="end" '
-                   f'fill="#8b949e" font-size="11">{label_val:.4g}</text>')
+                   f'fill="#8b949e" font-size="11">{_h(_fmt_metric(metric_name, label_val))}</text>')
 
     # Polyline
     line_points = " ".join(f"{_x(idx)},{_y(val)}" for idx, val, _ in points)
@@ -2814,9 +2871,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         ax.set_yscale("log")
 
     # Determine if lower is better
-    _lower_kw = {"loss", "error", "mae", "rmse", "mse", "perplexity",
-                  "time", "latency", "param", "count", "size", "flops", "cost"}
-    lower_better = any(kw in metric.lower() for kw in _lower_kw)
+    lower_better = _is_lower_better(metric)
 
     # Best-so-far frontier (only advances on "keep" runs, extends to left edge)
     best_so_far = None
@@ -2869,6 +2924,10 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         ax.set_title(title, fontsize=12, fontweight="bold", color="#333", pad=12)
 
     ax.tick_params(colors="#666", labelsize=9)
+
+    # Smart Y-axis tick labels
+    from matplotlib.ticker import FuncFormatter
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: _fmt_metric(metric, v)))
 
     # Y-axis starts at 0 for linear scale with non-negative values
     if not log_scale and min(ys) >= 0:
