@@ -2912,8 +2912,14 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if len(points) < 1:
         raise ValueError(f"No data for metric '{metric}'")
 
+    # Truncate subtitle to ~10 words max so it fits on one line with title
+    if subtitle:
+        words = subtitle.split()
+        if len(words) > 10:
+            subtitle = " ".join(words[:10]) + "\u2026"
+
     # ── Figure setup ──
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
+    fig, ax = plt.subplots(figsize=(10, 4.5), dpi=200)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
@@ -3018,7 +3024,8 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
 
     # Dense Y-axis ticks
     if log_scale:
-        ax.yaxis.set_major_locator(LogLocator(base=10, numticks=12))
+        # 1-2-5 sequence within each decade (matches canvas chart)
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0), numticks=20))
     else:
         ax.yaxis.set_major_locator(MaxNLocator(nbins=10, steps=[1, 2, 2.5, 5, 10]))
 
@@ -3069,7 +3076,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             fig.text(0.5, 0.965, title, ha="center", va="top",
                      fontsize=13, fontweight="bold", color="#222")
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.92])
+    plt.tight_layout(rect=[0.01, 0.04, 0.99, 0.92])
 
     # ── Branding: logo icon + "Distillate" in brand indigo ──
     try:
