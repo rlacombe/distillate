@@ -3111,42 +3111,26 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if log_scale:
         ax.set_yscale("log")
 
-    # ── Frontier (step function, running best over kept runs) ──
-    # Seeded from first keep, advances only on subsequent keeps (monotonic)
-    first_keep_idx = next(
-        (i for i, p in enumerate(points)
-         if p["run"].get("decision", p["run"].get("status")) == "keep"),
-        None,
-    )
+    # ── Frontier (step function, running best over ALL runs) ──
+    # Running min/max across every data point, not just keeps.
+    # Green dots mark any run that actually improved the frontier.
     front_xs: list = []
     front_ys: list = []
     front_set: set = set()
     best = None
 
-    if first_keep_idx is not None:
-        best = points[first_keep_idx]["value"]
-        # Anchor from x=0 at the worst value among runs up to first keep
-        if first_keep_idx > 0:
-            anchor = points[0]["value"]
-            for j in range(1, first_keep_idx + 1):
-                v = points[j]["value"]
-                if (lower_better and v > anchor) or (not lower_better and v < anchor):
-                    anchor = v
-            front_xs.append(xs[0])
-            front_ys.append(anchor)
-            front_xs.append(xs[first_keep_idx])
-            front_ys.append(anchor)
-        front_xs.append(xs[first_keep_idx])
+    if points:
+        best = points[0]["value"]
+        front_xs.append(xs[0])
         front_ys.append(best)
-        front_set.add(first_keep_idx)
+        front_set.add(0)
 
-        for i in range(first_keep_idx + 1, len(points)):
-            p = points[i]
-            if p["run"].get("decision", p["run"].get("status")) == "keep":
-                v = p["value"]
-                if (lower_better and v < best) or (not lower_better and v > best):
-                    best = v
-                    front_set.add(i)
+        for i in range(1, len(points)):
+            v = points[i]["value"]
+            improved = (lower_better and v < best) or (not lower_better and v > best)
+            if improved:
+                best = v
+                front_set.add(i)
             front_xs.append(xs[i])
             front_ys.append(best)
 
