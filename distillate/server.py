@@ -543,7 +543,13 @@ def _create_app():
             encoding="utf-8",
         )
 
-        return JSONResponse({"ok": True})
+        # Auto-detect primary metric from PROMPT.md content
+        detected_metric = _detect_primary_metric(content)
+        if detected_metric:
+            _state.update_project(project_id, key_metric_name=detected_metric)
+            _state.save()
+
+        return JSONResponse({"ok": True, "detected_metric": detected_metric})
 
     @app.get("/experiments/{project_id}/session")
     async def get_session_output(project_id: str):
@@ -1124,6 +1130,25 @@ def _create_app():
             task.cancel()
         return JSONResponse({"ok": True})
 
+    @app.patch("/experiments/{project_id}")
+    async def patch_experiment(project_id: str, request: Request):
+        """Update experiment fields (key_metric_name, description, etc.)."""
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        actual_id = proj.get("id", project_id)
+        body = await request.json()
+        updates = {}
+        if "key_metric_name" in body:
+            updates["key_metric_name"] = body["key_metric_name"]
+        if "description" in body:
+            updates["description"] = body["description"]
+        if updates:
+            _state.update_project(actual_id, **updates)
+            _state.save()
+        return JSONResponse({"ok": True, "updated": list(updates.keys())})
+
     @app.delete("/experiments/{project_id:path}")
     async def delete_experiment(project_id: str):
         """Delete experiment from tracking. Does NOT delete files or remote repo."""
@@ -1567,6 +1592,28 @@ def _create_app():
             "duration_minutes": run.get("duration_minutes", 0),
             "tags": run.get("tags", []),
         }
+
+    def _detect_primary_metric(content: str) -> str:
+        """Extract primary metric name from PROMPT.md content.
+
+        Looks for patterns like:
+          Primary metric: param_count (minimize)
+          Primary metric: `test_accuracy` (maximize)
+        """
+        import re
+        # Match "Primary metric: <name> (direction)" pattern
+        m = re.search(
+            r'[Pp]rimary\s+[Mm]etric\s*:\s*`?(\w+)`?\s*\(',
+            content,
+        )
+        if m:
+            return m.group(1)
+        # Fallback: look for "key metric" or "north star" mentions
+        m = re.search(
+            r'(?:[Kk]ey|[Nn]orth\s*[Ss]tar)\s+[Mm]etric\s*:\s*`?(\w+)`?',
+            content,
+        )
+        return m.group(1) if m else ""
 
     def _infer_key_metric_name(proj: dict) -> str:
         """Pick the best metric to chart by default.
