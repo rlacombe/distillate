@@ -1754,7 +1754,10 @@ def _create_app():
                 "run_count": len(runs),
                 "active_sessions": active,
                 "sessions": {
-                    sid: {"tmux_session": s.get("tmux_session", "")}
+                    sid: {
+                        "tmux_session": s.get("tmux_session", ""),
+                        "started_at": s.get("started_at", ""),
+                    }
                     for sid, s in active_sessions.items()
                     if s.get("tmux_session")
                 },

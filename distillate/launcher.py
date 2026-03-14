@@ -554,7 +554,11 @@ def _build_claude_command(
     prompt = (
         "Read PROMPT.md and follow it precisely. "
         "You are fully autonomous. Do NOT pause to ask the human anything. "
-        "The human may be asleep. Work indefinitely until manually stopped. "
+        "The human may be asleep. Work indefinitely until manually stopped.\n\n"
+        "TIME DISCIPLINE: Respect any time limits in PROMPT.md strictly. "
+        "If a training run exceeds the allowed time, kill it immediately and "
+        "log it as 'crash'. Do not spend more than 2 minutes debugging a single "
+        "error — try a different approach instead.\n\n"
         "CRITICAL: For EVERY experiment run, follow this exact sequence:\n"
         "0. BEFORE implementing: append a 'running' entry to .distillate/runs.jsonl "
         "with a one-sentence description of what you're about to try and why\n"
@@ -562,6 +566,7 @@ def _build_claude_command(
         "(see .distillate/REPORTING.md) with 'reasoning' and 'description'\n"
         "2. git add -A && git commit -m '<shortest change desc>: <metric>=<value> [keep|discard]'\n"
         "3. git push\n"
+        "4. /clear (frees context for the next run)\n\n"
         "Your commit history IS the experiment tracker. Each commit = one run."
     )
     parts = [
