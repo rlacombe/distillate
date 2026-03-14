@@ -1787,11 +1787,13 @@ def _create_app():
                 runs_jsonl = proj_p / ".distillate" / "runs.jsonl"
                 if runs_jsonl.exists():
                     try:
+                        all_lines = runs_jsonl.read_text(
+                            encoding="utf-8"
+                        ).splitlines()
                         found_learning = False
                         found_current = False
-                        for line in reversed(
-                            runs_jsonl.read_text(encoding="utf-8").splitlines()
-                        ):
+                        resolved_ids: set[str] = set()
+                        for line in reversed(all_lines):
                             if found_learning and found_current:
                                 break
                             line = line.strip()
@@ -1801,17 +1803,49 @@ def _create_app():
                                 rr = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
+                            rid = rr.get("id", "")
+                            status = rr.get("status", "")
+                            # Track completed runs so we skip stale
+                            # "running" announcements
+                            if status in ("keep", "discard", "crash"):
+                                resolved_ids.add(rid)
                             # Surface what the agent is currently attempting
                             if (not found_current
-                                    and rr.get("status") == "running"
+                                    and status == "running"
+                                    and rid not in resolved_ids
                                     and rr.get("description")):
                                 entry["current_run"] = rr["description"]
+                                entry["current_run_started"] = rr.get(
+                                    "timestamp", "")
                                 found_current = True
                             if (not found_learning
-                                    and rr.get("status") == "keep"
+                                    and status == "keep"
                                     and rr.get("reasoning")):
                                 entry["latest_learning"] = rr["reasoning"]
                                 found_learning = True
+
+                        # Total experiment time: first entry → last
+                        # completed entry (wall-clock span)
+                        first_ts = last_ts = ""
+                        for fwd_line in all_lines:
+                            fwd_line = fwd_line.strip()
+                            if not fwd_line:
+                                continue
+                            try:
+                                rr = json.loads(fwd_line)
+                            except json.JSONDecodeError:
+                                continue
+                            ts = rr.get("timestamp", "")
+                            if not ts:
+                                continue
+                            if not first_ts:
+                                first_ts = ts
+                            if rr.get("status") != "running":
+                                last_ts = ts
+                        if first_ts:
+                            entry["experiment_first_ts"] = first_ts
+                        if last_ts:
+                            entry["experiment_last_ts"] = last_ts
                     except OSError:
                         pass
 

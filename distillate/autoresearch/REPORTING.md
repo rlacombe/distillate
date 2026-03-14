@@ -48,6 +48,27 @@ Examples:
 
 Keep descriptions as short as possible — focus on what changed (e.g. "seed: 42→137", "lr: 3e-4→1e-3"). Your commit messages ARE the experiment log. Each commit = one run. Then push.
 
+### Time Budget Enforcement
+
+PROMPT.md specifies a maximum training time per run (e.g. "5 minutes per iteration"). You MUST enforce this in every training script by adding a wall-clock time check:
+
+```python
+import time
+_start = time.time()
+MAX_SECONDS = 300  # ← match the time budget from PROMPT.md
+
+for epoch in range(max_epochs):
+    # ... training loop ...
+    if time.time() - _start > MAX_SECONDS:
+        print(f"Time budget reached at epoch {epoch}")
+        break
+# evaluation and metric printing happen AFTER the loop — results are never lost
+```
+
+This ensures training stops **gracefully** — all metrics up to that point are available for logging. Never rely on external kills or Ctrl+C; always build the time check into the loop itself.
+
+If a run exceeds the budget despite the check (e.g. a single epoch takes too long), kill the process, log `status: "crash"`, and move on immediately.
+
 ### Status values
 
 - `keep` — improved on baseline or is the new baseline

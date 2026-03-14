@@ -2922,11 +2922,12 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         ax.set_yscale("log")
 
     # ── Frontier (step function, running best over kept runs) ──
+    # Starts at Y-axis and extends to the right edge
     best = None
     front_xs, front_ys = [], []
     front_set = set()
     for i, p in enumerate(points):
-        if p["run"].get("decision") != "keep":
+        if p["run"].get("decision", p["run"].get("status")) != "keep":
             continue
         v = p["value"]
         if best is None or (lower_better and v < best) or (not lower_better and v > best):
@@ -2936,13 +2937,23 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             front_xs.append(i)
             front_ys.append(best)
 
+    if front_xs:
+        # Extend left to Y-axis
+        if front_xs[0] > 0:
+            front_xs.insert(0, 0)
+            front_ys.insert(0, front_ys[0])
+        # Extend right to last run
+        if front_xs[-1] < len(points) - 1:
+            front_xs.append(len(points) - 1)
+            front_ys.append(front_ys[-1])
+
     if len(front_xs) > 1:
         ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
                 zorder=2, drawstyle="steps-post", solid_capstyle="round")
 
     # ── Dots: green = kept, gray = everything else ──
     for i, p in enumerate(points):
-        decision = p["run"].get("decision", "")
+        decision = p["run"].get("decision", p["run"].get("status", ""))
         if decision == "keep":
             ax.scatter(i, p["value"], c="#22c55e", s=30 if i in front_set else 24,
                        zorder=4, edgecolors="white", linewidths=0.5)
@@ -2950,28 +2961,22 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             ax.scatter(i, p["value"], c="#ccc", s=12, zorder=3,
                        edgecolors="none", alpha=0.45)
 
-    # ── Milestone labels (max 6, leader lines) ──
-    milestones = [(i, points[i]) for i in sorted(front_set)]
-    if len(milestones) > 6:
-        step = (len(milestones) - 1) / 5
-        pick = sorted(set(round(j * step) for j in range(6)))
-        milestones = [milestones[j] for j in pick]
-
-    for idx, (i, p) in enumerate(milestones):
+    # ── Tilted labels on every kept run ──
+    for i, p in enumerate(points):
+        decision = p["run"].get("decision", p["run"].get("status", ""))
+        if decision != "keep":
+            continue
         desc = p["run"].get("description", "") or p["run"].get("name", "")
         if not desc:
             continue
-        if len(desc) > 22:
-            desc = desc[:20] + "\u2026"
-        y_off = 12 if idx % 2 == 0 else -14
+        if len(desc) > 24:
+            desc = desc[:22] + "\u2026"
         ax.annotate(
             desc, (i, p["value"]),
-            textcoords="offset points", xytext=(6, y_off),
-            fontsize=6, color="#888", ha="left",
-            va="bottom" if y_off > 0 else "top",
+            textcoords="offset points", xytext=(5, 6),
+            fontsize=5.5, color="#aaa", ha="left", va="bottom",
+            rotation=30, rotation_mode="anchor",
             zorder=5, annotation_clip=True,
-            arrowprops=dict(arrowstyle="-", color="#ddd", lw=0.5,
-                            shrinkA=3, shrinkB=0),
         )
 
     # ── Axes ──
@@ -3008,11 +3013,32 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     if not log_scale and min(ys) >= 0:
         ax.set_ylim(bottom=0)
 
-    # ── Branding: muted bottom-right ──
-    fig.text(0.99, 0.01, "Distillate", ha="right", va="bottom",
-             fontsize=7, color="#6366f1", alpha=0.35, fontweight="600")
+    # ── Title (just the experiment name, top-center) ──
+    if title:
+        ax.set_title(title, fontsize=14, fontweight="bold", color="#222", pad=14)
 
     fig.tight_layout()
+
+    # ── Branding: SVG logo + "Distillate" in brand indigo ──
+    try:
+        import cairosvg
+        import numpy as np
+        from pathlib import Path as _P
+        from PIL import Image as _Img
+
+        svg_path = _P(__file__).parent.parent / "docs" / "logo.svg"
+        if not svg_path.exists():
+            raise FileNotFoundError
+        png_bytes = cairosvg.svg2png(url=str(svg_path), output_width=48, output_height=48)
+        logo_arr = np.array(_Img.open(io.BytesIO(png_bytes)).convert("RGBA")) / 255.0
+        logo_ax = fig.add_axes([0.895, 0.01, 0.02, 0.035], anchor="SE", zorder=10)
+        logo_ax.imshow(logo_arr)
+        logo_ax.axis("off")
+        fig.text(0.92, 0.026, "Distillate", ha="left", va="center",
+                 fontsize=7, color="#6366f1", alpha=0.5, fontweight="600")
+    except Exception:
+        fig.text(0.99, 0.01, "Distillate", ha="right", va="bottom",
+                 fontsize=7, color="#6366f1", alpha=0.35, fontweight="600")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor="white")
