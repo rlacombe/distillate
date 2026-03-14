@@ -76,7 +76,3 @@ If a run exceeds the budget despite the check (e.g. a single epoch takes too lon
 - `crash` — failed with error
 
 Create the `.distillate/` directory if it doesn't exist. This enables live experiment tracking, notebook generation, and cross-session awareness.
-
-### File Size Limit
-
-**CRITICAL:** Tool results must not exceed 51,200 bytes. When using the Read tool on files longer than ~400 lines, always use `offset` and `limit` parameters to read in chunks. When writing code, keep individual Python files under 400 lines — split large scripts into separate modules (e.g., `train.py`, `evaluate.py`, `utils.py`).

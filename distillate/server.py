@@ -1824,9 +1824,13 @@ def _create_app():
                                 entry["latest_learning"] = rr["reasoning"]
                                 found_learning = True
 
-                        # Total experiment time: first entry → last
-                        # completed entry (wall-clock span)
-                        first_ts = last_ts = ""
+                        # Total experiment time: sum of gaps between
+                        # consecutive entries, skipping session breaks
+                        # (gaps > 30 min).  More robust than pair-matching.
+                        MAX_GAP = 1800  # 30 min = session break
+                        total_secs = 0.0
+                        prev_dt = None
+                        active_run_start = ""
                         for fwd_line in all_lines:
                             fwd_line = fwd_line.strip()
                             if not fwd_line:
@@ -1836,16 +1840,29 @@ def _create_app():
                             except json.JSONDecodeError:
                                 continue
                             ts = rr.get("timestamp", "")
+                            st = rr.get("status", "")
                             if not ts:
                                 continue
-                            if not first_ts:
-                                first_ts = ts
-                            if rr.get("status") != "running":
-                                last_ts = ts
-                        if first_ts:
-                            entry["experiment_first_ts"] = first_ts
-                        if last_ts:
-                            entry["experiment_last_ts"] = last_ts
+                            try:
+                                dt = datetime.fromisoformat(
+                                    ts.replace("Z", "+00:00"))
+                                # Normalize to naive UTC for comparison
+                                if dt.tzinfo is not None:
+                                    dt = dt.replace(tzinfo=None)
+                            except (ValueError, TypeError):
+                                continue
+                            if st == "running":
+                                active_run_start = ts
+                            elif st in ("keep", "discard", "crash"):
+                                active_run_start = ""
+                            if prev_dt is not None:
+                                gap = (dt - prev_dt).total_seconds()
+                                if 0 < gap <= MAX_GAP:
+                                    total_secs += gap
+                            prev_dt = dt
+                        entry["experiment_total_secs"] = total_secs
+                        if active_run_start:
+                            entry["active_run_start"] = active_run_start
                     except OSError:
                         pass
 

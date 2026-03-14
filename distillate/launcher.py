@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -230,7 +231,12 @@ def _install_hooks_into(project_path: Path) -> None:
     if not hooks_src.exists():
         return
 
-    hook_config = json.loads(hooks_src.read_text(encoding="utf-8"))
+    raw = hooks_src.read_text(encoding="utf-8")
+    # Replace bare "python3" with the absolute path to the Python that has
+    # distillate installed, so hooks work regardless of the experiment's PATH.
+    python_bin = sys.executable
+    raw = raw.replace("python3 -m distillate.", f"{python_bin} -m distillate.")
+    hook_config = json.loads(raw)
 
     claude_dir = project_path / ".claude"
     claude_dir.mkdir(exist_ok=True)
@@ -372,6 +378,39 @@ def _generate_run_context(project_path: Path) -> Path | None:
 
     if not runs:
         return None
+
+    # Auto-close orphaned "running" entries — these are announcements
+    # whose run never completed (agent crashed, restarted, or moved on).
+    resolved_ids = {r["id"] for r in runs
+                    if r.get("status") in ("keep", "discard", "crash")
+                    and "id" in r}
+    orphans = [r for r in runs
+               if r.get("status") == "running" and r.get("id") not in resolved_ids]
+    if orphans:
+        now = datetime.now(timezone.utc).isoformat()
+        with open(runs_file, "a", encoding="utf-8") as f:
+            for orph in orphans:
+                # Use original timestamp so it doesn't inflate
+                # experiment time calculations
+                crash_entry = {
+                    "$schema": "distillate/run/v1",
+                    "id": orph.get("id", "unknown"),
+                    "timestamp": orph.get("timestamp", now),
+                    "status": "crash",
+                    "description": orph.get("description", ""),
+                    "reasoning": "Auto-closed: run was announced but never completed.",
+                }
+                f.write(json.dumps(crash_entry, ensure_ascii=False) + "\n")
+                resolved_ids.add(orph.get("id", ""))
+        # Re-read after cleanup
+        runs = []
+        for line in runs_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    runs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
 
     # Cap at last 20 runs
     recent = runs[-20:]
