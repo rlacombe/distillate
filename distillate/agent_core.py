@@ -382,6 +382,7 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "update_project": et.update_project_tool,
             "link_paper": et.link_paper_tool,
             "update_goals": et.update_goals_tool,
+            "get_run_details": et.get_run_details_tool,
             "annotate_run": et.annotate_run_tool,
             "launch_experiment": et.launch_experiment_tool,
             "experiment_status": et.experiment_status_tool,

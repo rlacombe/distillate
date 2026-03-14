@@ -361,8 +361,9 @@ EXPERIMENT_TOOL_SCHEMAS = [
     {
         "name": "update_project",
         "description": (
-            "Update a project's description, tags, or status. "
-            "Only provided fields are changed."
+            "Update a project's description, tags, status, or primary metric. "
+            "Only provided fields are changed. Use key_metric_name to set "
+            "the north star metric displayed in the experiment dashboard."
         ),
         "input_schema": {
             "type": "object",
@@ -384,8 +385,35 @@ EXPERIMENT_TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "New status (tracking, paused, archived, completed)",
                 },
+                "key_metric_name": {
+                    "type": "string",
+                    "description": "Primary metric name for the project (e.g. 'param_count', 'test_accuracy'). Shown as the hero metric in the dashboard.",
+                },
             },
             "required": ["identifier"],
+        },
+    },
+    {
+        "name": "get_run_details",
+        "description": (
+            "Get full details for a single experiment run including all "
+            "hyperparameters, results/metrics, hypothesis, reasoning, "
+            "decision, tags, and timing. Use when the user asks about "
+            "a specific run's parameters or results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id, name substring, or run number (e.g. '3' for run #003)",
+                },
+            },
+            "required": ["project", "run"],
         },
     },
     {
@@ -1147,8 +1175,9 @@ def delete_run_tool(*, state, project: str, run: str, confirm: bool = False) -> 
 def update_project_tool(*, state, identifier: str,
                         description: str | None = None,
                         tags: list[str] | None = None,
-                        status: str | None = None) -> dict:
-    """Update a project's description, tags, or status."""
+                        status: str | None = None,
+                        key_metric_name: str | None = None) -> dict:
+    """Update a project's description, tags, status, or primary metric."""
     proj, err = _resolve_project(state, identifier)
     if err:
         return err
@@ -1163,9 +1192,11 @@ def update_project_tool(*, state, identifier: str,
         if status not in valid_statuses:
             return {"error": f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"}
         updates["status"] = status
+    if key_metric_name is not None:
+        updates["key_metric_name"] = key_metric_name
 
     if not updates:
-        return {"error": "No fields to update. Provide description, tags, or status."}
+        return {"error": "No fields to update. Provide description, tags, status, or key_metric_name."}
 
     state.update_project(proj["id"], **updates)
     state.save()
@@ -1262,6 +1293,40 @@ def update_goals_tool(*, state, project: str, goals: list[dict]) -> dict:
         "project": proj.get("name", ""),
         "goals_count": len(goals),
         "message": f"Set {len(goals)} goal(s) for '{proj.get('name', '')}'.",
+    }
+
+
+def get_run_details_tool(*, state, project: str, run: str) -> dict:
+    """Get full details for a single experiment run."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    return {
+        "found": True,
+        "project": proj.get("name", ""),
+        "run": {
+            "id": run_obj.get("id", ""),
+            "name": run_obj.get("name", ""),
+            "status": run_obj.get("status", ""),
+            "decision": run_obj.get("decision", ""),
+            "hypothesis": run_obj.get("hypothesis", ""),
+            "reasoning": run_obj.get("reasoning", ""),
+            "changes": run_obj.get("changes", ""),
+            "hyperparameters": run_obj.get("hyperparameters", {}),
+            "results": run_obj.get("results", {}),
+            "tags": run_obj.get("tags", []),
+            "notes": run_obj.get("notes", []),
+            "started_at": run_obj.get("started_at", ""),
+            "completed_at": run_obj.get("completed_at", ""),
+            "duration_minutes": run_obj.get("duration_minutes", 0),
+            "baseline_comparison": run_obj.get("baseline_comparison", {}),
+        },
     }
 
 
