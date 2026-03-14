@@ -65,6 +65,12 @@ TOOL_LABELS = {
     "continue_experiment": "\U0001F504 Continuing experiment",
     "sweep_experiment": "\U0001F9F9 Launching sweep",
     "steer_experiment": "\U0001F9E7 Steering the experiment",
+    "compare_projects": "\u2696\ufe0f Comparing experiments",
+    "queue_sessions": "\U0001F4CB Queuing sessions",
+    "list_templates": "\U0001F4C4 Listing templates",
+    "save_template": "\U0001F4BE Saving template",
+    "create_github_repo": "\U0001F4E4 Creating GitHub repo",
+    "reading_report": "\U0001F4CA Compiling reading report",
 }
 
 
@@ -391,6 +397,12 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "continue_experiment": et.continue_experiment_tool,
             "sweep_experiment": et.sweep_experiment_tool,
             "steer_experiment": et.steer_experiment_tool,
+            "compare_projects": et.compare_projects_tool,
+            "queue_sessions": et.queue_sessions_tool,
+            "list_templates": et.list_templates_tool,
+            "save_template": et.save_template_tool,
+            "create_github_repo": et.create_github_repo_tool,
+            "reading_report": et.reading_report_tool,
         })
 
     fn = dispatch.get(name)

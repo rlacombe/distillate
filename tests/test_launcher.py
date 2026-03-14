@@ -656,7 +656,7 @@ class TestStateSessionMethods:
 class TestExperimentToolSchemas:
     def test_schema_count(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 21  # 14 original + 7 new
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 28  # 22 original + 6 new
 
     def test_new_tool_names(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
@@ -664,6 +664,12 @@ class TestExperimentToolSchemas:
         assert "launch_experiment" in names
         assert "experiment_status" in names
         assert "stop_experiment" in names
+        assert "compare_projects" in names
+        assert "queue_sessions" in names
+        assert "list_templates" in names
+        assert "save_template" in names
+        assert "create_github_repo" in names
+        assert "reading_report" in names
 
     def test_all_schemas_have_required_fields(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
@@ -1056,3 +1062,697 @@ class TestServerEndpoints:
         client = self._make_client()
         resp = client.post("/papers/NOPE/refresh-metadata")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# New tool tests (compare_projects, queue_sessions, list/save_templates,
+# create_github_repo, reading_report)
+# ---------------------------------------------------------------------------
+
+class TestCompareProjectsTool:
+    def test_needs_two_projects(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import compare_projects_tool
+        from distillate.state import State
+
+        state = State()
+        result = compare_projects_tool(state=state, projects=["p1"])
+        assert "error" in result
+
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import compare_projects_tool
+        from distillate.state import State
+
+        state = State()
+        result = compare_projects_tool(state=state, projects=["a", "b"])
+        assert "error" in result
+
+    def test_compares_two_projects(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import compare_projects_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.add_project("p2", "Proj 2", str(tmp_path))
+
+        # Add kept runs with metrics
+        state._data["projects"]["p1"]["runs"] = {
+            "r1": {"status": "keep", "decision": "keep",
+                    "results": {"accuracy": 0.85, "loss": 0.3}},
+        }
+        state._data["projects"]["p2"]["runs"] = {
+            "r1": {"status": "keep", "decision": "keep",
+                    "results": {"accuracy": 0.92, "loss": 0.15}},
+        }
+        state.save()
+
+        result = compare_projects_tool(state=state, projects=["p1", "p2"])
+        assert "projects" in result
+        assert len(result["projects"]) == 2
+        assert "metrics" in result
+        assert "accuracy" in result["metrics"]
+        assert "loss" in result["metrics"]
+        assert result["projects"][0]["name"] == "Proj 1"
+        assert result["projects"][0]["best_metrics"]["accuracy"] == 0.85
+        assert result["projects"][1]["best_metrics"]["accuracy"] == 0.92
+
+    def test_skips_non_kept_runs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import compare_projects_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.add_project("p2", "Proj 2", str(tmp_path))
+        state._data["projects"]["p1"]["runs"] = {
+            "r1": {"status": "discard", "decision": "discard",
+                    "results": {"accuracy": 0.99}},
+        }
+        state._data["projects"]["p2"]["runs"] = {}
+        state.save()
+
+        result = compare_projects_tool(state=state, projects=["p1", "p2"])
+        assert result["projects"][0]["best_metrics"] == {}
+        assert result["metrics"] == []
+
+
+class TestQueueSessionsTool:
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import queue_sessions_tool
+        from distillate.state import State
+
+        state = State()
+        result = queue_sessions_tool(state=state, project="nope")
+        assert "error" in result
+
+    def test_queues_sessions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import queue_sessions_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        result = queue_sessions_tool(state=state, project="p1", count=3)
+        assert result["success"] is True
+        assert result["queued"] == 3
+        assert "Proj 1" in result["message"]
+
+        # Verify state was updated
+        state.reload()
+        proj = state.get_project("p1")
+        assert proj["continuation_queue"]["count"] == 3
+        assert proj["auto_continue"] is True
+
+    def test_custom_model_and_turns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import queue_sessions_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        result = queue_sessions_tool(
+            state=state, project="p1", count=2,
+            model="claude-opus-4-20250514", max_turns=50,
+        )
+        assert result["success"] is True
+        assert result["model"] == "claude-opus-4-20250514"
+        assert result["max_turns"] == 50
+
+
+class TestListTemplatesTool:
+    def test_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        (tmp_path / "templates").mkdir()
+        from distillate.experiment_tools import list_templates_tool
+        from distillate.state import State
+
+        result = list_templates_tool(state=State())
+        assert result["templates"] == []
+        assert result["total"] == 0
+
+    def test_returns_templates(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        tmpl_dir = tmp_path / "templates" / "mlp-basic"
+        tmpl_dir.mkdir(parents=True)
+        (tmpl_dir / "PROMPT.md").write_text("line1\nline2\n")
+
+        from distillate.experiment_tools import list_templates_tool
+        from distillate.state import State
+
+        result = list_templates_tool(state=State())
+        assert result["total"] == 1
+        assert result["templates"][0]["name"] == "mlp-basic"
+
+
+class TestSaveTemplateTool:
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import save_template_tool
+        from distillate.state import State
+
+        result = save_template_tool(state=State(), project="nope")
+        assert "error" in result
+
+    def test_no_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import save_template_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", "")
+        result = save_template_tool(state=state, project="p1")
+        assert "error" in result
+
+    def test_saves_template(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path / "config")
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+
+        # Create a project directory with PROMPT.md
+        proj_dir = tmp_path / "my-project"
+        proj_dir.mkdir()
+        (proj_dir / "PROMPT.md").write_text("# Experiment\nDo the thing.\n")
+
+        from distillate.experiment_tools import save_template_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("my-project", "My Project", str(proj_dir))
+        result = save_template_tool(state=state, project="my-project", name="my-tmpl")
+        assert result["success"] is True
+        assert result["template_name"] == "my-tmpl"
+        # Verify file was created
+        assert (tmp_path / "config" / "templates" / "my-tmpl" / "PROMPT.md").exists()
+
+
+class TestCreateGithubRepoTool:
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import create_github_repo_tool
+        from distillate.state import State
+
+        result = create_github_repo_tool(state=State(), project="nope")
+        assert "error" in result
+
+    def test_no_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import create_github_repo_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", "")
+        result = create_github_repo_tool(state=state, project="p1")
+        assert "error" in result
+
+    def test_calls_launcher_and_updates_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr(
+            "distillate.launcher.create_github_repo",
+            lambda path, name, private=True: {"ok": True, "url": "https://github.com/test/repo"},
+        )
+        from distillate.experiment_tools import create_github_repo_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        result = create_github_repo_tool(state=state, project="p1", name="repo")
+        assert result["ok"] is True
+        assert result["url"] == "https://github.com/test/repo"
+
+        # Verify github_url saved to state
+        state.reload()
+        proj = state.get_project("p1")
+        assert proj["github_url"] == "https://github.com/test/repo"
+
+    def test_error_from_launcher(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr(
+            "distillate.launcher.create_github_repo",
+            lambda path, name, private=True: {"ok": False, "reason": "gh not installed"},
+        )
+        from distillate.experiment_tools import create_github_repo_tool
+        from distillate.state import State
+
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        result = create_github_repo_tool(state=state, project="p1")
+        assert result["ok"] is False
+        assert "gh not installed" in result["reason"]
+
+
+class TestReadingReportTool:
+    def test_no_papers(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import reading_report_tool
+        from distillate.state import State
+
+        result = reading_report_tool(state=State())
+        assert "message" in result
+
+    def test_returns_stats(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.experiment_tools import reading_report_tool
+        from distillate.state import State
+
+        state = State()
+        # Add some processed papers
+        state._data["documents"] = {
+            "K1": {
+                "title": "Paper One", "status": "processed",
+                "zotero_item_key": "K1",
+                "page_count": 10, "highlight_word_count": 200,
+                "engagement": 75,
+                "authors": ["Alice", "Bob"],
+                "processed_at": "2026-03-10T12:00:00+00:00",
+                "metadata": {
+                    "tags": ["transformers", "nlp"],
+                    "citation_count": 500,
+                },
+            },
+            "K2": {
+                "title": "Paper Two", "status": "processed",
+                "zotero_item_key": "K2",
+                "page_count": 8, "highlight_word_count": 150,
+                "engagement": 50,
+                "authors": ["Alice", "Charlie"],
+                "processed_at": "2026-03-12T12:00:00+00:00",
+                "metadata": {
+                    "tags": ["transformers", "vision"],
+                    "citation_count": 100,
+                },
+            },
+        }
+        state.save()
+
+        result = reading_report_tool(state=state)
+        assert result["lifetime"]["papers"] == 2
+        assert result["lifetime"]["pages"] == 18
+        assert result["lifetime"]["words_highlighted"] == 350
+        assert result["lifetime"]["avg_engagement"] == 62  # round((75+50)/2)
+        assert len(result["top_topics"]) >= 1
+        assert result["top_topics"][0]["topic"] == "transformers"
+        assert result["top_topics"][0]["count"] == 2
+        assert len(result["most_cited"]) == 2
+        assert result["most_cited"][0]["citations"] == 500
+        assert len(result["top_authors"]) >= 1
+        # Alice appears in 2 papers
+        alice = [a for a in result["top_authors"] if a["author"] == "Alice"]
+        assert len(alice) == 1
+        assert alice[0]["count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# New CLI command tests
+# ---------------------------------------------------------------------------
+
+class TestUpdateProjectCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _update_project
+        _update_project([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _update_project
+        _update_project(["nonexistent"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_updates_description(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", [
+            "distillate", "--update", "p1", "--description", "New desc",
+        ])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _update_project
+        _update_project(["p1"])
+        output = capsys.readouterr().out
+        assert "Updated" in output
+        assert "description" in output
+
+        state.reload()
+        assert state.get_project("p1")["description"] == "New desc"
+
+    def test_updates_key_metric(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", [
+            "distillate", "--update", "p1", "--key-metric", "f1",
+        ])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _update_project
+        _update_project(["p1"])
+
+        state.reload()
+        assert state.get_project("p1")["key_metric_name"] == "f1"
+
+    def test_nothing_to_update(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", ["distillate", "--update", "p1"])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _update_project
+        _update_project(["p1"])
+        assert "Nothing to update" in capsys.readouterr().out
+
+
+class TestQueueSessionsCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _queue_sessions
+        _queue_sessions([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _queue_sessions
+        _queue_sessions(["nope"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_queues_default(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", ["distillate", "--queue-sessions", "p1"])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _queue_sessions
+        _queue_sessions(["p1"])
+        output = capsys.readouterr().out
+        assert "Queued" in output
+        assert "1" in output
+
+        state.reload()
+        proj = state.get_project("p1")
+        assert proj["continuation_queue"]["count"] == 1
+        assert proj["auto_continue"] is True
+
+    def test_queues_custom_count(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", [
+            "distillate", "--queue-sessions", "p1", "--count", "5",
+        ])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _queue_sessions
+        _queue_sessions(["p1"])
+
+        state.reload()
+        assert state.get_project("p1")["continuation_queue"]["count"] == 5
+
+
+class TestListTemplatesCLI:
+    def test_no_templates(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        (tmp_path / "templates").mkdir()
+        from distillate.commands import _list_templates
+        _list_templates()
+        assert "No templates available" in capsys.readouterr().out
+
+    def test_shows_templates(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        tmpl_dir = tmp_path / "templates" / "my-exp"
+        tmpl_dir.mkdir(parents=True)
+        (tmpl_dir / "PROMPT.md").write_text("line1\nline2\n")
+
+        from distillate.commands import _list_templates
+        _list_templates()
+        output = capsys.readouterr().out
+        assert "my-exp" in output
+
+
+class TestSaveTemplateCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _save_template
+        _save_template([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _save_template
+        _save_template(["nope"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_saves(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path / "config")
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", ["distillate", "--save-template", "p1"])
+
+        proj_dir = tmp_path / "proj"
+        proj_dir.mkdir()
+        (proj_dir / "PROMPT.md").write_text("experiment\n")
+
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(proj_dir))
+        state.save()
+
+        from distillate.commands import _save_template
+        _save_template(["p1"])
+        output = capsys.readouterr().out
+        assert "Saved template" in output
+
+
+class TestCompareProjectsCLI:
+    def test_needs_two(self, capsys):
+        from distillate.commands import _compare_projects
+        _compare_projects(["one"])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _compare_projects
+        _compare_projects(["a", "b"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_comparison_table(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Alpha", str(tmp_path))
+        state.add_project("p2", "Beta", str(tmp_path))
+        state._data["projects"]["p1"]["runs"] = {
+            "r1": {"decision": "keep", "results": {"accuracy": 0.80}},
+        }
+        state._data["projects"]["p2"]["runs"] = {
+            "r1": {"decision": "keep", "results": {"accuracy": 0.95}},
+        }
+        state.save()
+
+        from distillate.commands import _compare_projects
+        _compare_projects(["p1", "p2"])
+        output = capsys.readouterr().out
+        assert "Alpha" in output
+        assert "Beta" in output
+        assert "accuracy" in output
+        assert "*" in output  # best value starred
+
+    def test_no_metrics(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Alpha", str(tmp_path))
+        state.add_project("p2", "Beta", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _compare_projects
+        _compare_projects(["p1", "p2"])
+        assert "No metrics" in capsys.readouterr().out
+
+
+class TestGithubCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _github
+        _github([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _github
+        _github(["nope"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_success(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", ["distillate", "--github", "p1"])
+        monkeypatch.setattr(
+            "distillate.launcher.create_github_repo",
+            lambda path, name, private=True: {"ok": True, "url": "https://github.com/u/r"},
+        )
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _github
+        _github(["p1"])
+        output = capsys.readouterr().out
+        assert "https://github.com/u/r" in output
+
+        state.reload()
+        assert state.get_project("p1")["github_url"] == "https://github.com/u/r"
+
+    def test_error(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", ["distillate", "--github", "p1"])
+        monkeypatch.setattr(
+            "distillate.launcher.create_github_repo",
+            lambda path, name, private=True: {"ok": False, "reason": "no gh"},
+        )
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _github
+        _github(["p1"])
+        assert "no gh" in capsys.readouterr().out
+
+
+class TestCreateExperimentCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _create_experiment
+        _create_experiment([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_calls_init_experiment_tool(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", [
+            "distillate", "--create-experiment", "test-exp",
+            "--target", str(tmp_path / "exp"),
+            "--goal", "Maximize accuracy",
+        ])
+
+        # Mock init_experiment_tool to avoid actual Claude calls
+        monkeypatch.setattr(
+            "distillate.experiment_tools.init_experiment_tool",
+            lambda **kwargs: {
+                "success": True,
+                "project_id": "test-exp",
+                "goals_set": [{"metric": "accuracy", "direction": "maximize"}],
+            },
+        )
+
+        from distillate.commands import _create_experiment
+        _create_experiment(["test-exp"])
+        output = capsys.readouterr().out
+        assert "test-exp" in output
+        assert "Launch it" in output
+
+
+class TestParallelCampaignCLI:
+    def test_no_args(self, capsys):
+        from distillate.commands import _parallel_campaign
+        _parallel_campaign([])
+        assert "Usage" in capsys.readouterr().out
+
+    def test_project_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        from distillate.commands import _parallel_campaign
+        _parallel_campaign(["nope1", "nope2"])
+        assert "No project found" in capsys.readouterr().out
+
+    def test_no_goals(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+        monkeypatch.setattr("sys.argv", [
+            "distillate", "--parallel-campaign", "p1", "p2",
+        ])
+        from distillate.state import State
+        state = State()
+        state.add_project("p1", "Proj 1", str(tmp_path))
+        state.add_project("p2", "Proj 2", str(tmp_path))
+        state.save()
+
+        from distillate.commands import _parallel_campaign
+        _parallel_campaign(["p1", "p2"])
+        assert "no goals" in capsys.readouterr().out.lower()
+
+
+class TestWatchProjectNameResolution:
+    def test_resolves_project_name_to_path(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
+
+        proj_dir = tmp_path / "my-project"
+        proj_dir.mkdir()
+        (proj_dir / ".git").mkdir()
+
+        from distillate.state import State
+        state = State()
+        state.add_project("my-project", "My Project", str(proj_dir))
+        state.save()
+
+        # _watch will fail at scan_project (no actual experiment), but we can
+        # verify the path resolution worked by checking it accesses the right dir
+        from distillate.commands import _watch
+        # Mock scan_project to return error (avoids infinite loop)
+        monkeypatch.setattr(
+            "distillate.experiments.scan_project",
+            lambda p: {"error": f"test_path={p}"},
+        )
+        monkeypatch.setattr("distillate.config.setup_logging", lambda: None)
+
+        _watch(["my-project"])
+        output = capsys.readouterr().out
+        assert str(proj_dir) in output  # "Watching /path..."
+        assert "Error" in output  # scan_project returns error

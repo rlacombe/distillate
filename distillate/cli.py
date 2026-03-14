@@ -94,6 +94,21 @@ Experiments:
   --scan-projects         Scan tracked projects for new experiments
   --install-hooks <path>  Install Claude Code hooks for experiment capture
   --watch <path>          Watch an experiment repo and regenerate notebooks
+  --update <project> [--key-metric M] [--description "..."]
+                          Update project metadata
+  --queue-sessions <project> [--count N] [--model M] [--turns T]
+                          Queue N continuation sessions
+  --templates             List available experiment templates
+  --save-template <project> [--name N]
+                          Save a project config as a reusable template
+  --compare <proj1> <proj2> [proj3...]
+                          Side-by-side experiment comparison
+  --github <project> [--name repo] [--private]
+                          Create GitHub repo for a project
+  --create-experiment <name> [--goal "..."] [--target /path] [--metric M] [--direction maximize|minimize]
+                          Create experiment from scratch (non-interactive)
+  --parallel-campaign <proj1> <proj2> [...] [--budget N] [--model M]
+                          Launch campaigns across multiple projects
 
 Papers:
   --sync                  Sync papers: Zotero -> reMarkable -> notes
@@ -135,6 +150,10 @@ _KNOWN_FLAGS = {
     "--campaign", "--steer", "--show", "--runs", "--notebook",
     "--continue", "--sweep", "--goals", "--config",
     "--host", "--model", "--turns", "--target", "--name",
+    "--update", "--queue-sessions", "--templates", "--save-template",
+    "--compare", "--github", "--create-experiment", "--parallel-campaign",
+    "--key-metric", "--description", "--count", "--private",
+    "--direction", "--metric", "--budget", "--goal",
 }
 
 
@@ -336,6 +355,45 @@ def main():
     if "--watch" in sys.argv:
         idx = sys.argv.index("--watch")
         commands._watch(sys.argv[idx + 1:])
+        return
+
+    if "--update" in sys.argv:
+        idx = sys.argv.index("--update")
+        commands._update_project(sys.argv[idx + 1:])
+        return
+
+    if "--queue-sessions" in sys.argv:
+        idx = sys.argv.index("--queue-sessions")
+        commands._queue_sessions(sys.argv[idx + 1:])
+        return
+
+    if "--templates" in sys.argv:
+        commands._list_templates()
+        return
+
+    if "--save-template" in sys.argv:
+        idx = sys.argv.index("--save-template")
+        commands._save_template(sys.argv[idx + 1:])
+        return
+
+    if "--compare" in sys.argv:
+        idx = sys.argv.index("--compare")
+        commands._compare_projects(sys.argv[idx + 1:])
+        return
+
+    if "--github" in sys.argv:
+        idx = sys.argv.index("--github")
+        commands._github(sys.argv[idx + 1:])
+        return
+
+    if "--create-experiment" in sys.argv:
+        idx = sys.argv.index("--create-experiment")
+        commands._create_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--parallel-campaign" in sys.argv:
+        idx = sys.argv.index("--parallel-campaign")
+        commands._parallel_campaign(sys.argv[idx + 1:])
         return
 
     # Catch unknown flags before falling through

@@ -1789,10 +1789,17 @@ def _watch(args: list[str]) -> None:
     config.setup_logging()
 
     if not args:
-        print("Usage: distillate --watch <path>")
+        print("Usage: distillate --watch <path|project>")
         return
 
-    project_path = Path(args[0]).resolve()
+    # Resolve project name to path
+    from distillate.state import State as _WatchState
+    _ws = _WatchState()
+    _wp = _ws.find_project(args[0])
+    if _wp and _wp.get("path"):
+        project_path = Path(_wp["path"]).resolve()
+    else:
+        project_path = Path(args[0]).resolve()
     if not project_path.is_dir():
         print(f"Not a directory: {project_path}")
         return
@@ -2955,3 +2962,393 @@ def _report() -> None:
             short = author[:30] if len(author) > 30 else author
             print(f"    {i}. {short:<32} {count} papers")
         print()
+
+
+# ---------------------------------------------------------------------------
+# Desktop → CLI bridge commands
+# ---------------------------------------------------------------------------
+
+def _update_project(args: list[str]) -> None:
+    """Update project metadata (description, key metric)."""
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print('Usage: distillate --update <project> [--key-metric M] [--description "..."]')
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    updates: dict = {}
+    key_metric = _opt("--key-metric")
+    description = _opt("--description")
+    if key_metric:
+        updates["key_metric_name"] = key_metric
+    if description:
+        updates["description"] = description
+
+    if not updates:
+        print('  Nothing to update. Use --key-metric or --description.')
+        return
+
+    state.update_project(proj["id"], **updates)
+    state.save()
+    print(f"  Updated {_bold(proj.get('name', query))}:")
+    for k, v in updates.items():
+        print(f"    {k}: {v}")
+
+
+def _queue_sessions(args: list[str]) -> None:
+    """Queue N continuation sessions for a project."""
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --queue-sessions <project> [--count N] [--model M] [--turns T]")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    count = int(_opt("--count") or "1")
+    model = _opt("--model") or "claude-sonnet-4-5-20250929"
+    max_turns = int(_opt("--turns") or "100")
+
+    state.update_project(proj["id"], continuation_queue={
+        "count": count,
+        "model": model,
+        "max_turns": max_turns,
+    }, auto_continue=True)
+    state.save()
+
+    proj_name = proj.get("name", query)
+    print(f"  Queued {_bold(str(count))} continuation session(s) for {_bold(proj_name)}")
+    print(f"  Model: {model} | Max turns: {max_turns}")
+
+
+def _list_templates() -> None:
+    """List available experiment templates."""
+    from distillate.launcher import list_templates
+
+    templates = list_templates()
+    if not templates:
+        print("  No templates available yet.")
+        print("  Import one: distillate --save-template <project>")
+        return
+
+    print()
+    print(f"  {'#':>3}  {'Name':<22} {'Lines':>5}  {'Data'}")
+    print(f"  {'─' * 3}  {'─' * 22} {'─' * 5}  {'─' * 6}")
+    for i, t in enumerate(templates, 1):
+        data = "yes" if t.get("has_data") else "no"
+        print(f"  {i:>3}  {t['name']:<22} {t.get('prompt_lines', 0):>5}  {data}")
+    print()
+
+
+def _save_template(args: list[str]) -> None:
+    """Save a project's config as a reusable template."""
+    from distillate.launcher import import_template
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --save-template <project> [--name N]")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj.get('name', query)}' has no path set.")
+        return
+
+    name = _opt("--name")
+    template_name = import_template(Path(proj_path), name=name)
+    print(f"  Saved template '{_bold(template_name)}' from {proj.get('name', query)}")
+
+
+def _compare_projects(args: list[str]) -> None:
+    """Side-by-side experiment comparison table."""
+    from distillate.state import State
+
+    # Collect project identifiers (stop at flags)
+    queries = [a for a in args if not a.startswith("-")]
+    if len(queries) < 2:
+        print("Usage: distillate --compare <proj1> <proj2> [proj3...]")
+        return
+
+    state = State()
+    projects: list[dict] = []
+    all_metrics: set[str] = set()
+    _LOWER_IS_BETTER = {"loss", "val_loss", "rmse", "mae", "perplexity", "val_bpb"}
+
+    for q in queries:
+        proj = state.find_project(q)
+        if not proj:
+            print(f"  No project found matching '{q}'.")
+            return
+
+        best: dict[str, float] = {}
+        for run in proj.get("runs", {}).values():
+            if run.get("decision") != "keep" and run.get("status") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    all_metrics.add(k)
+                    # Use goal direction if available
+                    goal_dirs = {g["metric"]: g["direction"] for g in proj.get("goals", [])}
+                    direction = goal_dirs.get(k, "minimize" if k in _LOWER_IS_BETTER else "maximize")
+                    if k not in best:
+                        best[k] = v
+                    elif direction == "maximize":
+                        best[k] = max(best[k], v)
+                    else:
+                        best[k] = min(best[k], v)
+
+        projects.append({"name": proj.get("name", q), "best": best, "goals": proj.get("goals", [])})
+
+    sorted_metrics = sorted(all_metrics)
+    if not sorted_metrics:
+        print("  No metrics to compare (no kept runs with results).")
+        return
+
+    # Build table: metrics as rows, projects as columns
+    name_width = max(len(p["name"]) for p in projects)
+    col_width = max(name_width, 12)
+
+    # Header
+    print()
+    header = f"  {'Metric':<22}"
+    for p in projects:
+        header += f"  {p['name']:>{col_width}}"
+    print(header)
+    print(f"  {'─' * 22}" + "".join(f"  {'─' * col_width}" for _ in projects))
+
+    # Find global best per metric (for starring)
+    for metric in sorted_metrics:
+        goal_dirs = {}
+        for p in projects:
+            for g in p["goals"]:
+                if g["metric"] == metric:
+                    goal_dirs[metric] = g["direction"]
+        direction = goal_dirs.get(metric, "minimize" if metric in _LOWER_IS_BETTER else "maximize")
+
+        vals = [(p["best"].get(metric), p) for p in projects]
+        numeric_vals = [v for v, _ in vals if v is not None]
+        global_best = None
+        if numeric_vals:
+            global_best = max(numeric_vals) if direction == "maximize" else min(numeric_vals)
+
+        row = f"  {metric:<22}"
+        for val, p in vals:
+            if val is None:
+                cell = "—"
+            else:
+                cell = f"{val:.4f}" if isinstance(val, float) else str(val)
+                if val == global_best and len(numeric_vals) > 1:
+                    cell += " *"
+            row += f"  {cell:>{col_width}}"
+        print(row)
+
+    print()
+
+
+def _github(args: list[str]) -> None:
+    """Create a GitHub repo for a project."""
+    from distillate.launcher import create_github_repo
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print("Usage: distillate --github <project> [--name repo] [--private]")
+        return
+
+    query = args[0]
+    state = State()
+    proj = state.find_project(query)
+    if not proj:
+        print(f"  No project found matching '{query}'.")
+        return
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        print(f"  Project '{proj.get('name', query)}' has no path set.")
+        return
+
+    repo_name = _opt("--name") or proj.get("id", "experiment")
+    private = "--private" in sys.argv
+
+    result = create_github_repo(Path(proj_path), repo_name, private=private)
+    if result.get("ok"):
+        state.update_project(proj["id"], github_url=result["url"])
+        state.save()
+        print(f"  Created repo: {_bold(result['url'])}")
+    else:
+        print(f"  Error: {result.get('reason', 'unknown error')}")
+
+
+def _create_experiment(args: list[str]) -> None:
+    """Create experiment from scratch (non-interactive CLI wizard)."""
+    from distillate.experiment_tools import _parse_goals_from_text, init_experiment_tool
+    from distillate.state import State
+
+    if not args or args[0].startswith("-"):
+        print('Usage: distillate --create-experiment <name> [--goal "..."] [--target /path] '
+              '[--metric M] [--direction maximize|minimize]')
+        return
+
+    name = args[0]
+    goal = _opt("--goal") or ""
+    target = _opt("--target") or ""
+    metric = _opt("--metric") or ""
+    direction = _opt("--direction") or ""
+
+    if not target:
+        from distillate import config
+        from distillate.experiments import slugify
+        if config.EXPERIMENTS_ROOT:
+            target = str(Path(config.EXPERIMENTS_ROOT) / slugify(name))
+        else:
+            target = str(Path.home() / "experiments" / slugify(name))
+
+    state = State()
+    print(f"  Creating experiment {_bold(name)} at {target}...")
+
+    result = init_experiment_tool(
+        state=state,
+        path=target,
+        goal=goal,
+        name=name,
+        primary_metric=metric,
+        metric_direction=direction,
+    )
+
+    if result.get("success"):
+        print(f"  Project registered: {result.get('project_id', '')}")
+        if result.get("goals_set"):
+            print(f"  Goals: {result['goals_set']}")
+        print(f"\n  Launch it:")
+        print(f"    distillate --launch {result.get('project_id', name)}")
+    else:
+        print(f"  Error: {result.get('error', 'unknown')}")
+
+
+def _parallel_campaign(args: list[str]) -> None:
+    """Launch campaigns across multiple projects in parallel."""
+    import signal
+    import threading
+    from datetime import datetime, timezone
+
+    from distillate.launcher import run_campaign, should_continue
+    from distillate.state import State
+
+    # Collect project identifiers (stop at flags)
+    queries = [a for a in args if not a.startswith("-")]
+    if not queries:
+        print("Usage: distillate --parallel-campaign <proj1> <proj2> [...] [--budget N] [--model M]")
+        return
+
+    budget = int(_opt("--budget") or "10")
+    model = _opt("--model") or "claude-sonnet-4-5-20250929"
+    max_turns = int(_opt("--turns") or "100")
+
+    state = State()
+    resolved: list[dict] = []
+    for q in queries:
+        proj = state.find_project(q)
+        if not proj:
+            print(f"  No project found matching '{q}'.")
+            return
+        if not proj.get("goals"):
+            print(f"  Cannot start campaign: '{proj.get('name', q)}' has no goals.")
+            return
+        if not should_continue(proj):
+            print(f"  All goals for '{proj.get('name', q)}' already met — skipping.")
+            continue
+        resolved.append(proj)
+
+    if not resolved:
+        print("  No projects need campaigning.")
+        return
+
+    stop_flag = threading.Event()
+    old_handler = signal.signal(signal.SIGINT, lambda s, f: stop_flag.set())
+
+    print(f"\n  Launching parallel campaigns ({len(resolved)} projects):")
+    for p in resolved:
+        print(f"    - {_bold(p.get('name', p['id']))}")
+    print(f"  Budget: {budget} sessions each, model: {model}")
+    print(f"  Press Ctrl+C to stop\n")
+
+    # Set campaign state for each project
+    now = datetime.now(timezone.utc).isoformat()
+    for proj in resolved:
+        campaign = {
+            "status": "running",
+            "started_at": now,
+            "objective": "",
+            "budget": {"max_sessions": budget, "max_hours": 8},
+            "model": model,
+            "max_turns": max_turns,
+            "sessions_launched": 0,
+            "current_session_id": None,
+            "completed_at": None,
+            "stop_reason": None,
+        }
+        state.update_project(proj["id"], campaign=campaign, auto_continue=True)
+    state.save()
+
+    results: dict[str, dict] = {}
+    lock = threading.Lock()
+
+    def _run_one(proj: dict) -> None:
+        pid = proj["id"]
+        pname = proj.get("name", pid)
+
+        def _on_event(event):
+            etype = event.get("type", "")
+            ts = event.get("ts", "")[:19]
+            if etype == "campaign_run_started":
+                n = event.get("sessions_launched", 0)
+                print(f"  [{ts}] {pname}: session #{n} started")
+            elif etype == "goal_reached":
+                print(f"  [{ts}] {pname}: \033[1;32mgoal reached!\033[0m")
+            elif etype == "campaign_completed":
+                reason = event.get("stop_reason", "?")
+                print(f"  [{ts}] {pname}: completed ({reason})")
+
+        r = run_campaign(
+            pid, state,
+            max_sessions=budget,
+            model=model,
+            max_turns=max_turns,
+            on_event=_on_event,
+            stop_flag=stop_flag,
+        )
+        with lock:
+            results[pid] = r
+
+    threads = [threading.Thread(target=_run_one, args=(p,)) for p in resolved]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    signal.signal(signal.SIGINT, old_handler)
+
+    print(f"\n  Parallel campaigns finished:")
+    for proj in resolved:
+        r = results.get(proj["id"], {})
+        reason = r.get("stop_reason", "unknown")
+        launched = r.get("sessions_launched", 0)
+        print(f"    {proj.get('name', proj['id'])}: {reason} ({launched} sessions)")
