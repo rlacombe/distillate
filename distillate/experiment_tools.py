@@ -1711,7 +1711,10 @@ def _parse_goals_from_text(goal: str) -> list[dict]:
 
 def init_experiment_tool(*, state, path: str, goal: str,
                          name: str = "", constraints: str = "",
-                         duration_minutes: int = 5) -> dict:
+                         duration_minutes: int = 5,
+                         primary_metric: str = "",
+                         metric_direction: str = "",
+                         metric_constraint: str = "") -> dict:
     """Initialize an experiment project with LLM-drafted PROMPT.md."""
     import json as _json
     import subprocess
@@ -1746,7 +1749,8 @@ def init_experiment_tool(*, state, path: str, goal: str,
     scan = _scan_directory_for_init(project_path)
 
     # --- Step 2: Call Claude to draft PROMPT.md ---
-    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes)
+    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes,
+                                    primary_metric, metric_direction, metric_constraint)
     if prompt_md is None:
         return {
             "success": False,
@@ -1829,6 +1833,9 @@ def init_experiment_tool(*, state, path: str, goal: str,
             parsed_goals = _parse_goals_from_text(goal)
             if parsed_goals:
                 state.update_project(project_id, goals=parsed_goals)
+            # Store primary metric name for hero display
+            if primary_metric:
+                state.update_project(project_id, key_metric_name=primary_metric)
             state.save()
         finally:
             release_lock()
@@ -1963,9 +1970,27 @@ failure. Include `reasoning` to explain your decision. Create the \
 <Numbered list of deliverables — model, training curves, evaluation, \
 written log of decisions>
 
+## Primary Metric
+
+**You MUST explicitly declare the primary metric in this section.** State:
+1. The metric name (e.g. `test_accuracy`, `param_count`, `val_loss`)
+2. The optimization direction: minimize or maximize
+3. Any conditional constraints (e.g. "minimize param_count, subject to \
+test_accuracy >= 99%")
+
+Use this exact format:
+```
+Primary metric: <metric_name> (minimize|maximize)
+Constraints: <metric> >= <threshold> (if any)
+```
+
+This is what Distillate uses as the north star metric for charts and \
+progress tracking. Getting this wrong means the agent optimizes in the \
+wrong direction.
+
 ## Evaluation Criteria
 
-<Primary metric with threshold, secondary criteria like methodology quality>
+<Secondary criteria like methodology quality, code quality, reproducibility>
 
 Write in second person ("you must..."). Be direct and specific. Include \
 concrete numbers for targets where the user provided them. The prompt should \
@@ -1981,7 +2006,10 @@ PROMPT.md content. Output ONLY the markdown content of the PROMPT.md file."""
 
 def _generate_prompt_md(goal: str, scan: dict, name: str,
                         constraints: str,
-                        duration_minutes: int = 5) -> str | None:
+                        duration_minutes: int = 5,
+                        primary_metric: str = "",
+                        metric_direction: str = "",
+                        metric_constraint: str = "") -> str | None:
     """Call Claude to generate PROMPT.md content."""
     from distillate.agent_core import create_client
 
@@ -1994,6 +2022,13 @@ def _generate_prompt_md(goal: str, scan: dict, name: str,
 
     if name:
         parts.append(f"**Project name:** {name}")
+
+    if primary_metric:
+        direction = metric_direction or "maximize"
+        metric_line = f"**Primary metric:** `{primary_metric}` ({direction})"
+        if metric_constraint:
+            metric_line += f"\n**Metric constraint:** {metric_constraint}"
+        parts.append(metric_line)
 
     if constraints:
         parts.append(f"**Constraints:** {constraints}")

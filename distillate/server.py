@@ -386,6 +386,9 @@ def _create_app():
                         name=name,
                         constraints=body.get("constraints", ""),
                         duration_minutes=body.get("duration_minutes", 5),
+                        primary_metric=body.get("primary_metric", ""),
+                        metric_direction=body.get("metric_direction", ""),
+                        metric_constraint=body.get("metric_constraint", ""),
                     ),
                 )
             except Exception as e:
@@ -420,7 +423,10 @@ def _create_app():
                     parsed_goals = _parse_goals_from_text(goal)
                     if parsed_goals:
                         _state.update_project(project_id, goals=parsed_goals)
-                        _state.save()
+                    primary_metric = body.get("primary_metric", "")
+                    if primary_metric:
+                        _state.update_project(project_id, key_metric_name=primary_metric)
+                    _state.save()
                     yield json.dumps({"step": 4, "status": "done", "project_id": project_id}) + "\n"
                 else:
                     yield json.dumps({"step": 2, "status": "error", "detail": error_msg}) + "\n"
@@ -524,8 +530,19 @@ def _create_app():
             return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
 
         content = body.get("content", "")
-        prompt_path = Path(proj.get("path", "")) / "PROMPT.md"
+        project_path = Path(proj.get("path", ""))
+        prompt_path = project_path / "PROMPT.md"
         prompt_path.write_text(content, encoding="utf-8")
+
+        # Signal running agent that PROMPT.md changed
+        distillate_dir = project_path / ".distillate"
+        distillate_dir.mkdir(exist_ok=True)
+        flag = distillate_dir / "prompt_updated"
+        flag.write_text(
+            datetime.now(timezone.utc).isoformat() + "\n",
+            encoding="utf-8",
+        )
+
         return JSONResponse({"ok": True})
 
     @app.get("/experiments/{project_id}/session")
