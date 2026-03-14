@@ -2848,7 +2848,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     for i, p in enumerate(points):
         if p["run"].get("decision") != "keep":
             continue
-        desc = p["run"].get("description", "") or p["run"].get("name", "")
+        desc = p["run"].get("description", "") or p["run"].get("hypothesis", "") or p["run"].get("name", "")
         if not desc:
             continue
         # Truncate to ~30 chars
@@ -2857,7 +2857,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
         ax.annotate(desc, (i, p["value"]),
                     textcoords="offset points", xytext=(4, 6),
                     fontsize=6, color="#888", ha="left", va="bottom",
-                    rotation=20, zorder=4)
+                    rotation=40, zorder=4)
 
     # Labels
     direction = "\u2193" if lower_better else "\u2191"
