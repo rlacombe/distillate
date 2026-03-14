@@ -5,6 +5,8 @@ Discovers ML projects, reconstructs experiment history from artifacts
 markdown lab notebooks.  Works with or without git.
 """
 
+from __future__ import annotations
+
 import hashlib
 import html as html_mod
 import json

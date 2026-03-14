@@ -1782,9 +1782,13 @@ def _create_app():
                 runs_jsonl = proj_p / ".distillate" / "runs.jsonl"
                 if runs_jsonl.exists():
                     try:
+                        found_learning = False
+                        found_current = False
                         for line in reversed(
                             runs_jsonl.read_text(encoding="utf-8").splitlines()
                         ):
+                            if found_learning and found_current:
+                                break
                             line = line.strip()
                             if not line:
                                 continue
@@ -1793,13 +1797,16 @@ def _create_app():
                             except json.JSONDecodeError:
                                 continue
                             # Surface what the agent is currently attempting
-                            if (rr.get("status") == "running"
-                                    and rr.get("description")
-                                    and "current_run" not in entry):
+                            if (not found_current
+                                    and rr.get("status") == "running"
+                                    and rr.get("description")):
                                 entry["current_run"] = rr["description"]
-                            if rr.get("status") == "keep" and rr.get("reasoning"):
+                                found_current = True
+                            if (not found_learning
+                                    and rr.get("status") == "keep"
+                                    and rr.get("reasoning")):
                                 entry["latest_learning"] = rr["reasoning"]
-                                break
+                                found_learning = True
                     except OSError:
                         pass
 
@@ -1845,11 +1852,17 @@ def _create_app():
         if proj_path.exists():
             runs = proj.get("runs", {})
             if runs:
-                result = enrich_runs_with_llm(
-                    runs, proj.get("name", project_id), proj_path
-                )
-                if result:
-                    enrichment = load_enrichment_cache(proj_path)
+                try:
+                    loop = asyncio.get_event_loop()
+                    enr_result = await loop.run_in_executor(
+                        _executor,
+                        enrich_runs_with_llm,
+                        runs, proj.get("name", project_id), proj_path,
+                    )
+                    if enr_result:
+                        enrichment = load_enrichment_cache(proj_path)
+                except Exception:
+                    log.debug("LLM enrichment failed for notebook", exc_info=True)
 
         html = generate_html_notebook(proj, enrichment=enrichment)
         return HTMLResponse(html)
