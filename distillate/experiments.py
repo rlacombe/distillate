@@ -3070,14 +3070,12 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     for i, run in enumerate(runs):
         val = run.get("results", {}).get(metric)
         if isinstance(val, (int, float)):
-            # Extract run number for x-axis label
-            m = re.match(r"(?:run_?)(\d+)", run.get("name", ""))
-            run_num = int(m.group(1)) if m else i
-            points.append({"value": val, "run": run, "run_num": run_num})
+            points.append({"value": val, "run": run, "index": i})
     if not points:
         raise ValueError(f"No data for metric '{metric}'")
 
-    xs = [p["run_num"] for p in points]
+    # Ordinal x-axis (same as canvas chart — evenly spaced)
+    xs = list(range(len(points)))
     ys = [p["value"] for p in points]
     lower_better = _is_lower_better(metric)
 
@@ -3142,7 +3140,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
 
     if len(front_xs) > 1:
         ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
-                zorder=2, drawstyle="steps-post", solid_capstyle="round")
+                zorder=2, solid_capstyle="round")
 
     # ── Dots: green = frontier-improving keeps, gray = everything else ──
     for i, p in enumerate(points):
@@ -3157,16 +3155,16 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     for i, p in enumerate(points):
         if i not in front_set:
             continue
-        desc = p["run"].get("description", "") or p["run"].get("name", "")
+        desc = p["run"].get("description", "") or p["run"].get("hypothesis", "")
         if not desc:
             continue
         if len(desc) > 24:
             desc = desc[:22] + "\u2026"
         ax.annotate(
             desc, (xs[i], p["value"]),
-            textcoords="offset points", xytext=(5, 6),
-            fontsize=5.5, color="#aaa", ha="left", va="bottom",
-            rotation=30, rotation_mode="anchor",
+            textcoords="offset points", xytext=(5, -7),
+            fontsize=5.5, color="#aaa", ha="left", va="top",
+            rotation=-30, rotation_mode="anchor",
             zorder=5, annotation_clip=True,
         )
 
@@ -3177,9 +3175,25 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     ax.set_xlabel("Run", fontsize=9.5, color="#666", labelpad=8)
     ax.tick_params(colors="#888", labelsize=8, length=3, width=0.4)
 
+    # X-axis: show run numbers at evenly spaced intervals (like canvas)
+    n_pts = len(points)
+    x_step = max(1, n_pts // 6)
+    x_tick_positions = list(range(0, n_pts, x_step))
+    x_tick_labels = []
+    for idx in x_tick_positions:
+        p = points[idx]
+        rn = p["run"].get("run_number", 0)
+        if rn > 0:
+            x_tick_labels.append(f"#{rn}")
+        else:
+            m = re.match(r"(?:run_?)(\d+)", p["run"].get("name", ""))
+            x_tick_labels.append(f"#{m.group(1)}" if m else f"#{idx}")
+    ax.set_xticks(x_tick_positions)
+    ax.set_xticklabels(x_tick_labels)
+
     # Y-axis ticks
     if log_scale:
-        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5), numticks=20))
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5), numticks=8))
     else:
         ax.yaxis.set_major_locator(MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]))
 
@@ -3202,7 +3216,7 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
     ax.yaxis.set_major_formatter(FuncFormatter(_tick))
 
     if not log_scale and min(ys) >= 0:
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(bottom=0, top=max(ys) * 1.05)
 
     # ── Title (just the experiment name, top-center) ──
     if title:
