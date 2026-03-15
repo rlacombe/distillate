@@ -568,6 +568,38 @@ def _create_app():
         content = results_path.read_text(encoding="utf-8")
         return JSONResponse({"ok": True, "content": content, "path": str(results_path)})
 
+    @app.get("/experiments/{project_id}/claude-md")
+    async def get_experiment_claude_md(project_id: str):
+        """Get the CLAUDE.md (agent protocol) for a project."""
+        from pathlib import Path
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
+        if not claude_path.exists():
+            return JSONResponse({"ok": False, "reason": "no_claude_md"})
+
+        content = claude_path.read_text(encoding="utf-8")
+        return JSONResponse({"ok": True, "content": content, "path": str(claude_path)})
+
+    @app.put("/experiments/{project_id}/claude-md")
+    async def update_experiment_claude_md(project_id: str, body: dict):
+        """Update the CLAUDE.md content for a project."""
+        from pathlib import Path
+
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+
+        content = body.get("content", "")
+        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
+        claude_path.write_text(content, encoding="utf-8")
+        return JSONResponse({"ok": True})
+
     @app.get("/experiments/{project_id}/session")
     async def get_session_output(project_id: str):
         """Get parsed session output for the project.
@@ -1669,122 +1701,8 @@ def _create_app():
             "tags": run.get("tags", []),
         }
 
-    def _detect_primary_metric(content: str) -> str:
-        """Extract primary metric name from PROMPT.md content.
-
-        Looks for patterns like:
-          Primary metric: param_count (minimize)
-          Primary metric: `test_accuracy` (maximize)
-        """
-        import re
-        # Match "Primary metric: <name> (direction)" pattern
-        m = re.search(
-            r'[Pp]rimary\s+[Mm]etric\s*:\s*`?(\w+)`?\s*\(',
-            content,
-        )
-        if m:
-            return m.group(1)
-        # Fallback: look for "key metric" or "north star" mentions
-        m = re.search(
-            r'(?:[Kk]ey|[Nn]orth\s*[Ss]tar)\s+[Mm]etric\s*:\s*`?(\w+)`?',
-            content,
-        )
-        return m.group(1) if m else ""
-
-    def _infer_key_metric_name(proj: dict) -> str:
-        """Pick the best metric to chart by default.
-
-        Priority order:
-        1. Explicit goal metric (user told us what matters)
-        2. Test-set performance metric present in most runs
-        3. Validation-set performance metric
-        4. Any performance metric (accuracy, f1, auc, etc.)
-        5. Most common numeric metric across runs
-
-        We prefer metrics that have data in ALL (or most) runs so the
-        chart is meaningful, and favour "test > val > train" and
-        "accuracy/f1/auc > loss/error" for relevance.
-        """
-        # --- 0. Explicit user override (from PATCH or wizard) ---
-        explicit = proj.get("key_metric_name", "")
-        if explicit:
-            return explicit
-
-        # --- 1. Goal metric ---
-        goals = proj.get("goals", [])
-        if goals:
-            for g in goals:
-                if isinstance(g, dict) and g.get("metric") and not g.get("is_constraint"):
-                    return g["metric"]
-            if isinstance(goals[0], dict) and goals[0].get("metric"):
-                return goals[0]["metric"]
-
-        # --- 2-5. Score-based ranking ---
-        from collections import Counter
-        runs = list(proj.get("runs", {}).values())
-        if not runs:
-            return ""
-
-        # Count how many runs have each numeric metric
-        metric_counts: Counter = Counter()
-        for run in runs:
-            for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)):
-                    metric_counts[k] += 1
-
-        if not metric_counts:
-            return ""
-
-        total_runs = len(runs)
-
-        # Score each metric: coverage * relevance
-        # Coverage: fraction of runs that have this metric (0-1)
-        # Relevance: heuristic based on name patterns
-        _RELEVANCE = {
-            # Test-set performance (highest priority)
-            "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
-            "test_auc": 90, "test_precision": 85, "test_recall": 85,
-            "test_score": 80, "test_r2": 80, "test_rmse": 75,
-            "test_loss": 70, "test_error": 70, "test_mae": 70,
-            # Validation-set
-            "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
-            "val_auc": 50, "val_loss": 45, "val_error": 45,
-            "val_score": 50, "val_r2": 50, "val_rmse": 45,
-            # Generic performance
-            "accuracy": 40, "f1": 38, "f1_score": 38,
-            "auc": 35, "precision": 30, "recall": 30,
-            "rmse": 25, "mae": 25, "r2": 25, "r2_score": 25,
-            "loss": 20, "error": 20,
-            # Meta (low priority — usually not what you want to chart)
-            "param_count": 5, "train_time_sec": 3, "epochs": 2,
-        }
-
-        def _score(metric_name: str) -> float:
-            from distillate.experiments import classify_metric
-            coverage = metric_counts[metric_name] / total_runs
-            name_lower = metric_name.lower().replace("-", "_")
-            # Exact match first
-            relevance = _RELEVANCE.get(name_lower, 0)
-            if relevance == 0:
-                # Fuzzy: check if name contains key patterns
-                for pattern, score in [
-                    ("test", 30), ("accuracy", 25), ("acc", 25),
-                    ("f1", 20), ("auc", 20), ("score", 15),
-                    ("val", 12), ("loss", 10), ("error", 10),
-                    ("rmse", 10), ("mae", 10),
-                ]:
-                    if pattern in name_lower:
-                        relevance = max(relevance, score)
-                if relevance == 0:
-                    relevance = 8  # unknown metric baseline
-            # Penalize non-optimization metrics (counts, times, costs)
-            cat = classify_metric(metric_name)
-            if cat in ("count", "time", "cost"):
-                relevance = min(relevance, 1)
-            return coverage * relevance
-
-        best = max(metric_counts.keys(), key=_score)
-        return best
+    from distillate.experiments import detect_primary_metric as _detect_primary_metric
+    from distillate.experiments import infer_key_metric_name as _infer_key_metric_name
 
     @app.get("/experiments/list")
     async def list_experiments():
