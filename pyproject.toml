@@ -34,8 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-desktop = ["fastapi", "uvicorn[standard]", "websockets", "matplotlib", "mcp>=1.0.0", "claude-agent-sdk>=0.1.49"]
-mcp = ["mcp>=1.0.0"]
+desktop = ["fastapi", "uvicorn[standard]", "websockets", "matplotlib"]
 
 [project.urls]
 Homepage = "https://distillate.dev"
@@ -45,7 +44,6 @@ Changelog = "https://github.com/rlacombe/distillate/blob/main/CHANGELOG.md"
 
 [project.scripts]
 distillate = "distillate.main:_main_wrapper"
-distillate-mcp = "distillate.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["distillate"]

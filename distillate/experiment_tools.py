@@ -40,45 +40,6 @@ def _run_summary(run: dict) -> dict:
     }
 
 
-def _run_summary_full(run: dict, run_number: int = 0, run_suffix: str = "") -> dict:
-    """Build a full run summary with all fields (for server/desktop API).
-
-    Superset of ``_run_summary`` — includes hyperparameters, hypothesis,
-    reasoning, baseline comparison, etc.
-    """
-    results = run.get("results", {})
-    key_metric = ""
-    for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
-              "best_val_acc", "f1", "loss"):
-        if k in results:
-            key_metric = f"{k}={results[k]}"
-            break
-    if not key_metric and results:
-        k, v = next(iter(results.items()))
-        if isinstance(v, (int, float)):
-            key_metric = f"{k}={v}"
-
-    return {
-        "id": run.get("id", ""),
-        "name": run.get("name", ""),
-        "run_number": run_number,
-        "run_suffix": run_suffix,
-        "status": run.get("status", ""),
-        "decision": run.get("decision", ""),
-        "key_metric": key_metric,
-        "results": {k: v for k, v in results.items() if isinstance(v, (int, float))},
-        "hyperparameters": run.get("hyperparameters", {}),
-        "description": run.get("description", ""),
-        "hypothesis": run.get("hypothesis", ""),
-        "reasoning": run.get("reasoning", ""),
-        "agent_reasoning": run.get("agent_reasoning", ""),
-        "baseline_comparison": run.get("baseline_comparison"),
-        "started_at": run.get("started_at", ""),
-        "duration_minutes": run.get("duration_minutes", 0),
-        "tags": run.get("tags", []),
-    }
-
-
 def _resolve_project(state, identifier: str) -> tuple[dict | None, dict | None]:
     """Resolve a project by identifier, returning (project, error_dict).
 
@@ -147,7 +108,7 @@ def _regen_notebook(proj: dict) -> None:
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        generate_html_notebook, generate_notebook, load_enrichment_cache,
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
     )
     from distillate.obsidian import (
         write_experiment_html_notebook, write_experiment_notebook,
@@ -156,9 +117,9 @@ def _regen_notebook(proj: dict) -> None:
     proj_path = proj.get("path", "")
     enrichment = None
     if proj_path:
-        enrichment = load_enrichment_cache(_Path(proj_path))
-        if enrichment:
-            enrichment = enrichment.get("enrichment", enrichment)
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
+        )
     notebook_md = generate_notebook(proj, enrichment=enrichment)
     write_experiment_notebook(proj, notebook_md)
     notebook_html = generate_html_notebook(proj, enrichment=enrichment)
@@ -831,11 +792,11 @@ EXPERIMENT_TOOL_SCHEMAS = [
                 },
                 "name": {
                     "type": "string",
-                    "description": "Repository name (defaults to distillate-xp-<project-slug>)",
+                    "description": "Repository name (defaults to project slug)",
                 },
                 "private": {
                     "type": "boolean",
-                    "description": "Whether the repo should be private (default false — public for adoption tracking)",
+                    "description": "Whether the repo should be private (default true)",
                 },
             },
             "required": ["project"],
@@ -851,141 +812,6 @@ EXPERIMENT_TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {},
-        },
-    },
-    {
-        "name": "manage_session",
-        "description": (
-            "Manage experiment sessions — start, stop, restart, continue, "
-            "or check status. Preferred over individual launch/stop/status "
-            "tools. Actions: 'start' launches a new session, 'stop' stops "
-            "running sessions, 'restart' stops then starts, 'continue' "
-            "launches a continuation with prior-run context, 'status' "
-            "checks what's running. Start/stop/restart/continue are write "
-            "operations — ask the user to confirm first."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop", "restart", "continue", "status"],
-                    "description": "What to do with the session",
-                },
-                "project": {
-                    "type": "string",
-                    "description": "Project name, id, or index number",
-                },
-                "model": {
-                    "type": "string",
-                    "description": (
-                        "Claude model to use (default: claude-sonnet-4-5-20250929). "
-                        "Only for start/restart/continue."
-                    ),
-                },
-                "max_turns": {
-                    "type": "integer",
-                    "description": (
-                        "Max turns for the session (default: 100). "
-                        "Only for start/restart/continue."
-                    ),
-                },
-            },
-            "required": ["action", "project"],
-        },
-    },
-    {
-        "name": "replicate_paper",
-        "description": (
-            "Scaffold a new experiment from a paper in the library. Reads the "
-            "paper's abstract, summary, highlights, and GitHub repo (if any), "
-            "then creates an experiment with a PROMPT.md that targets "
-            "reproducing the paper's key results. Papers with linked GitHub "
-            "repos get cloned automatically."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "paper": {
-                    "type": "string",
-                    "description": "Paper identifier (index, citekey, or title)",
-                },
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Directory for the experiment. Defaults to "
-                        "EXPERIMENTS_ROOT/<paper-slug> if not specified."
-                    ),
-                },
-                "goal": {
-                    "type": "string",
-                    "description": (
-                        "Override goal. If not provided, auto-generates a "
-                        "replication goal from the paper's reported results."
-                    ),
-                },
-                "constraints": {
-                    "type": "string",
-                    "description": "Hardware or methodology constraints",
-                },
-            },
-            "required": ["paper"],
-        },
-    },
-    {
-        "name": "suggest_from_literature",
-        "description": (
-            "Suggest experiment steering based on recent paper reads. Scans "
-            "papers read in the last 30 days for techniques, methods, or "
-            "findings relevant to a given experiment, and suggests concrete "
-            "steering instructions. Use when the user asks to apply ideas "
-            "from their reading to an experiment."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project": {
-                    "type": "string",
-                    "description": "Project identifier (index, id, or name)",
-                },
-                "focus": {
-                    "type": "string",
-                    "description": (
-                        "Optional focus area (e.g., 'regularization', "
-                        "'data augmentation'). Narrows the literature search."
-                    ),
-                },
-            },
-            "required": ["project"],
-        },
-    },
-    {
-        "name": "extract_baselines",
-        "description": (
-            "Extract reported metric baselines from one or more papers. "
-            "Reads abstracts, summaries, and highlights to find reported "
-            "numbers (accuracy, F1, loss, etc.) that can be used as "
-            "experiment goals or comparison points."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "papers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Paper identifiers (index, citekey, or title)",
-                },
-                "metrics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Optional list of metric names to look for "
-                        "(e.g., ['accuracy', 'F1', 'BLEU']). If not "
-                        "specified, extracts all reported metrics."
-                    ),
-                },
-            },
-            "required": ["papers"],
         },
     },
 ]
@@ -1101,7 +927,7 @@ def scan_project_tool(*, state, path: str) -> dict:
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        generate_html_notebook, generate_notebook, load_enrichment_cache,
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
         scan_project, slugify,
     )
     from distillate.obsidian import (
@@ -1204,12 +1030,12 @@ def scan_project_tool(*, state, path: str) -> dict:
     finally:
         release_lock()
 
-    # Generate notebooks (MD + HTML) with cached enrichment
+    # LLM enrichment + generate notebooks (MD + HTML)
     proj = state.get_project(project_id)
     if proj:
-        enrichment = load_enrichment_cache(repo_path)
-        if enrichment:
-            enrichment = enrichment.get("enrichment", enrichment)
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), repo_path,
+        )
         notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
         notebook_html = generate_html_notebook(proj, enrichment=enrichment)
@@ -1225,17 +1051,10 @@ def scan_project_tool(*, state, path: str) -> dict:
 
 
 def get_experiment_notebook(*, state, project: str, section: str = "main") -> dict:
-    """Get or regenerate the lab notebook for a project.
-
-    Uses cached enrichment only — enrichment is produced by the
-    experiment agents themselves, not by server-side API calls.
-    """
+    """Get or regenerate the lab notebook for a project."""
     from pathlib import Path as _Path
 
-    from distillate.experiments import (
-        generate_notebook,
-        load_enrichment_cache,
-    )
+    from distillate.experiments import enrich_runs_with_llm, generate_notebook
     from distillate.obsidian import write_experiment_notebook
 
     proj, err = _resolve_project(state, project)
@@ -1245,9 +1064,9 @@ def get_experiment_notebook(*, state, project: str, section: str = "main") -> di
     enrichment = None
     proj_path = proj.get("path", "")
     if proj_path:
-        enrichment = load_enrichment_cache(_Path(proj_path))
-        if enrichment:
-            enrichment = enrichment.get("enrichment", enrichment)
+        enrichment = enrich_runs_with_llm(
+            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
+        )
 
     notebook_md = generate_notebook(proj, section=section, enrichment=enrichment)
 
@@ -1554,15 +1373,6 @@ def link_paper_tool(*, state, project: str, paper: str) -> dict:
 
     linked.append(found_title)
     state.update_project(proj["id"], linked_papers=linked)
-
-    # Reverse link: store project reference on the paper
-    if found_key:
-        doc = state.get_document(found_key)
-        if doc:
-            doc.setdefault("linked_projects", [])
-            if proj["id"] not in doc["linked_projects"]:
-                doc["linked_projects"].append(proj["id"])
-
     state.save()
 
     _regen_notebook(proj)
@@ -1968,38 +1778,6 @@ def steer_experiment_tool(*, state, project: str, text: str) -> dict:
     }
 
 
-def manage_session_tool(*, state, action: str, project: str,
-                        model: str = "claude-sonnet-4-5-20250929",
-                        max_turns: int = 100) -> dict:
-    """Unified session management: start, stop, restart, continue, status."""
-    if action == "status":
-        return experiment_status_tool(state=state, project=project)
-    elif action == "stop":
-        return stop_experiment_tool(state=state, project=project)
-    elif action == "start":
-        return launch_experiment_tool(
-            state=state, project=project, model=model, max_turns=max_turns,
-        )
-    elif action == "continue":
-        return continue_experiment_tool(
-            state=state, project=project, model=model, max_turns=max_turns,
-        )
-    elif action == "restart":
-        # Stop first, then start
-        stop_result = stop_experiment_tool(state=state, project=project)
-        if stop_result.get("error"):
-            # No running session to stop — just start fresh
-            pass
-        start_result = launch_experiment_tool(
-            state=state, project=project, model=model, max_turns=max_turns,
-        )
-        if stop_result.get("stopped"):
-            start_result["previously_stopped"] = stop_result["stopped"]
-        return start_result
-    else:
-        return {"error": f"Unknown action '{action}'. Use: start, stop, restart, continue, status."}
-
-
 def compare_projects_tool(*, state, projects: list[str]) -> dict:
     """Compare best metrics across multiple projects."""
     if len(projects) < 2:
@@ -2096,7 +1874,7 @@ def save_template_tool(*, state, project: str, name: str = "") -> dict:
 
 
 def create_github_repo_tool(*, state, project: str, name: str = "",
-                             private: bool = False) -> dict:
+                             private: bool = True) -> dict:
     """Create a GitHub repo for a project."""
     from pathlib import Path as _Path
 
@@ -2110,7 +1888,7 @@ def create_github_repo_tool(*, state, project: str, name: str = "",
     if not proj_path:
         return {"error": f"Project '{project}' has no path set."}
 
-    repo_name = name or f"distillate-xp-{proj.get('id', 'experiment')}"
+    repo_name = name or proj.get("id", "experiment")
     result = create_github_repo(_Path(proj_path), repo_name, private=private)
 
     if result.get("ok"):
@@ -2379,12 +2157,6 @@ def init_experiment_tool(*, state, path: str, goal: str,
     if reporting_src.exists():
         import shutil
         shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
-
-    # Install CLAUDE.md (consolidated protocol — auto-loaded by Claude Code)
-    claude_md_src = _Path(__file__).parent / "autoresearch" / "CLAUDE.md"
-    if claude_md_src.exists():
-        import shutil
-        shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
 
     # Install hooks
     _install_hooks_into(project_path)
@@ -2694,379 +2466,3 @@ def _remove_notebook(project_id: str) -> None:
     if html_dir.is_dir():
         html_file = html_dir / f"{project_id}.html"
         html_file.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# Paper-experiment integration tools
-# ---------------------------------------------------------------------------
-
-def _gather_paper_context(state, identifier: str) -> dict | None:
-    """Gather full paper context for experiment scaffolding.
-
-    Returns a dict with title, authors, abstract, summary, highlights,
-    github_repo, and citekey — or None if the paper is not found.
-    """
-    from distillate.tools import (
-        _extract_highlights_from_note,
-        _find_papers_from_state,
-        _read_note_content,
-    )
-
-    matches = _find_papers_from_state(identifier, state)
-    if not matches:
-        return None
-
-    key, doc = matches[0]
-    meta = doc.get("metadata", {})
-    citekey = meta.get("citekey", "")
-
-    highlights = ""
-    note_content = _read_note_content(citekey, doc.get("title", ""))
-    if note_content:
-        highlights = _extract_highlights_from_note(note_content)
-
-    return {
-        "key": key,
-        "title": doc.get("title", ""),
-        "authors": doc.get("authors", []),
-        "abstract": meta.get("abstract", ""),
-        "summary": doc.get("summary", ""),
-        "highlights": highlights,
-        "github_repo": meta.get("github_repo", ""),
-        "github_stars": meta.get("github_stars"),
-        "citekey": citekey,
-        "tags": meta.get("tags", []),
-        "citation_count": meta.get("citation_count", 0),
-    }
-
-
-def replicate_paper(*, state, paper: str, path: str = "",
-                    goal: str = "", constraints: str = "") -> dict:
-    """Scaffold an experiment to replicate a paper's results."""
-    import subprocess
-    from pathlib import Path as _Path
-
-    from distillate import config
-    from distillate.experiments import slugify
-
-    ctx = _gather_paper_context(state, paper)
-    if ctx is None:
-        return {"success": False, "error": f"No paper found matching '{paper}'"}
-
-    # Determine experiment path
-    if not path:
-        root = config.EXPERIMENTS_ROOT
-        if not root:
-            return {
-                "success": False,
-                "error": (
-                    "No path specified and EXPERIMENTS_ROOT not set. "
-                    "Provide a path or set EXPERIMENTS_ROOT in .env."
-                ),
-            }
-        slug = slugify(ctx["title"][:60])
-        path = str(_Path(root) / slug)
-
-    project_path = _Path(path).expanduser().resolve()
-
-    # Clone GitHub repo if available and directory doesn't exist yet
-    cloned = False
-    if ctx["github_repo"] and not project_path.exists():
-        repo_url = ctx["github_repo"]
-        if not repo_url.startswith("http"):
-            repo_url = f"https://github.com/{repo_url}"
-        try:
-            result = subprocess.run(
-                ["git", "clone", "--depth", "1", repo_url, str(project_path)],
-                capture_output=True, text=True, timeout=60,
-            )
-            cloned = result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    # Build a replication-focused goal
-    if not goal:
-        parts = [f"Reproduce the key results from '{ctx['title']}'."]
-        if ctx["summary"]:
-            parts.append(f"Paper summary: {ctx['summary'][:300]}")
-        if ctx["highlights"]:
-            parts.append(
-                "Focus on the methods and findings highlighted by the reader."
-            )
-        goal = " ".join(parts)
-
-    # Build constraints with paper context
-    paper_context = f"Replicating: {ctx['title']}"
-    if ctx["authors"]:
-        authors_str = ", ".join(ctx["authors"][:3])
-        paper_context += f" by {authors_str}"
-    if constraints:
-        paper_context += f". {constraints}"
-
-    # Call init_experiment with paper-enriched context
-    result = init_experiment_tool(
-        state=state,
-        path=str(project_path),
-        goal=goal,
-        name=f"Replicate: {ctx['title'][:50]}",
-        constraints=paper_context,
-    )
-
-    if not result.get("success"):
-        return result
-
-    # Auto-link the paper to the new project
-    project_id = result.get("project_id", "")
-    if project_id:
-        link_ref = ctx["citekey"] or ctx["title"]
-        proj = state.get_project(project_id)
-        if proj:
-            linked = proj.get("linked_papers", [])
-            if link_ref not in linked:
-                linked.append(link_ref)
-                state.update_project(project_id, linked_papers=linked)
-                # Reverse link on the paper
-                doc = state.get_document(ctx["key"])
-                if doc:
-                    doc.setdefault("linked_projects", [])
-                    if project_id not in doc["linked_projects"]:
-                        doc["linked_projects"].append(project_id)
-                state.save()
-
-    result["paper"] = ctx["title"]
-    result["cloned_repo"] = cloned
-    if cloned:
-        result["message"] = (
-            f"Cloned {ctx['github_repo']} and initialized experiment. "
-            + result.get("message", "")
-        )
-
-    return result
-
-
-def suggest_from_literature(*, state, project: str,
-                            focus: str = "") -> dict:
-    """Suggest experiment steering based on recent paper reads."""
-    from datetime import datetime, timedelta, timezone
-
-    from distillate import config
-    from distillate.tools import (
-        _extract_highlights_from_note,
-        _read_note_content,
-    )
-
-    proj, err = _resolve_project(state, project)
-    if err:
-        return err
-
-    # Gather recent reads (last 30 days)
-    now = datetime.now(timezone.utc)
-    since = (now - timedelta(days=30)).isoformat()
-    recent = state.documents_processed_since(since)
-    if not recent:
-        return {
-            "suggestions": [],
-            "message": "No papers read in the last 30 days to draw from.",
-        }
-
-    # Build context for each recent paper
-    paper_contexts = []
-    for doc in reversed(recent[:10]):  # Most recent first, cap at 10
-        meta = doc.get("metadata", {})
-        citekey = meta.get("citekey", "")
-        title = doc.get("title", "")
-
-        parts = [f"**{title}**"]
-        if doc.get("summary"):
-            parts.append(doc["summary"][:200])
-
-        note = _read_note_content(citekey, title)
-        if note:
-            hl = _extract_highlights_from_note(note)
-            if hl:
-                parts.append(hl[:500])
-
-        paper_contexts.append("\n".join(parts))
-
-    # Build experiment context
-    runs = proj.get("runs", {})
-    best_run = None
-    if runs:
-        completed = [r for r in runs.values() if r.get("status") == "completed"]
-        if completed:
-            best_run = max(
-                completed,
-                key=lambda r: max(r.get("results", {}).values(), default=0)
-                if r.get("results") else 0,
-            )
-
-    exp_context = f"Experiment: {proj.get('name', '')}"
-    if proj.get("description"):
-        exp_context += f"\nDescription: {proj['description']}"
-    goals = proj.get("goals", [])
-    if goals:
-        goal_strs = [
-            f"{g['metric']} {g['direction']} {g.get('threshold', '?')}"
-            for g in goals
-        ]
-        exp_context += f"\nGoals: {', '.join(goal_strs)}"
-    if best_run:
-        exp_context += f"\nBest run: {best_run.get('name', '')} — {best_run.get('results', {})}"
-
-    # Call Claude to synthesize suggestions
-    from distillate.agent_core import create_client
-    client = create_client()
-    if client is None:
-        return {
-            "success": False,
-            "error": "No API credentials configured.",
-        }
-
-    focus_clause = ""
-    if focus:
-        focus_clause = f"\nFocus area: {focus}"
-
-    prompt = (
-        f"You are helping a researcher improve their experiment based on "
-        f"papers they've recently read.\n\n"
-        f"## Experiment\n{exp_context}{focus_clause}\n\n"
-        f"## Recent Papers\n"
-        + "\n\n---\n\n".join(paper_contexts)
-        + "\n\n## Task\n"
-        "Suggest 2-3 concrete steering instructions for the experiment "
-        "based on techniques, methods, or findings from these papers. "
-        "Each suggestion should:\n"
-        "1. Reference the specific paper it's drawn from\n"
-        "2. Explain what to try and why\n"
-        "3. Be actionable as a one-line --steer instruction\n\n"
-        "Return as a JSON array of objects with keys: "
-        "paper_title, technique, rationale, steer_instruction"
-    )
-
-    try:
-        import json as _json
-        response = client.messages.create(
-            model=config.CLAUDE_FAST_MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
-        # Parse JSON from response (handle markdown code blocks)
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        suggestions = _json.loads(text)
-    except Exception:
-        log.exception("Failed to generate literature suggestions")
-        return {
-            "success": False,
-            "error": "Failed to generate suggestions from Claude.",
-        }
-
-    return {
-        "success": True,
-        "project": proj.get("name", ""),
-        "suggestions": suggestions,
-        "papers_consulted": len(paper_contexts),
-        "message": (
-            f"Found {len(suggestions)} suggestions from "
-            f"{len(paper_contexts)} recent papers."
-        ),
-    }
-
-
-def extract_baselines(*, state, papers: list[str],
-                      metrics: list[str] | None = None) -> dict:
-    """Extract reported metric baselines from papers."""
-    from distillate import config
-    from distillate.tools import (
-        _extract_highlights_from_note,
-        _find_papers_from_state,
-        _read_note_content,
-    )
-
-    paper_texts = []
-    titles_used = []
-
-    for ident in papers:
-        matches = _find_papers_from_state(ident, state)
-        if not matches:
-            continue
-        key, doc = matches[0]
-        title = doc.get("title", "")
-        titles_used.append(title)
-        meta = doc.get("metadata", {})
-
-        parts = [f"Title: {title}"]
-        if meta.get("abstract"):
-            parts.append(f"Abstract: {meta['abstract'][:800]}")
-        if doc.get("summary"):
-            parts.append(f"Summary: {doc['summary']}")
-
-        citekey = meta.get("citekey", "")
-        note = _read_note_content(citekey, title)
-        if note:
-            hl = _extract_highlights_from_note(note)
-            if hl:
-                parts.append(hl[:1500])
-
-        paper_texts.append("\n".join(parts))
-
-    if not paper_texts:
-        return {"error": "No matching papers found.", "papers_used": []}
-
-    # Call Claude to extract baselines
-    from distillate.agent_core import create_client
-    client = create_client()
-    if client is None:
-        return {"success": False, "error": "No API credentials configured."}
-
-    metrics_clause = ""
-    if metrics:
-        metrics_clause = (
-            f"\nFocus on these metrics: {', '.join(metrics)}. "
-            "But also include any other clearly reported metrics."
-        )
-
-    prompt = (
-        "Extract all reported quantitative results (metrics, baselines, "
-        "benchmarks) from the following papers. For each metric found, "
-        "provide the metric name, value, context (what model/method "
-        "achieved it), and which paper it's from.\n\n"
-        + "\n\n---\n\n".join(paper_texts)
-        + f"{metrics_clause}\n\n"
-        "Return as a JSON array of objects with keys: "
-        "paper_title, metric, value, context, direction "
-        "(maximize or minimize)"
-    )
-
-    try:
-        import json as _json
-        response = client.messages.create(
-            model=config.CLAUDE_FAST_MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        baselines = _json.loads(text)
-    except Exception:
-        log.exception("Failed to extract baselines")
-        return {
-            "success": False,
-            "error": "Failed to extract baselines from Claude.",
-        }
-
-    return {
-        "success": True,
-        "baselines": baselines,
-        "papers_used": titles_used,
-        "message": (
-            f"Extracted {len(baselines)} baselines from "
-            f"{len(titles_used)} papers."
-        ),
-    }

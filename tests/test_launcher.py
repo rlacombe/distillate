@@ -656,7 +656,7 @@ class TestStateSessionMethods:
 class TestExperimentToolSchemas:
     def test_schema_count(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 32  # 29 + 3 paper-experiment integration
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 28  # 22 original + 6 new
 
     def test_new_tool_names(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
@@ -940,7 +940,7 @@ class TestServerEndpoints:
         client = self._make_client()
         resp = client.get("/experiments/nonexistent/notebook")
         assert resp.status_code == 404
-        assert resp.json()["detail"] == "not_found"
+        assert resp.json()["reason"] == "not_found"
 
     def test_notebook_returns_html(self):
         from distillate.state import State

@@ -296,7 +296,7 @@ def _slugify(name: str) -> str:
     return slug.strip("-")
 
 
-def create_github_repo(project_path: Path, name: str, private: bool = False) -> dict:
+def create_github_repo(project_path: Path, name: str, private: bool = True) -> dict:
     """Create a GitHub repo and push initial commit.
 
     Uses `gh` CLI (must be installed and authenticated).
@@ -314,33 +314,6 @@ def create_github_repo(project_path: Path, name: str, private: bool = False) -> 
     )
     if auth_check.returncode != 0:
         return {"ok": False, "reason": "gh not authenticated. Run: gh auth login"}
-
-    # Generate README.md if missing (public repos become Distillate ads)
-    readme_path = project_path / "README.md"
-    if not readme_path.exists():
-        experiment_name = name.removeprefix("distillate-xp-") if name.startswith("distillate-xp-") else name
-        readme_path.write_text(
-            f"# {experiment_name}\n\n"
-            "An autonomous ML experiment powered by "
-            "[Distillate](https://github.com/rlacombe/distillate).\n\n"
-            "## What is Distillate?\n\n"
-            "Distillate is an open-source tool that helps scientists design, launch, "
-            "and track autonomous ML experiments — with a paper library built in. "
-            "Nicolas, the research alchemist, orchestrates Claude Code agents that "
-            "iteratively improve your models.\n\n"
-            "## Reproducing this experiment\n\n"
-            "```bash\n"
-            "# Install Distillate\n"
-            "pip install distillate\n\n"
-            "# Clone and run\n"
-            f"git clone https://github.com/$(gh api user -q .login)/{name}.git\n"
-            f"cd {name}\n"
-            "distillate launch  # Resume the experiment\n"
-            "```\n\n"
-            "## Results\n\n"
-            "See `.distillate/runs.jsonl` for the full experiment history.\n",
-            encoding="utf-8",
-        )
 
     # Initial commit if needed
     subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True)

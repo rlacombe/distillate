@@ -31,7 +31,6 @@ VERBOSE_TOOLS = frozenset({
     "add_paper_to_zotero", "refresh_metadata",
     "scan_project", "add_project", "init_experiment",
     "continue_experiment", "sweep_experiment",
-    "manage_session", "replicate_paper",
 })
 
 TOOL_LABELS = {
@@ -72,10 +71,6 @@ TOOL_LABELS = {
     "save_template": "\U0001F4BE Saving template",
     "create_github_repo": "\U0001F4E4 Creating GitHub repo",
     "reading_report": "\U0001F4CA Compiling reading report",
-    "manage_session": "\U0001F3AC Managing session",
-    "replicate_paper": "\U0001F9EA Scaffolding from paper",
-    "suggest_from_literature": "\U0001F4DA Mining the literature",
-    "extract_baselines": "\U0001F4CF Extracting baselines",
 }
 
 
@@ -284,8 +279,9 @@ def build_system_prompt(
         + (
             "- When asked about experiments or projects, use the experiment "
             "tools (list_projects, get_project_details, compare_runs).\n"
-            "- Use manage_session to start, stop, restart, continue, or check "
-            "status of experiment sessions.\n"
+            "- Use launch_experiment to spawn a new auto-research session.\n"
+            "- Use experiment_status to check on running sessions.\n"
+            "- Use stop_experiment to gracefully stop a session.\n"
             "- Use add_project or scan_project to track a new directory.\n"
             "- Use compare_runs to show what changed between experiments.\n"
             "- Use rename_project, rename_run, update_project, update_goals, "
@@ -305,13 +301,6 @@ def build_system_prompt(
             "user-provided hypotheses take precedence over LLM enrichment.\n"
             "- Use delete_project/delete_run with confirm=false first, then "
             "confirm=true after user approval.\n"
-            "- Use replicate_paper when the user wants to reproduce a paper's "
-            "results \u2014 it reads the paper, clones its GitHub repo if "
-            "available, and scaffolds an experiment.\n"
-            "- Use suggest_from_literature to mine recent reads for steering "
-            "ideas \u2014 connects paper insights to running experiments.\n"
-            "- Use extract_baselines to pull reported metrics from papers "
-            "for setting experiment goals.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )
         + "- Look up papers with tools before answering \u2014 don't guess "
@@ -414,10 +403,6 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "save_template": et.save_template_tool,
             "create_github_repo": et.create_github_repo_tool,
             "reading_report": et.reading_report_tool,
-            "manage_session": et.manage_session_tool,
-            "replicate_paper": et.replicate_paper,
-            "suggest_from_literature": et.suggest_from_literature,
-            "extract_baselines": et.extract_baselines,
         })
 
     fn = dispatch.get(name)

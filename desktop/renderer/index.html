@@ -4,15 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline';">
+        content="default-src 'self'; connect-src ws://127.0.0.1:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; frame-src blob:;">
   <title>Distillate</title>
   <link rel="stylesheet" href="../node_modules/highlight.js/styles/tokyo-night-dark.min.css">
-  <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="titlebar">
     <span class="titlebar-text">Distillate</span>
+    <div id="tab-bar" class="hidden">
+      <button class="tab active" data-tab="lab">Lab</button>
+      <button class="tab" data-tab="notebook">Notebook</button>
+      <button class="tab" data-tab="chat">Chat</button>
+    </div>
   </div>
 
   <!-- Settings modal -->
@@ -20,12 +24,9 @@
     <div class="modal">
       <div class="modal-header">
         <h2>Settings</h2>
-        <button id="settings-close" class="modal-close" aria-label="Close settings">&times;</button>
+        <button id="settings-close" class="modal-close">&times;</button>
       </div>
       <div class="modal-body">
-        <div id="settings-onboarding" class="hidden">
-          Welcome! Enter your Anthropic API key to get started.
-        </div>
         <div class="setting-group">
           <label for="setting-api-key">Anthropic API Key</label>
           <input type="password" id="setting-api-key" placeholder="sk-ant-..." autocomplete="off">
@@ -40,261 +41,81 @@
           <button id="settings-save" class="btn-primary">Save</button>
           <span id="settings-status" class="setting-status"></span>
         </div>
-        <div class="setting-divider"></div>
-        <div class="setting-group">
-          <label>Data</label>
-          <div class="setting-data-actions">
-            <button id="settings-export" class="btn-secondary">Export State</button>
-            <button id="settings-import" class="btn-secondary">Import State</button>
-          </div>
-          <p class="setting-hint">Backup or restore your paper library and experiment data.</p>
-        </div>
       </div>
     </div>
   </div>
 
-  <div id="workbench">
-    <!-- Activity bar -->
-    <div id="activity-bar">
-      <button class="activity-btn active" data-pane="sidebar-left" title="Experiments &#x2318;B" aria-label="Toggle experiments">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 3h6v6l4 7H5l4-7V3z"/>
-          <line x1="9" y1="3" x2="15" y2="3"/>
-        </svg>
-      </button>
-      <button class="activity-btn active" data-pane="sidebar-right" title="Papers" aria-label="Toggle papers">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-        </svg>
-      </button>
-      <button class="activity-btn active" data-pane="bottom-panel" title="Chat &#x2318;J" aria-label="Toggle chat">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-        </svg>
-      </button>
-      <div class="activity-spacer"></div>
-      <button class="activity-btn" id="activity-settings" title="Settings &#x2318;," aria-label="Settings">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-      </button>
-    </div>
-
-    <!-- Left sidebar: Experiments -->
-    <div id="sidebar-left">
-      <div class="sidebar-header">
-        <span class="sidebar-title">Experiments</span>
-        <span id="experiments-count" class="sidebar-count"></span>
-        <button id="new-experiment-btn" class="sidebar-header-btn" title="New experiment">+</button>
-      </div>
-      <div id="experiments-sidebar" class="sidebar-content">
-        <div class="sidebar-empty">
-          <p>No experiments yet.</p>
-          <p class="sidebar-empty-hint">Ask Nicolas to run an experiment.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="resize-handle vertical" id="resize-left"></div>
-
-    <!-- Center column -->
-    <div id="center-column">
-      <!-- Editor area -->
-      <div id="editor-area">
-        <div id="editor-tabs">
-          <button class="editor-tab active" data-view="control-panel">Control Panel</button>
-          <button class="editor-tab" data-view="session">Session</button>
-          <button class="editor-tab" data-view="results">Results</button>
-          <button class="editor-tab" data-view="prompt-editor">Setup</button>
-          <span id="editor-tabs-project-name" class="editor-tabs-label"></span>
-        </div>
-        <div id="editor-content">
-          <!-- Control Panel view (default) -->
-          <div id="control-panel-view">
-            <!-- Welcome screen (shown when no experiment selected) -->
-            <div id="welcome">
-              <div class="welcome-header">
-                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 32 32">
-                  <circle cx="16" cy="16" r="15.5" fill="#6366f1"/>
-                  <g fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.35">
-                    <polyline points="5,11 10,15 5,19"/>
-                  </g>
-                  <path d="M11.6,20 L17.1,20 L14.6,24 A2.2,2.2 0 0,1 10.6,22 Z" fill="white" fill-opacity="0.4"/>
-                  <g fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="10.6" y1="22" x2="19.6" y2="7"/>
-                    <line x1="14.6" y1="24" x2="23.6" y2="9"/>
-                    <path d="M10.6,22 A2.2,2.2 0,0,0 14.6,24"/>
-                    <line x1="18.1" y1="6" x2="25.1" y2="10"/>
-                  </g>
-                </svg>
-                <h1>Distillate</h1>
-              </div>
-              <div class="shortcuts-hint">
-                <span class="shortcut-item"><kbd>&#x2318;B</kbd> Experiments</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;J</kbd> Chat</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;1-4</kbd> Tabs</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;R</kbd> Refresh</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>Esc</kbd> Deselect</span>
-              </div>
-            </div>
-
-            <!-- Experiment detail (shown when experiment selected from sidebar) -->
-            <div id="experiment-detail" class="hidden"></div>
-          </div>
-
-          <!-- Session view (live terminal via xterm.js) -->
-          <div id="session-view" class="hidden">
-            <div id="session-empty" class="tab-empty-state">
-              <div class="empty-icon">&#x1F4BB;</div>
-              <h2>No active session</h2>
-              <p>Launch an experiment to see the live Claude session here.</p>
-            </div>
-            <div id="xterm-container" class="hidden"></div>
-          </div>
-
-          <!-- Results view -->
-          <div id="results-view" class="hidden">
-            <div id="results-empty" class="tab-empty-state">
-              <div class="empty-icon">&#x1F4CA;</div>
-              <h2>No results yet</h2>
-              <p>The agent writes RESULTS.md as it runs experiments.</p>
-            </div>
-            <div id="results-toolbar" class="notebook-toolbar hidden">
-              <button id="results-export-btn" class="paper-action-btn">Export HTML</button>
-            </div>
-            <div id="results-rendered" class="markdown-body hidden"></div>
-          </div>
-          <div id="prompt-editor-view" class="hidden">
-            <div id="setup-sub-tabs">
-              <button class="setup-tab active" data-setup="prompt">PROMPT.md</button>
-              <button class="setup-tab" data-setup="claude">CLAUDE.md</button>
-              <div class="setup-tab-spacer"></div>
-              <button id="setup-edit-btn" class="paper-action-btn">Edit</button>
-              <button id="setup-save-btn" class="paper-action-btn hidden">Save</button>
-              <button id="setup-cancel-btn" class="paper-action-btn hidden">Cancel</button>
-              <span id="setup-save-status"></span>
-            </div>
-            <div id="setup-prompt-pane">
-              <div id="prompt-rendered" class="markdown-body hidden"></div>
-              <textarea id="prompt-editor" class="hidden" spellcheck="false" placeholder="Loading PROMPT.md..."></textarea>
-            </div>
-            <div id="setup-claude-pane" class="hidden">
-              <div id="claude-rendered" class="markdown-body hidden"></div>
-              <textarea id="claude-editor" class="hidden" spellcheck="false" placeholder="Loading CLAUDE.md..."></textarea>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="resize-handle horizontal" id="resize-bottom"></div>
-
-      <!-- Bottom panel: Chat -->
-      <div id="bottom-panel">
-        <div class="panel-header" id="panel-header-chat">
-          <span class="panel-title">Chat</span>
-          <div id="search-bar" class="hidden">
-            <input id="search-input" type="text" placeholder="Search..." aria-label="Search messages">
-            <span id="search-count"></span>
-            <button class="search-nav-btn" id="search-prev" aria-label="Previous">&#x25B2;</button>
-            <button class="search-nav-btn" id="search-next" aria-label="Next">&#x25BC;</button>
-            <button class="search-close-btn" id="search-close" aria-label="Close">&times;</button>
-          </div>
-        </div>
-        <div id="chat-area">
-          <div id="chat-welcome">
-            <div class="welcome-banner">
-              <div class="banner-line">
-                <span class="banner-dashes">&#x2500;&#x2500;&#x2500;</span>
-                <span class="banner-flask">&#x2697;&#xFE0F;</span>
-                <span class="banner-name">Nicolas</span>
-                <span class="banner-dashes-tail"></span>
-              </div>
-              <div class="banner-body">
-                <p class="banner-tagline">Your research alchemist</p>
-                <p id="welcome-stats-experiments" class="banner-stats"></p>
-                <p id="welcome-stats" class="banner-stats"></p>
-              </div>
-              <div class="banner-footer"></div>
-            </div>
-            <div class="suggestions">
-              <button class="suggestion" data-text="What's in my queue?">What's in my queue?</button>
-              <button class="suggestion" data-text="Summarize my last read">Summarize last read</button>
-              <button class="suggestion" data-text="How are my experiments going?">Experiment status</button>
-              <button class="suggestion" data-text="What should I try next?">What should I try next?</button>
-            </div>
-          </div>
-          <div id="messages" role="log" aria-live="polite"></div>
-        </div>
-        <div id="input-area">
-          <form id="input-form">
-            <textarea id="input" placeholder="Ask Nicolas anything..." rows="1"
-                      autofocus autocomplete="off" aria-label="Chat message"></textarea>
-            <button type="submit" id="send-btn" title="Send" aria-label="Send message">
-              <svg id="send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-              <svg id="stop-icon" class="hidden" width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <rect x="9" y="9" width="10" height="10" rx="2" fill="white"/>
-                <circle cx="14" cy="14" r="12" stroke="white" stroke-width="2"
-                        stroke-dasharray="18 57" stroke-linecap="round" class="stop-orbit"/>
-              </svg>
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-
-    <div class="resize-handle vertical" id="resize-right"></div>
-
-    <!-- Right sidebar: Papers -->
-    <div id="sidebar-right">
-      <div class="sidebar-header">
-        <span class="sidebar-title">Papers</span>
-        <span id="papers-count" class="sidebar-count"></span>
-        <button id="papers-insights-toggle" class="sidebar-action-btn" title="Insights">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="20" x2="18" y2="10"/>
-            <line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-          </svg>
-        </button>
-      </div>
-      <div id="papers-sidebar-filters"></div>
-      <div id="papers-sidebar" class="sidebar-content"></div>
-      <div id="papers-insights-panel" class="sidebar-content hidden"></div>
-    </div>
+  <!-- Lab tab (experiment timeline) -->
+  <div id="lab-container" class="tab-content hidden">
+    <div id="lab-stats" class="lab-stats-bar"></div>
+    <div id="lab-timeline"></div>
   </div>
 
-  <!-- Status bar -->
-  <div id="status-bar">
-    <span id="status-dot" class="dot disconnected" aria-hidden="true"></span>
-    <span id="status-text">Connecting...</span>
-    <div class="status-spacer"></div>
-    <span class="powered-by" title="Chat runs through Claude Code (Agent SDK)">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px; opacity: 0.6;">
-        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-      </svg>Claude Code
-    </span>
-    <div class="model-picker">
-      <select id="model-select" class="model-select" title="Model" aria-label="Select model">
-        <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
-        <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-        <option value="claude-opus-4-6">Opus 4.6</option>
-      </select>
+  <!-- Notebook tab -->
+  <div id="notebook-container" class="tab-content hidden">
+    <iframe id="notebook-frame" sandbox="allow-scripts" style="width:100%;height:100%;border:none;background:#0d1117;"></iframe>
+  </div>
+
+  <!-- Chat tab (existing) -->
+  <div id="chat-container" class="tab-content">
+    <div id="welcome">
+      <div class="welcome-header">
+        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 32 32">
+          <circle cx="16" cy="16" r="15.5" fill="#6366f1"/>
+          <g fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.35">
+            <polyline points="5,11 10,15 5,19"/>
+          </g>
+          <path d="M11.6,20 L17.1,20 L14.6,24 A2.2,2.2 0 0,1 10.6,22 Z" fill="white" fill-opacity="0.4"/>
+          <g fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="10.6" y1="22" x2="19.6" y2="7"/>
+            <line x1="14.6" y1="24" x2="23.6" y2="9"/>
+            <path d="M10.6,22 A2.2,2.2 0,0,0 14.6,24"/>
+            <line x1="18.1" y1="6" x2="25.1" y2="10"/>
+          </g>
+        </svg>
+        <h1>Distillate</h1>
+      </div>
+
+      <div class="welcome-banner">
+        <div class="banner-line">
+          <span class="banner-dashes">&#x2500;&#x2500;&#x2500;</span>
+          <span class="banner-flask">&#x2697;&#xFE0F;</span>
+          <span class="banner-name">Nicolas</span>
+          <span class="banner-dashes-tail"></span>
+        </div>
+        <div class="banner-body">
+          <p class="banner-tagline">Your research alchemist.</p>
+          <p id="welcome-stats" class="banner-stats"></p>
+        </div>
+        <div class="banner-footer"></div>
+      </div>
+
+      <div class="suggestions">
+        <button class="suggestion" data-text="What's in my queue?">What's in my queue?</button>
+        <button class="suggestion" data-text="Summarize my last read">Summarize my last read</button>
+        <button class="suggestion" data-text="What's trending in AI?">What's trending in AI?</button>
+      </div>
     </div>
+
+    <div id="messages"></div>
+  </div>
+
+  <div id="input-area">
+    <div id="status-bar">
+      <span id="status-dot" class="dot disconnected"></span>
+      <span id="status-text">Connecting...</span>
+    </div>
+    <form id="input-form">
+      <textarea id="input" placeholder="Ask Nicolas anything..." rows="1"
+                autofocus autocomplete="off"></textarea>
+      <button type="submit" id="send-btn" title="Send">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </form>
   </div>
 
   <script src="../node_modules/marked/lib/marked.umd.js"></script>

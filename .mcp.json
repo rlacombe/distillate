@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "distillate": {
-      "command": "python3",
-      "args": ["-m", "distillate.mcp_server"]
-    }
-  }
-}

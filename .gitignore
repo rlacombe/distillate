@@ -4,12 +4,7 @@ state.lock
 *.pdf
 *.rmdoc
 *.zip
-# Claude Code — track CLAUDE.md and skills, ignore memory/settings
-.claude/*
-!.claude/CLAUDE.md
-!.claude/skills/
-!.claude/skills/*/
-!.claude/skills/*/SKILL.md
+.claude/
 uv.lock
 
 # Python
@@ -22,9 +17,3 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv-desktop/
-.wrangler/
-workers/.wrangler/
-
-# Desktop (Electron)
-desktop/node_modules/
-desktop/dist/

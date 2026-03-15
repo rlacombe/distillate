@@ -41,19 +41,13 @@ _CMD_KV_RE = re.compile(
     r"(?<![/\w])(\w+)\s*=\s*([\d.eE+-]+|[Tt]rue|[Ff]alse)"
 )
 
-# --key value pairs (argparse style)
-_ARGPARSE_RE = re.compile(
-    r"--(\w+)\s+([\d.eE+-]+|[Tt]rue|[Ff]alse)(?=\s|$)"
-)
-
 # Metric patterns in training stdout
 _METRIC_RE = re.compile(
     r"(?:^|[|\s,])\s*"
     r"(accuracy|loss|exact_match|val_loss|val_accuracy|test_accuracy|"
     r"train_loss|train_accuracy|val_exact_match|f1|precision|recall|"
     r"perplexity|bleu|rouge|auc|best_val_acc|final_loss|val_bpb|"
-    r"train_bpb|bpb|mse|rmse|mae|test_acc|train_acc|val_acc|"
-    r"param_count|n_params|total_params|params)"
+    r"train_bpb|bpb|mse|rmse|mae)"
     r"\s*[=:]\s*([\d.]+)%?",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -85,11 +79,9 @@ def _is_training_command(command: str) -> bool:
 
 
 def _extract_hyperparams(command: str) -> dict:
-    """Extract hyperparameters from command-line key=value and --key value pairs."""
+    """Extract hyperparameters from command-line key=value pairs."""
     hp = {}
     for key, val in _CMD_KV_RE.findall(command):
-        hp[key] = _coerce(val)
-    for key, val in _ARGPARSE_RE.findall(command):
         hp[key] = _coerce(val)
     return hp
 
@@ -194,63 +186,6 @@ def _emit_epoch_metrics(
         _append_event(project_root, evt)
 
 
-def _check_dirty_git(project_root: Path) -> None:
-    """Warn if git has uncommitted changes when starting a new training run.
-
-    This catches the case where the agent ran an experiment but forgot to
-    commit before starting the next one.
-    """
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=project_root, capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            print(
-                "\n*** WARNING: You have uncommitted changes. The protocol "
-                "requires committing after EACH experiment run before "
-                "starting the next one. Run: git add -A && git commit -m "
-                "'<description>: <metric>=<value> [keep|discard]' && "
-                "git push ***"
-            )
-    except Exception:
-        pass
-
-
-def _check_running_entry(project_root: Path) -> None:
-    """Warn if no 'running' entry in runs.jsonl for the current training run.
-
-    The protocol requires announcing a run before starting training.
-    """
-    runs_file = project_root / ".distillate" / "runs.jsonl"
-    if not runs_file.exists():
-        print(
-            "\n*** WARNING: No .distillate/runs.jsonl found. You MUST "
-            "announce each run by appending a 'running' entry BEFORE "
-            "starting training. See .distillate/REPORTING.md ***"
-        )
-        return
-    try:
-        lines = runs_file.read_text(encoding="utf-8").strip().splitlines()
-        if not lines:
-            print(
-                "\n*** WARNING: runs.jsonl is empty. Append a 'running' "
-                "entry before each training run. ***"
-            )
-            return
-        last = json.loads(lines[-1])
-        if last.get("status") != "running":
-            print(
-                "\n*** WARNING: Last entry in runs.jsonl has status "
-                f"'{last.get('status')}', not 'running'. You MUST "
-                "announce each new run by appending a 'running' entry "
-                "BEFORE starting training. ***"
-            )
-    except Exception:
-        pass
-
-
 _RUN_TIME_WARN_MINUTES = 10  # Warn after this many minutes on a single run
 
 
@@ -278,14 +213,7 @@ def _check_run_elapsed(project_root: Path) -> None:
         started = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
         elapsed_min = elapsed / 60
-        if elapsed_min > 30:
-            print(
-                f"\n*** CRITICAL: Run {last.get('id', '?')} has been going "
-                f"for {int(elapsed_min)} min. STOP IMMEDIATELY. Log whatever "
-                f"results you have (even partial), commit, and start the next "
-                f"run. ***"
-            )
-        elif elapsed_min > _RUN_TIME_WARN_MINUTES:
+        if elapsed_min > _RUN_TIME_WARN_MINUTES:
             print(
                 f"\n*** TIME WARNING: You have been on run {last.get('id', '?')} "
                 f"for {int(elapsed_min)} minutes. Wrap up this run NOW — "
@@ -343,19 +271,6 @@ def main() -> None:
                 "results": metrics,
                 "session_id": session_id,
             })
-
-            # Protocol enforcement: warn about missing announcement and dirty git
-            _check_running_entry(project_root)
-            _check_dirty_git(project_root)
-
-            # Remind agent to log results
-            if metrics:
-                metric_str = ", ".join(f"{k}={v}" for k, v in metrics.items())
-                print(
-                    f"\n*** Training completed. Detected metrics: {metric_str}. "
-                    f"Now: 1) append completed entry to runs.jsonl, "
-                    f"2) git add -A && git commit && git push ***"
-                )
             return
 
         # Detect result file writes
@@ -376,17 +291,6 @@ def main() -> None:
                     "\n*** PROMPT.md has been updated by the user. "
                     "Re-read PROMPT.md now and adjust your approach accordingly. ***"
                 )
-            except OSError:
-                pass
-
-        # Check for steering instructions from the desktop app
-        steering = project_root / ".distillate" / "steering.md"
-        if steering.exists():
-            try:
-                text = steering.read_text(encoding="utf-8").strip()
-                steering.unlink()
-                if text:
-                    print(f"\n*** USER INSTRUCTION ***\n{text}\n*** END INSTRUCTION ***")
             except OSError:
                 pass
 

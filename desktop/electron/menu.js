@@ -1,6 +1,4 @@
-const { app, Menu, shell, dialog } = require("electron");
-const fs = require("fs");
-const path = require("path");
+const { app, Menu, shell } = require("electron");
 
 /**
  * Build the application menu.
@@ -131,29 +129,6 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
             shell.openExternal(
               "https://github.com/rlacombe/distillate/issues"
             ),
-        },
-        { type: "separator" },
-        {
-          label: "Reset Python Environment",
-          click: async () => {
-            const { response } = await dialog.showMessageBox({
-              type: "warning",
-              buttons: ["Cancel", "Reset"],
-              defaultId: 0,
-              cancelId: 0,
-              title: "Reset Python Environment",
-              message: "This will delete the bundled Python environment and restart the app. Use this if the app is not working correctly.",
-            });
-            if (response === 1) {
-              const userData = app.getPath("userData");
-              const venvDir = path.join(userData, "python-env");
-              const versionFile = path.join(userData, "distillate-version.txt");
-              try { fs.rmSync(venvDir, { recursive: true, force: true }); } catch (_) {}
-              try { fs.unlinkSync(versionFile); } catch (_) {}
-              app.relaunch();
-              app.exit(0);
-            }
-          },
         },
         { type: "separator" },
         {
