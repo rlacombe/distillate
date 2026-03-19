@@ -1,28 +1,48 @@
 # Changelog
 
-## 0.7.0 — 2026-03-03
+## 0.314.0 — 2026-03-14 (Pi Day 🥧)
 
-Desktop app, auto-update, and BYOK mode.
+Auto-research control plane: live experiment capture, desktop lab dashboard, and Claude Code hooks.
 
 ### New Features
 
-- **Desktop app**: Electron shell for Nicolas — a native macOS app with syntax highlighting, tool indicators, and the same agent you know from the terminal
-- **Auto-update via PyPI**: the desktop app checks PyPI on launch and upgrades distillate automatically — no need to rebuild or re-download the DMG
-- **BYOK mode**: bring your own Anthropic API key via Settings (Cmd+,) — no account or cloud service required
-- **Recovery menu**: Help > Reset Python Environment re-creates the bundled venv if something goes wrong
+- **Live experiment capture**: three data sources feed into a unified experiment timeline — structured reports (`.distillate/runs.jsonl`), Claude Code hooks (passive capture), and artifact scanning (existing)
+- **Structured reporting standard**: agents append one JSON line per iteration with hypothesis, results, decision (keep/discard/crash), and reasoning
+- **Claude Code hooks**: `post_bash.py` captures training runs from Bash stdout, `on_stop.py` logs session boundaries — zero-effort passive tracking
+- **`--install-hooks <path>`**: one-command setup copies hook config into `.claude/settings.json` and creates `.distillate/` directory
+- **`--watch <path>`**: watches an experiment repo, regenerates notebooks on changes, opens in browser
+- **Decision-aware notebooks**: keep/discard/crash column in timeline, agent reasoning blocks, SVG metric progression chart
+- **Desktop lab tab**: live experiment timeline via SSE, sparkline chart, decision badges, banner stats
+- **Desktop notifications**: new baseline alerts, stuck agent detection (5+ consecutive discards), crash alerts
+- **SSE endpoint**: `GET /experiments/stream` for real-time experiment event streaming
+- **Expanded `/status`**: experiment stats (total runs, kept, discarded, active sessions)
+- **Autoresearch kit**: `REPORTING.md` prompt addendum, `hooks.json` config template, `/experiment` skill
+- **Desktop app**: Electron shell for Nicolas — native macOS app with syntax highlighting and tool indicators
+- **BYOK mode**: bring your own Anthropic API key via Settings (Cmd+,)
+
+### CLI & Internals
+
+- **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown, engagement distribution, most-cited papers, top authors
+- **`--export-state` / `--import-state`**: backup and restore tracked papers and reading history
+- **`--verbose` / `-v`**: show INFO-level logs on the console without full DEBUG output
+- **State schema versioning**: migration framework for future state.json changes (currently v1)
+- **S2 TLDR fallback**: papers without AI summaries now fall back to Semantic Scholar's one-sentence TLDR before using the abstract
+- **Progress bar for `--refresh-metadata`**: shows `[i/N]` progress and a summary of changes
+- **Init safety**: `--init` warns when existing tracked papers are found, offers backup before re-setup
+- Internal: extracted `_parse_page_ids()` (renderer, 4 call sites) and `_fetch_pdf_bytes()` (pipeline, 5 call sites) to reduce code duplication
 
 ### Improvements
 
-- Tool indicator subtitles in the desktop UI (e.g. "Searching for 'attention'...")
-- Queue pagination for large libraries
-- Retry with backoff on overloaded/rate-limited API errors
-- Link styling in chat messages matches indigo accent
-- `[desktop]` optional dependency group in pyproject.toml for clean server installs
+- Dual-source ingestion with fingerprint-based correlation and deduplication
+- Desktop tab bar (Lab / Notebook / Chat) — Lab tab auto-activates when experiments are running
+- Tool indicator subtitles in the desktop UI
+- `[desktop]` optional dependency group in pyproject.toml
 
 ### Migration from 0.6.x
 
-- **Desktop app is optional** — the CLI works exactly the same as before. Install and run `distillate` as usual.
-- **Desktop download**: grab the DMG from the [GitHub Releases](https://github.com/rlacombe/distillate/releases) page. Right-click > Open on first launch (unsigned).
+- **No breaking changes** — all new features are additive
+- **Desktop app is optional** — the CLI works exactly the same as before
+- **Hooks are opt-in** — run `distillate --install-hooks <path>` to enable passive experiment capture in any repo
 
 ## 0.6.0 — 2026-02-25
 

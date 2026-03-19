@@ -32,7 +32,7 @@ def _find_papers_from_state(query: str, state) -> List[tuple]:
     Reuses main._find_papers logic: index number, exact citekey,
     citekey substring, title substring.
     """
-    from distillate.main import _find_papers
+    from distillate.pipeline import _find_papers
     return _find_papers(query, state)
 
 
@@ -235,7 +235,8 @@ TOOL_SCHEMAS = [
         "name": "promote_papers",
         "description": (
             "Promote papers to the top of the reading queue so they're "
-            "easy to find and read next. Demotes previously promoted papers. "
+            "easy to find and read next. By default, previously promoted "
+            "papers are kept. Set demote=true to demote unstarted ones. "
             "This is a write operation — ask the user to confirm first."
         ),
         "input_schema": {
@@ -247,6 +248,13 @@ TOOL_SCHEMAS = [
                     "description": (
                         "List of paper identifiers (index numbers, citekeys, "
                         "or titles) to promote"
+                    ),
+                },
+                "demote": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, demote previously promoted papers that "
+                        "haven't been started yet. Defaults to false."
                     ),
                 },
             },
@@ -440,6 +448,18 @@ def get_paper_details(*, state, identifier: str) -> dict:
             notes_text = note_content[hw_start:hw_end] if hw_end > 0 else note_content[hw_start:]
             if len(notes_text) > 1000:
                 notes_text = notes_text[:1000] + "\n... (truncated)"
+
+    # Linked projects (reverse link from experiments)
+    linked_projects = doc.get("linked_projects", [])
+    if linked_projects:
+        project_names = []
+        for pid in linked_projects:
+            proj = state.get_project(pid)
+            if proj:
+                project_names.append(proj.get("name", pid))
+            else:
+                project_names.append(pid)
+        paper["linked_projects"] = project_names
 
     return {
         "found": True,
@@ -760,7 +780,7 @@ def reprocess_paper(*, state, identifier: str) -> dict:
     title = doc.get("title", "")
 
     try:
-        from distillate.main import _reprocess
+        from distillate.pipeline import _reprocess
         _reprocess([identifier])
         return {"success": True, "title": title}
     except Exception as e:
@@ -768,7 +788,7 @@ def reprocess_paper(*, state, identifier: str) -> dict:
         return {"success": False, "error": str(e), "title": title}
 
 
-def promote_papers(*, state, identifiers: List[str]) -> dict:
+def promote_papers(*, state, identifiers: List[str], demote: bool = False) -> dict:
     """Promote papers to the top of the reading queue."""
     from distillate import config as _cfg
     from distillate.state import acquire_lock, release_lock
@@ -799,12 +819,17 @@ def promote_papers(*, state, identifiers: List[str]) -> dict:
         return {"success": False, "error": "Another distillate instance is running."}
 
     try:
-        from distillate.main import _demote_and_promote
-        _demote_and_promote(state, pick_keys, verbose=False)
+        from distillate.pipeline import _demote_and_promote
+        result = _demote_and_promote(state, pick_keys, verbose=False, demote=demote)
         state.reload()
         return {
             "success": True,
-            "promoted": resolved_titles,
+            "promoted": result["promoted"],
+            "demoted": result["demoted"],
+            "kept": result["kept"],
+            "skipped": result["skipped"],
+            "already_promoted": result["already_promoted"],
+            "total_promoted": result["total_promoted"],
             "errors": errors if errors else [],
         }
     except Exception as e:

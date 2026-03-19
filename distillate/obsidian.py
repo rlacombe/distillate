@@ -1118,6 +1118,32 @@ def _projects_dir() -> Optional[Path]:
     return pd
 
 
+def write_experiment_html_notebook(
+    project: dict,
+    content: str,
+) -> Optional[Path]:
+    """Write a self-contained HTML lab notebook for a project.
+
+    Writes to ``Projects/html/{project_id}.html``.  Unlike the markdown
+    notebook, HTML is fully regenerated each time (no markers — it's a
+    read-only presentation layer).
+
+    Returns the path to the written file, or None if output is unconfigured.
+    """
+    pd = _projects_dir()
+    if pd is None:
+        return None
+
+    html_dir = pd / "html"
+    html_dir.mkdir(parents=True, exist_ok=True)
+
+    project_id = project.get("id", "untitled")
+    html_path = html_dir / f"{project_id}.html"
+    html_path.write_text(content, encoding="utf-8", newline="\n")
+    log.info("Wrote HTML notebook: %s", html_path)
+    return html_path
+
+
 def write_experiment_notebook(
     project: dict,
     content: str,

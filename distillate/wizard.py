@@ -1,0 +1,985 @@
+"""Interactive setup wizard for first-time users.
+
+Contains the init wizard, scheduling helpers, and newsletter subscription.
+"""
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+import requests
+
+log = logging.getLogger("distillate")
+
+_SUBSCRIBE_URL = "https://distillate-subscribe.distillate.workers.dev/"
+
+
+def _mask_value(value: str) -> str:
+    """Mask a config value for display, showing first/last 4 chars."""
+    if len(value) > 12:
+        return value[:4] + "..." + value[-4:]
+    return value
+
+
+def _prompt_with_default(prompt: str, env_key: str, sensitive: bool = False) -> str | None:
+    """Prompt user, showing existing value as default. Returns None if skipped."""
+    current = os.environ.get(env_key, "")
+    if current:
+        display = _mask_value(current) if sensitive else current
+        user_input = input(f"{prompt} [{display}]: ").strip()
+    else:
+        user_input = input(f"{prompt}: ").strip()
+
+    if not user_input and current:
+        return current
+    return user_input or None
+
+
+def _init_step5_claude(save_to_env) -> None:
+    """Step 5: Claude API key."""
+    print("  " + "-" * 48)
+    print("  Step 5 of 6: Claude API")
+    print("  " + "-" * 48)
+    print()
+    print("  An Anthropic API key powers several features:")
+    print()
+    print("    - AI summaries & key learnings for each paper")
+    print("    - The Nicolas agent REPL (interactive assistant)")
+    print("    - Daily reading suggestions")
+    print("    - Experiment enrichment (hypothesis generation)")
+    print()
+    print("  Without a key, papers use their abstract as fallback")
+    print("  and the agent REPL is unavailable.")
+    print()
+    print("  Note: your highlights and abstracts are sent to the Claude API")
+    print("  for processing. No data is stored by Anthropic.")
+    print()
+    anthropic_key = _prompt_with_default(
+        "  Anthropic API key (Enter to skip)", "ANTHROPIC_API_KEY", sensitive=True,
+    )
+    if anthropic_key:
+        save_to_env("ANTHROPIC_API_KEY", anthropic_key)
+        print("  Claude API enabled.")
+    else:
+        print("  Skipped.")
+    print()
+
+
+def _init_step6_extras(save_to_env) -> None:
+    """Step 6: Email digest + experiment tracking."""
+    print("  " + "-" * 48)
+    print("  Step 6 of 6: Extras")
+    print("  " + "-" * 48)
+    print()
+    print("  These are all optional. Press Enter to skip any of them.")
+    print("  You can come back anytime with 'distillate --init'.")
+    print()
+
+    # Email Digest
+    print("  Email Digest")
+    print()
+    print("  Get a weekly email summarizing what you've read, plus")
+    print("  daily suggestions for what to read next from your queue.")
+    print()
+    print("  Requires a free Resend account: https://resend.com")
+    print()
+    resend_key = _prompt_with_default(
+        "  Resend API key (Enter to skip)", "RESEND_API_KEY", sensitive=True,
+    )
+    if resend_key:
+        save_to_env("RESEND_API_KEY", resend_key)
+        email_to = _prompt_with_default("  Your email address", "DIGEST_TO")
+        if email_to:
+            save_to_env("DIGEST_TO", email_to)
+        print()
+        print("  Resend's free tier includes one custom domain (3,000 emails/month).")
+        print("  Add your domain at resend.com/domains, then set DIGEST_FROM")
+        print("  in your .env (e.g. digest@yourdomain.com).")
+        print()
+        print("  Email digest enabled.")
+    else:
+        print("  Skipped.")
+    print()
+
+    # Experiment tracking (merged from old step 6)
+    print("  Experiment Tracking")
+    print()
+    print("  Track ML experiments alongside your papers.")
+    print("  Distillate can auto-discover experiments in your project directories")
+    print("  and generate rich lab notebooks with run timelines and diffs.")
+    print()
+
+    enable = input("  Enable experiment tracking? [y/N] ").strip().lower()
+    if enable not in ("y", "yes"):
+        print("  Skipped. You can enable later with EXPERIMENTS_ENABLED=true")
+        print()
+        return
+
+    save_to_env("EXPERIMENTS_ENABLED", "true")
+
+    root = input("  Research folder root (e.g. ~/Code/Research): ").strip()
+    if root:
+        root_path = Path(root).expanduser().resolve()
+        if root_path.is_dir():
+            save_to_env("EXPERIMENTS_ROOT", str(root_path))
+            print(f"  Set EXPERIMENTS_ROOT={root_path}")
+
+            # Auto-discover ML repos
+            from distillate.experiments import detect_ml_repos
+            repos = detect_ml_repos(root_path)
+            if repos:
+                print(f"\n  Found {len(repos)} ML project(s):")
+                for r in repos[:10]:
+                    print(f"    - {r.name} ({r})")
+                print()
+                scan_now = input("  Scan them now? [Y/n] ").strip().lower()
+                if scan_now not in ("n", "no"):
+                    from distillate.experiments import (
+                        generate_html_notebook,
+                        generate_notebook,
+                        scan_project,
+                        slugify,
+                    )
+                    from distillate.obsidian import (
+                        write_experiment_html_notebook,
+                        write_experiment_notebook,
+                    )
+                    from distillate.state import State
+                    state = State()
+                    for repo_path in repos:
+                        print(f"    Scanning {repo_path.name}...")
+                        result = scan_project(repo_path)
+                        if "error" not in result:
+                            pid = slugify(result["name"])
+                            state.add_project(
+                                project_id=pid,
+                                name=result["name"],
+                                path=str(repo_path),
+                            )
+                            for run_id, run_data in result.get("runs", {}).items():
+                                state.add_run(pid, run_id, run_data)
+                            state.update_project(
+                                pid,
+                                last_scanned_at=__import__("datetime").datetime.now(
+                                    __import__("datetime").timezone.utc
+                                ).isoformat(),
+                                last_commit_hash=result.get("head_hash", ""),
+                            )
+                            runs = result.get("runs", {})
+                            print(f"      {len(runs)} run(s) discovered")
+                            # Generate notebooks (MD + HTML)
+                            proj = state.get_project(pid)
+                            if proj:
+                                nb = generate_notebook(proj)
+                                write_experiment_notebook(proj, nb)
+                                nb_html = generate_html_notebook(proj)
+                                write_experiment_html_notebook(proj, nb_html)
+                    state.save()
+                    print(f"\n  Tracking {len(repos)} project(s).")
+            else:
+                print("  No ML projects found in that folder.")
+        else:
+            print(f"  Directory not found: {root_path}")
+    else:
+        print("  Skipped root folder. You can set EXPERIMENTS_ROOT later.")
+
+    print()
+
+
+def _schedule() -> None:
+    """Set up, check, or remove automatic syncing."""
+    import platform
+
+    if platform.system() == "Darwin":
+        _schedule_macos()
+    elif platform.system() == "Windows":
+        print()
+        print("  Automatic scheduling on Windows uses Task Scheduler.")
+        print()
+        print("  Open Task Scheduler and create a task that runs:")
+        print(f"    distillate --sync")
+        print()
+    else:
+        _schedule_linux()
+
+
+def _schedule_macos() -> None:
+    """macOS scheduling via launchd."""
+    import plistlib
+    import subprocess
+
+    plist_path = Path.home() / "Library/LaunchAgents/com.distillate.sync.plist"
+    log_path = "~/Library/Logs/distillate.log"
+
+    if plist_path.exists():
+        # Parse plist to show current config
+        interval_mins = 15
+        try:
+            with open(plist_path, "rb") as f:
+                plist = plistlib.load(f)
+            interval_secs = plist.get("StartInterval", 900)
+            interval_mins = interval_secs // 60
+        except Exception:
+            pass
+
+        print()
+        print("  Distillate Scheduling")
+        print("  " + "-" * 40)
+        print("  Status:   Active (launchd)")
+        print(f"  Interval: every {interval_mins} minutes")
+        print(f"  Log:      {log_path}")
+        print()
+        print("    1. Run sync now")
+        print("    2. Remove schedule")
+        print("    3. Keep current")
+        print()
+        choice = input("  Your choice [3]: ").strip()
+
+        if choice == "1":
+            subprocess.run(["launchctl", "start", "com.distillate.sync"])
+            print("  Sync started.")
+        elif choice == "2":
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True,
+            )
+            plist_path.unlink(missing_ok=True)
+            print("  Schedule removed.")
+        else:
+            print("  Keeping current schedule.")
+        print()
+    else:
+        print()
+        print("  Distillate Scheduling")
+        print("  " + "-" * 40)
+        print("  Status: Not scheduled")
+        print()
+        print("  Distillate can run automatically every 15 minutes")
+        print("  so your papers stay in sync without running it manually.")
+        print()
+        setup = input("  Set up automatic syncing? [Y/n] ").strip().lower()
+        if setup != "n":
+            _install_launchd()
+        else:
+            print("  Skipped. Run 'distillate --schedule' later.")
+        print()
+
+
+def _install_launchd() -> None:
+    """Generate and install a launchd plist for automatic syncing."""
+    import plistlib
+    import shutil
+    import subprocess
+
+    label = "com.distillate.sync"
+    plist_path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+    log_path = str(Path.home() / "Library/Logs/distillate.log")
+
+    # Find distillate executable
+    executable = shutil.which("distillate")
+    if not executable:
+        print("  Could not find 'distillate' in PATH.")
+        print("  Make sure it's installed: pip install distillate")
+        return
+
+    # Find rmapi for PATH
+    rmapi_path = shutil.which("rmapi")
+    launch_path = "/usr/local/bin:/usr/bin:/bin"
+    if rmapi_path:
+        rmapi_dir = str(Path(rmapi_path).parent)
+        if rmapi_dir not in launch_path:
+            launch_path = f"{rmapi_dir}:{launch_path}"
+
+    # Unload existing agent
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        capture_output=True,
+    )
+
+    # Ensure directory exists
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write plist
+    plist_data = {
+        "Label": label,
+        "ProgramArguments": [executable],
+        "StartInterval": 900,
+        "EnvironmentVariables": {"PATH": launch_path},
+        "StandardOutPath": log_path,
+        "StandardErrorPath": log_path,
+        "Nice": 10,
+    }
+    with open(plist_path, "wb") as f:
+        plistlib.dump(plist_data, f)
+
+    # Load the agent
+    result = subprocess.run(
+        ["launchctl", "load", str(plist_path)],
+        capture_output=True,
+    )
+
+    if result.returncode == 0:
+        print()
+        print("  Automatic syncing enabled (every 15 minutes).")
+        print(f"  Log: {log_path}")
+    else:
+        print()
+        print("  Could not load launchd agent.")
+        print(f"  Plist written to: {plist_path}")
+        print("  Try: launchctl load " + str(plist_path))
+
+
+def _schedule_linux() -> None:
+    """Linux scheduling via cron."""
+    import subprocess
+
+    has_entry = False
+    lines = []
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and "distillate" in result.stdout:
+            has_entry = True
+            lines = [ln for ln in result.stdout.splitlines() if "distillate" in ln]
+    except Exception:
+        pass
+
+    print()
+    print("  Distillate Scheduling")
+    print("  " + "-" * 40)
+
+    if has_entry:
+        print("  Status: Active (cron)")
+        for line in lines:
+            print(f"    {line.strip()}")
+        print()
+        print("  To modify: crontab -e")
+    else:
+        print("  Status: Not scheduled")
+        print()
+        print("  Add this to your crontab (crontab -e):")
+        print("    */15 * * * * distillate")
+    print()
+
+
+def _init_newsletter() -> None:
+    """Offer to subscribe to product update emails."""
+    print()
+    print("  Product Updates")
+    print("  " + "-" * 40)
+    print("  Get notified about new features and releases.")
+    print("  One email per release, unsubscribe anytime.")
+    print()
+    email = input("  Your email (Enter to skip): ").strip()
+    if not email:
+        print("  Skipped.")
+        return
+    try:
+        resp = requests.post(
+            _SUBSCRIBE_URL,
+            json={"email": email},
+            timeout=5,
+        )
+        if resp.ok:
+            print("  You're in! We'll keep you posted.")
+        else:
+            print("  Couldn't subscribe right now, but no worries.")
+    except Exception:
+        print("  Couldn't reach the server, but no worries.")
+
+
+def _init_done(env_path) -> None:
+    """Print post-setup instructions, offer import of existing papers, and automated syncing."""
+    print()
+    print("  " + "=" * 48)
+    print("  Setup complete!")
+    print("  " + "=" * 48)
+    print()
+    print(f"  Config saved to: {env_path}")
+
+    # -- Seed queue: offer to import existing papers --
+    _init_seed()
+
+    print()
+    print("  " + "-" * 48)
+    print("  How it works")
+    print("  " + "-" * 48)
+    print()
+    print("  There are seven commands:")
+    print()
+    print("    distillate --import")
+    print("      Import existing papers from your Zotero library.")
+    print()
+    print("    distillate")
+    print("      Syncs everything in both directions:")
+    print("      Zotero -> reMarkable (new papers)")
+    print("      reMarkable -> notes (papers you finished reading)")
+    print()
+    print("    distillate --status")
+    print("      Shows queue health and reading stats at a glance.")
+    print()
+    print("    distillate --list")
+    print("      List all tracked papers grouped by status.")
+    print()
+    print("    distillate --suggest")
+    print("      Picks 3 papers from your queue and moves them")
+    print("      to the front of your Distillate folder. Unread")
+    print("      suggestions are moved back to Inbox automatically.")
+    print()
+    print("    distillate --digest")
+    print("      Shows a summary of what you read this week.")
+    print()
+    print("    distillate --schedule")
+    print("      Set up or manage automatic syncing.")
+    print()
+    print("  Your workflow:")
+    print("    1. Save a paper to Zotero (browser connector)")
+    print("    2. distillate (PDF lands on your reMarkable)")
+    print("    3. Read and highlight on your reMarkable")
+    print("    4. Move the document to Distillate/Read")
+    print("    5. distillate (annotated PDF + notes are ready)")
+    print()
+
+    # Offer automated sync via _schedule()
+    _schedule()
+
+    # Newsletter opt-in
+    _init_newsletter()
+
+    print()
+    print("  " + "=" * 48)
+    print("  Run 'distillate' now to sync your first papers!")
+    print("  " + "=" * 48)
+    print()
+
+
+def _init_seed() -> None:
+    """Offer to import existing papers during init wizard."""
+    from distillate import config
+    from distillate import zotero_client
+    from distillate import pipeline as _pipeline
+    from distillate.state import State
+
+    config.ensure_loaded()
+
+    try:
+        state = State()
+        _coll_key = config.ZOTERO_COLLECTION_KEY
+        papers = zotero_client.get_recent_papers(
+            limit=100, collection_key=_coll_key,
+        )
+        papers = [p for p in papers if not state.has_document(p["key"])]
+
+        if not papers:
+            return
+
+        if _coll_key:
+            try:
+                _coll_name = zotero_client.get_collection_name(_coll_key)
+            except Exception:
+                _coll_name = _coll_key
+            scope = f" in '{_coll_name}'"
+        else:
+            scope = " in your library"
+
+        print()
+        print("  " + "-" * 48)
+        print("  Import existing papers")
+        print("  " + "-" * 48)
+        print()
+        print(f"  Found {len(papers)} untracked paper{'s' if len(papers) != 1 else ''}{scope}.")
+        print()
+        for p in papers[:5]:
+            meta = zotero_client.extract_metadata(p)
+            print(f"    - {meta['title']}")
+        if len(papers) > 5:
+            print(f"    ... and {len(papers) - 5} more")
+        print()
+        answer = input("  How many to import? [all/N/none] ").strip().lower()
+        if not answer or answer == "none" or answer == "n":
+            print("  Skipped. You can run 'distillate --import' later.")
+            # Still set watermark so first sync doesn't process everything
+            current_version = zotero_client.get_library_version()
+            state.zotero_library_version = current_version
+            state.save()
+            return
+
+        if answer != "all":
+            try:
+                count = int(answer)
+                papers = papers[:count]
+            except ValueError:
+                print(f"  Invalid input: {answer}")
+                return
+
+        # Check if RM is available
+        import shutil
+        has_rm = bool(
+            shutil.which("rmapi")
+            and os.environ.get("REMARKABLE_DEVICE_TOKEN", "")
+        )
+        skip_remarkable = not has_rm
+
+        if skip_remarkable:
+            print("  reMarkable not registered — papers will upload on first sync.")
+        else:
+            from distillate import remarkable_client
+            remarkable_client.ensure_folders()
+
+        existing_on_rm = set()
+        if not skip_remarkable:
+            from distillate import remarkable_client
+            existing_on_rm = set(
+                remarkable_client.list_folder(config.RM_FOLDER_INBOX)
+            )
+
+        imported = 0
+        for paper in papers:
+            try:
+                if _pipeline._upload_paper(paper, state, existing_on_rm, skip_remarkable=skip_remarkable):
+                    imported += 1
+            except Exception:
+                log.debug(
+                    "Failed to import '%s', skipping",
+                    paper.get("data", {}).get("title", paper.get("key")),
+                    exc_info=True,
+                )
+
+        # Update watermark
+        current_version = zotero_client.get_library_version()
+        state.zotero_library_version = current_version
+        state.save()
+
+        print(f"\n  Imported {imported} paper{'s' if imported != 1 else ''}.")
+
+    except Exception:
+        log.debug("Seed import failed, continuing", exc_info=True)
+        print("  Could not fetch papers. You can run 'distillate --import' later.")
+
+
+def _init_wizard() -> None:
+    """Interactive setup wizard for first-time users."""
+    from distillate.config import save_to_env, ENV_PATH
+
+    # Detect existing config for re-run shortcut
+    has_existing = ENV_PATH.exists() and os.environ.get("ZOTERO_API_KEY", "")
+
+    print()
+    if has_existing:
+        print("  Distillate Setup")
+        print("  " + "=" * 48)
+        print()
+        print(f"  Existing config found at: {ENV_PATH}")
+        print()
+        print("    1. Re-run full setup")
+        print("    2. Configure AI & extras")
+        print()
+        choice = input("  Your choice [2]: ").strip()
+        if choice != "1":
+            print()
+            _init_step5_claude(save_to_env)
+            _init_step6_extras(save_to_env)
+            _init_done(ENV_PATH)
+            return
+        # Warn about existing state
+        try:
+            from distillate.state import STATE_PATH
+            if STATE_PATH.exists():
+                import json as _json
+                state_data = _json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                n_papers = len(state_data.get("documents", {}))
+                if n_papers > 0:
+                    print()
+                    print(f"  Warning: You have {n_papers} tracked paper(s) in state.json.")
+                    print("  A full re-setup will NOT erase your papers, but if you")
+                    print("  want to back them up first, run:")
+                    print(f"    distillate --export-state ~/distillate-backup.json")
+                    print()
+                    proceed = input("  Continue with full re-setup? [Y/n]: ").strip().lower()
+                    if proceed and proceed != "y":
+                        print("  Aborted.")
+                        return
+        except Exception:
+            pass
+        print()
+    else:
+        print("  Welcome to Distillate")
+        print("  " + "=" * 48)
+        print()
+        print("  Distillate automates your research paper workflow:")
+        print()
+        print("    1. You save a paper to Zotero (browser connector)")
+        print("    2. You read and highlight the paper")
+        print("    3. Distillate extracts your highlights, creates an")
+        print("       annotated PDF, writes a note, and archives it")
+        print()
+        print("  Power-user features (optional, with Anthropic API key):")
+        print("    - Nicolas, an interactive research agent in your terminal")
+        print("    - AI summaries & key learnings for each paper")
+        print("    - Daily reading suggestions & weekly digest emails")
+        print()
+        print("  Let's get you set up. This takes about 2 minutes.")
+        print()
+        print(f"  Config will be saved to: {ENV_PATH}")
+        print()
+
+    # -- Step 1: Zotero --
+
+    print("  " + "-" * 48)
+    print("  Step 1 of 6: Zotero")
+    print("  " + "-" * 48)
+    print()
+    print("  Distillate watches your Zotero library for new papers.")
+    print("  When you save a paper using the browser connector,")
+    print("  Distillate picks it up and sends the PDF to your")
+    print("  reMarkable.")
+    print()
+    print("  You need a Zotero API key with read/write library access.")
+    print("  Create one here: https://www.zotero.org/settings/keys/new")
+    print()
+    api_key = _prompt_with_default("  API key", "ZOTERO_API_KEY", sensitive=True)
+    if not api_key:
+        print("\n  Error: A Zotero API key is required to continue.")
+        return
+
+    print()
+    print("  Your user ID is the number shown on the same page.")
+    print()
+    user_id = _prompt_with_default("  User ID", "ZOTERO_USER_ID")
+    if not user_id:
+        print("\n  Error: A Zotero user ID is required to continue.")
+        return
+
+    print()
+    print("  Verifying...")
+    save_to_env("ZOTERO_API_KEY", api_key)
+    save_to_env("ZOTERO_USER_ID", user_id)
+    try:
+        import requests
+        resp = requests.get(
+            f"https://api.zotero.org/users/{user_id}/items?limit=1",
+            headers={"Zotero-API-Version": "3", "Zotero-API-Key": api_key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print("  Connected! Found your Zotero library.")
+    except Exception as e:
+        print(f"  Warning: could not verify credentials ({e})")
+        print("  Saved anyway — you can fix them later in .env")
+    print()
+
+    # Collection scoping (optional)
+    try:
+        from distillate import zotero_client as _zc
+        collections = _zc.list_collections()
+        if collections:
+            colls = sorted(collections, key=lambda c: c["data"]["name"])
+            print("  You can scope Distillate to a specific collection.")
+            print("  Only papers you add to that collection will be synced.")
+            print()
+            for i, c in enumerate(colls, 1):
+                print(f"    {i}. {c['data']['name']}")
+            print()
+            existing_key = os.environ.get("ZOTERO_COLLECTION_KEY", "").strip()
+            if existing_key:
+                try:
+                    existing_name = _zc.get_collection_name(existing_key)
+                except Exception:
+                    existing_name = existing_key
+                hint = f" [current: {existing_name}]"
+            else:
+                hint = ""
+            choice = input(
+                f"  Collection number (Enter for whole library){hint}: "
+            ).strip()
+            if choice:
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(colls):
+                        coll_key = colls[idx]["key"]
+                        coll_name = colls[idx]["data"]["name"]
+                        save_to_env("ZOTERO_COLLECTION_KEY", coll_key)
+                        print(f"  Scoped to '{coll_name}'.")
+                    else:
+                        print("  Invalid number, using whole library.")
+                        save_to_env("ZOTERO_COLLECTION_KEY", "")
+                except ValueError:
+                    print("  Invalid input, using whole library.")
+                    save_to_env("ZOTERO_COLLECTION_KEY", "")
+            else:
+                save_to_env("ZOTERO_COLLECTION_KEY", "")
+                print("  Using whole library.")
+            print()
+    except Exception:
+        pass  # Skip collection picker if API fails
+
+    # WebDAV storage (optional)
+    existing_webdav = os.environ.get("ZOTERO_WEBDAV_URL", "").strip()
+    print("  Do you use WebDAV for Zotero file storage?")
+    print("  (Most people use Zotero's built-in cloud — press Enter to skip.)")
+    if existing_webdav:
+        print(f"  Current: {existing_webdav}")
+    print()
+    webdav_url = input(
+        "  WebDAV URL (Enter to skip): "
+    ).strip()
+    if webdav_url:
+        save_to_env("ZOTERO_WEBDAV_URL", webdav_url.rstrip("/"))
+        webdav_user = _prompt_with_default(
+            "  WebDAV username", "ZOTERO_WEBDAV_USERNAME",
+        )
+        webdav_pass = _prompt_with_default(
+            "  WebDAV password", "ZOTERO_WEBDAV_PASSWORD", sensitive=True,
+        )
+        if webdav_user:
+            save_to_env("ZOTERO_WEBDAV_USERNAME", webdav_user)
+        if webdav_pass:
+            save_to_env("ZOTERO_WEBDAV_PASSWORD", webdav_pass)
+        print("  WebDAV configured.")
+    elif existing_webdav:
+        print("  Keeping existing WebDAV config.")
+    print()
+
+    # -- Reading surface choice --
+    existing_source = os.environ.get("READING_SOURCE", "").strip().lower()
+    print("  How do you read your papers?")
+    print()
+    print("    1. reMarkable tablet")
+    print("    2. Any device (iPad, desktop, tablet — via Zotero app)")
+    print()
+    default_choice = "2" if existing_source == "zotero" else "1"
+    reading_choice = input(f"  Your choice [{default_choice}]: ").strip() or default_choice
+    use_zotero_reader = reading_choice == "2"
+
+    if use_zotero_reader:
+        save_to_env("READING_SOURCE", "zotero")
+        save_to_env("SYNC_HIGHLIGHTS", "false")
+        print("  Read and highlight papers in the Zotero app (desktop, iPad,")
+        print("  or Android), then add the 'read' tag when done.")
+        print()
+    else:
+        save_to_env("READING_SOURCE", "remarkable")
+        print()
+
+    # -- Step 2: reMarkable (skipped when reading on any device) --
+
+    if not use_zotero_reader:
+        print("  " + "-" * 48)
+        print("  Step 2 of 6: reMarkable")
+        print("  " + "-" * 48)
+        print()
+        print("  Distillate uses rmapi to sync PDFs with your reMarkable")
+        print("  via the reMarkable Cloud.")
+        print()
+        print("  Important: enable 'Text recognition' in your reMarkable")
+        print("  settings for highlight extraction to work.")
+        print()
+
+        import shutil
+        already_registered = bool(os.environ.get("REMARKABLE_DEVICE_TOKEN", ""))
+
+        if already_registered:
+            print("  reMarkable already registered.")
+            print()
+            register = input("  Re-register? [y/N] ").strip().lower()
+            if register == "y":
+                from distillate.remarkable_auth import register_interactive
+                register_interactive()
+            else:
+                print("  Keeping existing registration.")
+        elif shutil.which("rmapi"):
+            print("  rmapi found.")
+            print()
+            print("  You need to authorize this device once.")
+            print()
+            register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
+            if register != "n":
+                from distillate.remarkable_auth import register_interactive
+                register_interactive()
+            else:
+                print("  Skipped. Run 'distillate --register' later.")
+        else:
+            print("  Distillate requires rmapi to sync files with your")
+            print("  reMarkable via the cloud.")
+            print()
+            import platform
+            if platform.system() == "Darwin":
+                print("  Install it with Homebrew:")
+                print("    brew install rmapi")
+            else:
+                print("  Download the latest binary from:")
+                print("    https://github.com/ddvk/rmapi/releases")
+            print()
+            install_now = input("  Install rmapi now? [Y/n] ").strip().lower()
+            if install_now != "n":
+                if platform.system() == "Darwin":
+                    print()
+                    print("  Running: brew install rmapi")
+                    print()
+                    import subprocess
+                    result = subprocess.run(
+                        ["brew", "install", "rmapi"],
+                        capture_output=False,
+                    )
+                    print()
+                    if result.returncode == 0 and shutil.which("rmapi"):
+                        print("  rmapi installed successfully!")
+                        print()
+                        register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
+                        if register != "n":
+                            from distillate.remarkable_auth import register_interactive
+                            register_interactive()
+                        else:
+                            print("  Skipped. Run 'distillate --register' later.")
+                    else:
+                        print("  Installation failed. You can install manually later.")
+                        print("  Run 'distillate --register' when ready.")
+                else:
+                    print()
+                    print("  Please install rmapi manually from the link above,")
+                    print("  then run 'distillate --register' to connect.")
+            else:
+                print("  Skipped. Install rmapi and run 'distillate --register'")
+                print("  when you're ready.")
+        print()
+
+    # -- Step 3: Notes & PDFs --
+
+    print("  " + "-" * 48)
+    print("  Step 3 of 6: Notes & PDFs")
+    print("  " + "-" * 48)
+    print()
+    print("  When you finish reading, Distillate creates two files")
+    print("  for each paper:")
+    print()
+    print("    - An annotated PDF with your highlights overlaid")
+    print("      on the original document")
+    print("    - A markdown note with paper metadata, your")
+    print("      highlights grouped by page, and (optionally)")
+    print("      AI-generated summaries")
+    print()
+    print("  These files need a home on your computer. The best")
+    print("  option is an Obsidian vault — a free, local-first")
+    print("  markdown knowledge base (https://obsidian.md).")
+    print()
+    print("  With Obsidian, Distillate also creates:")
+    print("    - A searchable paper database (via Dataview)")
+    print("    - A reading statistics dashboard")
+    print("    - 'Open in Obsidian' deep links from Zotero")
+    print()
+
+    # Default to Obsidian if vault path already set
+    existing_vault = os.environ.get("OBSIDIAN_VAULT_PATH", "")
+    existing_output = os.environ.get("OUTPUT_PATH", "")
+    if existing_vault:
+        obsidian_default = "Y"
+    elif existing_output:
+        obsidian_default = "n"
+    else:
+        obsidian_default = "Y"
+
+    use_obsidian = input(f"  Use an Obsidian vault? [{obsidian_default}/{'n' if obsidian_default == 'Y' else 'Y'}] ").strip().lower()
+    if not use_obsidian:
+        use_obsidian = obsidian_default.lower()
+
+    if use_obsidian != "n":
+        print()
+        print("  To find your vault path in Obsidian:")
+        print("    Open Obsidian > Settings > General (bottom of page)")
+        print("    The path is shown under 'Vault location'")
+        print()
+        vault_path = _prompt_with_default("  Vault path", "OBSIDIAN_VAULT_PATH")
+        if vault_path:
+            vault_path = str(Path(vault_path).expanduser().resolve())
+            save_to_env("OBSIDIAN_VAULT_PATH", vault_path)
+            print()
+            print("  Obsidian mode enabled! Distillate will create a")
+            print("  Distillate/ folder inside your vault at:")
+            print(f"    {vault_path}/Distillate/")
+        else:
+            print("  No path provided — skipping.")
+    else:
+        print()
+        print("  You can use any local folder instead. You'll get")
+        print("  the annotated PDFs and markdown notes, but not")
+        print("  the Obsidian-specific features listed above.")
+        print()
+        folder = _prompt_with_default("  Output folder path (Enter to skip)", "OUTPUT_PATH")
+        if folder:
+            folder = str(Path(folder).expanduser().resolve())
+            save_to_env("OUTPUT_PATH", folder)
+            Path(folder).mkdir(parents=True, exist_ok=True)
+            print(f"  Notes and PDFs will go to: {folder}")
+        else:
+            print("  Skipped. Notes will only be stored in Zotero.")
+    print()
+
+    # PDF subfolder
+    print("  By default, annotated PDFs are stored in a 'pdf'")
+    print("  subfolder inside Saved/ so notes and PDFs stay")
+    print("  separate. Type 'none' to keep them together.")
+    print()
+    existing_sub = os.environ.get("PDF_SUBFOLDER", "pdf")
+    pdf_sub = input(f"  PDF subfolder name [{existing_sub}]: ").strip()
+    if not pdf_sub:
+        pdf_sub = existing_sub
+    if pdf_sub.lower() == "none":
+        pdf_sub = ""
+    save_to_env("PDF_SUBFOLDER", pdf_sub)
+    if pdf_sub:
+        print(f"  PDFs will go to: Saved/{pdf_sub}/")
+    else:
+        print("  PDFs will be alongside notes in Saved/")
+    print()
+
+    # -- Step 4: PDF storage --
+
+    print("  " + "-" * 48)
+    print("  Step 4 of 6: PDF Storage")
+    print("  " + "-" * 48)
+    print()
+    if use_zotero_reader:
+        print("  After syncing a paper, where should the PDF be kept?")
+    else:
+        print("  After syncing a paper to your reMarkable, where should")
+        print("  the PDF be kept?")
+    print()
+    print("  Zotero gives you 300 MB of free cloud storage for PDFs.")
+    print("  If you're on the free plan, that fills up fast.")
+    print()
+    if use_zotero_reader:
+        print("  Either way, the PDF is saved locally with your notes")
+        print("  after you read it.")
+    else:
+        print("  Either way, the PDF is always on your reMarkable and")
+        print("  saved locally with your notes after you read it.")
+    print()
+    print("    1. Keep in Zotero (uses Zotero storage)")
+    print("    2. Remove from Zotero after sync (saves space)")
+    print()
+    existing_keep = os.environ.get("KEEP_ZOTERO_PDF", "true")
+    default_storage = "2" if existing_keep.lower() == "false" else "1"
+    storage = input(f"  Your choice [{default_storage}]: ").strip()
+    if not storage:
+        storage = default_storage
+    if storage == "2":
+        save_to_env("KEEP_ZOTERO_PDF", "false")
+        print("  PDFs will be removed from Zotero after upload.")
+    else:
+        save_to_env("KEEP_ZOTERO_PDF", "true")
+        print("  PDFs will stay in Zotero.")
+    print()
+
+    # -- Step 5: Claude API --
+
+    _init_step5_claude(save_to_env)
+
+    # -- Step 6: Extras (email + experiments) --
+
+    _init_step6_extras(save_to_env)
+
+    # -- Done --
+
+    _init_done(ENV_PATH)

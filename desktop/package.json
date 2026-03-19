@@ -1,23 +1,30 @@
 {
   "name": "distillate",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "description": "Distillate — a research alchemist on your desktop",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
+    "postinstall": "electron-rebuild -f -w node-pty",
     "build": "electron-builder",
-    "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win"
+    "build:mac": "electron-builder --mac --dir",
+    "dmg": "bash scripts/build-dmg.sh",
+    "build:win": "electron-builder --win",
+    "test": "node --test test/"
   },
   "author": "Romain Lacombe",
   "license": "MIT",
   "devDependencies": {
     "electron": "^34.0.0",
-    "electron-builder": "^25.0.0"
+    "electron-builder": "^25.0.0",
+    "electron-rebuild": "^3.2.9"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
     "highlight.js": "^11.11.1",
-    "marked": "^15.0.0"
+    "marked": "^15.0.0",
+    "node-pty": "^1.1.0",
+    "xterm": "^5.3.0"
   },
   "build": {
     "appId": "dev.distillate.app",
@@ -33,7 +40,7 @@
     ],
     "extraResources": [
       {
-        "from": "../.venv-desktop",
+        "from": ".venv-desktop",
         "to": "python-env",
         "filter": [
           "**/*"
@@ -44,7 +51,7 @@
       "category": "public.app-category.productivity",
       "icon": "resources/icon.icns",
       "target": [
-        "dmg"
+        "dir"
       ]
     },
     "win": {

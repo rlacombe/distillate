@@ -20,6 +20,10 @@ class MockState:
     def promoted_papers(self):
         return []
 
+    @property
+    def projects(self):
+        return {}
+
     def documents_with_status(self, status):
         return [d for d in self._documents.values() if d["status"] == status]
 

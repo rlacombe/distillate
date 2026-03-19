@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m distillate.hooks.post_bash"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m distillate.hooks.on_stop"
+          },
+          {
+            "type": "command",
+            "command": "git add -A && git diff --cached --quiet || git commit -m \"Session end: $(tail -1 .distillate/runs.jsonl 2>/dev/null | python3 -c 'import sys,json; r=json.load(sys.stdin); print(r.get(\"description\",r.get(\"id\",\"cleanup\")))' 2>/dev/null || echo cleanup)\" && git push 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

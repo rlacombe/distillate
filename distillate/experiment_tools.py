@@ -40,6 +40,45 @@ def _run_summary(run: dict) -> dict:
     }
 
 
+def _run_summary_full(run: dict, run_number: int = 0, run_suffix: str = "") -> dict:
+    """Build a full run summary with all fields (for server/desktop API).
+
+    Superset of ``_run_summary`` — includes hyperparameters, hypothesis,
+    reasoning, baseline comparison, etc.
+    """
+    results = run.get("results", {})
+    key_metric = ""
+    for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
+              "best_val_acc", "f1", "loss"):
+        if k in results:
+            key_metric = f"{k}={results[k]}"
+            break
+    if not key_metric and results:
+        k, v = next(iter(results.items()))
+        if isinstance(v, (int, float)):
+            key_metric = f"{k}={v}"
+
+    return {
+        "id": run.get("id", ""),
+        "name": run.get("name", ""),
+        "run_number": run_number,
+        "run_suffix": run_suffix,
+        "status": run.get("status", ""),
+        "decision": run.get("decision", ""),
+        "key_metric": key_metric,
+        "results": {k: v for k, v in results.items() if isinstance(v, (int, float))},
+        "hyperparameters": run.get("hyperparameters", {}),
+        "description": run.get("description", ""),
+        "hypothesis": run.get("hypothesis", ""),
+        "reasoning": run.get("reasoning", ""),
+        "agent_reasoning": run.get("agent_reasoning", ""),
+        "baseline_comparison": run.get("baseline_comparison"),
+        "started_at": run.get("started_at", ""),
+        "duration_minutes": run.get("duration_minutes", 0),
+        "tags": run.get("tags", []),
+    }
+
+
 def _resolve_project(state, identifier: str) -> tuple[dict | None, dict | None]:
     """Resolve a project by identifier, returning (project, error_dict).
 
@@ -104,11 +143,15 @@ def _resolve_run(runs: dict, query: str, project_name: str) -> tuple[dict | None
 
 
 def _regen_notebook(proj: dict) -> None:
-    """Regenerate the Obsidian lab notebook for a project."""
+    """Regenerate the Obsidian lab notebook (MD + HTML) for a project."""
     from pathlib import Path as _Path
 
-    from distillate.experiments import enrich_runs_with_llm, generate_notebook
-    from distillate.obsidian import write_experiment_notebook
+    from distillate.experiments import (
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+    )
+    from distillate.obsidian import (
+        write_experiment_html_notebook, write_experiment_notebook,
+    )
 
     proj_path = proj.get("path", "")
     enrichment = None
@@ -118,6 +161,8 @@ def _regen_notebook(proj: dict) -> None:
         )
     notebook_md = generate_notebook(proj, enrichment=enrichment)
     write_experiment_notebook(proj, notebook_md)
+    notebook_html = generate_html_notebook(proj, enrichment=enrichment)
+    write_experiment_html_notebook(proj, notebook_html)
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +400,9 @@ EXPERIMENT_TOOL_SCHEMAS = [
     {
         "name": "update_project",
         "description": (
-            "Update a project's description, tags, or status. "
-            "Only provided fields are changed."
+            "Update a project's description, tags, status, or primary metric. "
+            "Only provided fields are changed. Use key_metric_name to set "
+            "the north star metric displayed in the experiment dashboard."
         ),
         "input_schema": {
             "type": "object",
@@ -378,8 +424,35 @@ EXPERIMENT_TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "New status (tracking, paused, archived, completed)",
                 },
+                "key_metric_name": {
+                    "type": "string",
+                    "description": "Primary metric name for the project (e.g. 'param_count', 'test_accuracy'). Shown as the hero metric in the dashboard.",
+                },
             },
             "required": ["identifier"],
+        },
+    },
+    {
+        "name": "get_run_details",
+        "description": (
+            "Get full details for a single experiment run including all "
+            "hyperparameters, results/metrics, hypothesis, reasoning, "
+            "decision, tags, and timing. Use when the user asks about "
+            "a specific run's parameters or results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id, name substring, or run number (e.g. '3' for run #003)",
+                },
+            },
+            "required": ["project", "run"],
         },
     },
     {
@@ -434,6 +507,485 @@ EXPERIMENT_TOOL_SCHEMAS = [
                 },
             },
             "required": ["project", "goals"],
+        },
+    },
+    {
+        "name": "annotate_run",
+        "description": (
+            "Add a note or hypothesis to an experiment run. User-provided "
+            "hypotheses take precedence over LLM-generated ones in notebooks. "
+            "Notes are appended (not replaced)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "run": {
+                    "type": "string",
+                    "description": "Run id or name substring",
+                },
+                "hypothesis": {
+                    "type": "string",
+                    "description": "Hypothesis for this run (replaces any existing)",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "A note to append to this run's notes list",
+                },
+            },
+            "required": ["project", "run"],
+        },
+    },
+    # -- Launcher tools --
+    {
+        "name": "launch_experiment",
+        "description": (
+            "Launch an auto-research experiment session in a tmux window. "
+            "Spawns a Claude Code session with the project's PROMPT.md. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns for the session (default: 100)",
+                },
+                "host": {
+                    "type": "string",
+                    "description": "SSH host for remote launch (optional — local by default)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "experiment_status",
+        "description": (
+            "Check status of running experiment sessions. Shows active "
+            "tmux sessions, run counts, and how long they've been running. "
+            "If no project specified, shows all experiments."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index (optional — shows all if omitted)",
+                },
+            },
+        },
+    },
+    {
+        "name": "stop_experiment",
+        "description": (
+            "Stop a running experiment session by sending C-c to its tmux window. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "init_experiment",
+        "description": (
+            "Initialize an experiment project — scan the directory, draft a "
+            "PROMPT.md with Claude, set up hooks and tracking. The user "
+            "describes what they want to research and the tool produces a "
+            "complete, ready-to-launch experiment. Returns the draft PROMPT.md "
+            "for review. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the project directory",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "What the experiment should achieve — the research "
+                        "question, target metric, or objective. Be specific."
+                    ),
+                },
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Display name for the experiment "
+                        "(default: directory name, title-cased)"
+                    ),
+                },
+                "constraints": {
+                    "type": "string",
+                    "description": (
+                        "Hardware, time, or methodology constraints "
+                        "(e.g. 'MacBook M3, no GPU', 'must use PyTorch', "
+                        "'2 hour budget')"
+                    ),
+                },
+            },
+            "required": ["path", "goal"],
+        },
+    },
+    {
+        "name": "sweep_experiment",
+        "description": (
+            "Launch a parallel hyperparameter sweep. Spawns one tmux session "
+            "per configuration variant, each with a modified PROMPT.md that "
+            "injects the specific hyperparameters. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "configs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "description": "Hyperparameter dict for this variant",
+                    },
+                    "description": (
+                        "List of config dicts, one per variant. "
+                        "Example: [{\"lr\": 0.001}, {\"lr\": 0.01}]"
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns per session (default: 100)",
+                },
+            },
+            "required": ["project", "configs"],
+        },
+    },
+    {
+        "name": "continue_experiment",
+        "description": (
+            "Continue an experiment that hasn't met its goals yet. "
+            "Launches a new session with prior-run context appended so "
+            "the agent builds on previous results. "
+            "This is a write operation — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Claude model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns for the session (default: 100)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "steer_experiment",
+        "description": (
+            "Write steering instructions for the next experiment session. "
+            "The text is saved to .distillate/steering.md and automatically "
+            "injected into the next session's prompt. Use when the user wants "
+            "to guide the experiment in a specific direction (e.g., 'try lower "
+            "learning rate', 'focus on regularization')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Steering instructions for the next session",
+                },
+            },
+            "required": ["project", "text"],
+        },
+    },
+    {
+        "name": "compare_projects",
+        "description": (
+            "Compare best metrics across multiple experiment projects. "
+            "Shows a side-by-side comparison grid. Different from "
+            "compare_runs which compares runs within a single project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "projects": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of project identifiers (id, name, or index)",
+                },
+            },
+            "required": ["projects"],
+        },
+    },
+    {
+        "name": "queue_sessions",
+        "description": (
+            "Queue N continuation sessions for a project. Sessions run "
+            "sequentially, each checking goals before launching the next."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of sessions to queue (default 1)",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model to use (default: claude-sonnet-4-5-20250929)",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Max turns per session (default 100)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "list_templates",
+        "description": (
+            "List available experiment templates that can be used to "
+            "scaffold new experiments."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "save_template",
+        "description": (
+            "Save a project's configuration as a reusable experiment "
+            "template. Copies PROMPT.md, data files, and scripts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Template name (defaults to project slug)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "create_github_repo",
+        "description": (
+            "Create a GitHub repository for an experiment project. "
+            "Uses the gh CLI to create the repo and push initial code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Repository name (defaults to distillate-xp-<project-slug>)",
+                },
+                "private": {
+                    "type": "boolean",
+                    "description": "Whether the repo should be private (default false — public for adoption tracking)",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "reading_report",
+        "description": (
+            "Get reading insights and statistics. Returns lifetime stats, "
+            "reading velocity, top topics, engagement distribution, "
+            "most-cited papers, and top authors."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "manage_session",
+        "description": (
+            "Manage experiment sessions — start, stop, restart, continue, "
+            "or check status. Preferred over individual launch/stop/status "
+            "tools. Actions: 'start' launches a new session, 'stop' stops "
+            "running sessions, 'restart' stops then starts, 'continue' "
+            "launches a continuation with prior-run context, 'status' "
+            "checks what's running. Start/stop/restart/continue are write "
+            "operations — ask the user to confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop", "restart", "continue", "status"],
+                    "description": "What to do with the session",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Project name, id, or index number",
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "Claude model to use (default: claude-sonnet-4-5-20250929). "
+                        "Only for start/restart/continue."
+                    ),
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": (
+                        "Max turns for the session (default: 100). "
+                        "Only for start/restart/continue."
+                    ),
+                },
+            },
+            "required": ["action", "project"],
+        },
+    },
+    {
+        "name": "replicate_paper",
+        "description": (
+            "Scaffold a new experiment from a paper in the library. Reads the "
+            "paper's abstract, summary, highlights, and GitHub repo (if any), "
+            "then creates an experiment with a PROMPT.md that targets "
+            "reproducing the paper's key results. Papers with linked GitHub "
+            "repos get cloned automatically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "paper": {
+                    "type": "string",
+                    "description": "Paper identifier (index, citekey, or title)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Directory for the experiment. Defaults to "
+                        "EXPERIMENTS_ROOT/<paper-slug> if not specified."
+                    ),
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "Override goal. If not provided, auto-generates a "
+                        "replication goal from the paper's reported results."
+                    ),
+                },
+                "constraints": {
+                    "type": "string",
+                    "description": "Hardware or methodology constraints",
+                },
+            },
+            "required": ["paper"],
+        },
+    },
+    {
+        "name": "suggest_from_literature",
+        "description": (
+            "Suggest experiment steering based on recent paper reads. Scans "
+            "papers read in the last 30 days for techniques, methods, or "
+            "findings relevant to a given experiment, and suggests concrete "
+            "steering instructions. Use when the user asks to apply ideas "
+            "from their reading to an experiment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project identifier (index, id, or name)",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": (
+                        "Optional focus area (e.g., 'regularization', "
+                        "'data augmentation'). Narrows the literature search."
+                    ),
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "extract_baselines",
+        "description": (
+            "Extract reported metric baselines from one or more papers. "
+            "Reads abstracts, summaries, and highlights to find reported "
+            "numbers (accuracy, F1, loss, etc.) that can be used as "
+            "experiment goals or comparison points."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "papers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Paper identifiers (index, citekey, or title)",
+                },
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of metric names to look for "
+                        "(e.g., ['accuracy', 'F1', 'BLEU']). If not "
+                        "specified, extracts all reported metrics."
+                    ),
+                },
+            },
+            "required": ["papers"],
         },
     },
 ]
@@ -526,20 +1078,79 @@ def compare_runs(*, state, project: str, run_a: str, run_b: str) -> dict:
     return diff_runs(a, b)
 
 
+def _discover_git_repos(root) -> list:
+    """Find git repos under root (1 level deep). Returns list of Paths."""
+    from pathlib import Path as _Path
+
+    root = _Path(root)
+    repos = []
+    try:
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if (child / ".git").exists():
+                repos.append(child)
+    except PermissionError:
+        pass
+    return repos
+
+
 def scan_project_tool(*, state, path: str) -> dict:
     """Scan a git repo and track it as a project."""
     from datetime import datetime, timezone
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        enrich_runs_with_llm, generate_notebook, scan_project, slugify,
+        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+        scan_project, slugify,
     )
-    from distillate.obsidian import write_experiment_notebook
+    from distillate.obsidian import (
+        write_experiment_html_notebook, write_experiment_notebook,
+    )
     from distillate.state import acquire_lock, release_lock
 
     repo_path = _Path(path).expanduser().resolve()
     if not repo_path.is_dir():
         return {"success": False, "error": f"Directory not found: {path}"}
+
+    # If path has no .git, discover individual repos in subdirectories
+    if not (repo_path / ".git").exists():
+        sub_repos = _discover_git_repos(repo_path)
+        if not sub_repos:
+            return {
+                "success": False,
+                "error": (
+                    f"No git repository found at '{path}'. "
+                    "Point to a directory with a .git folder, or a parent "
+                    "directory containing git repos."
+                ),
+            }
+        # Scan each discovered repo as a separate project
+        results = []
+        for sub in sub_repos:
+            r = scan_project_tool(state=state, path=str(sub))
+            if r.get("success"):
+                results.append(r)
+        if not results:
+            return {
+                "success": False,
+                "error": f"Found {len(sub_repos)} repo(s) under '{path}' but none had ML experiments.",
+            }
+        return {
+            "success": True,
+            "multi": True,
+            "projects": [
+                {"name": r["name"], "runs": r["runs_discovered"]}
+                for r in results
+            ],
+            "message": (
+                f"Discovered {len(results)} project(s) under '{path}': "
+                + ", ".join(
+                    f"{r['name']} ({r['runs_discovered']} runs)"
+                    for r in results
+                )
+            ),
+        }
 
     result = scan_project(repo_path)
     if "error" in result:
@@ -561,11 +1172,13 @@ def scan_project_tool(*, state, path: str) -> dict:
                 if run_data["name"] not in existing_names:
                     state.add_run(project_id, run_id, run_data)
                     new_runs += 1
-            state.update_project(
-                project_id,
+            update_kw = dict(
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
                 last_commit_hash=result["head_hash"],
             )
+            if result.get("goals"):
+                update_kw["goals"] = result["goals"]
+            state.update_project(project_id, **update_kw)
             state.save()
             message = f"Rescanned '{result['name']}': found {new_runs} new run(s)."
         else:
@@ -576,11 +1189,13 @@ def scan_project_tool(*, state, path: str) -> dict:
             )
             for run_id, run_data in result.get("runs", {}).items():
                 state.add_run(project_id, run_id, run_data)
-            state.update_project(
-                project_id,
+            update_kw = dict(
                 last_scanned_at=datetime.now(timezone.utc).isoformat(),
                 last_commit_hash=result["head_hash"],
             )
+            if result.get("goals"):
+                update_kw["goals"] = result["goals"]
+            state.update_project(project_id, **update_kw)
             state.save()
             message = (
                 f"Now tracking '{result['name']}' with "
@@ -589,7 +1204,7 @@ def scan_project_tool(*, state, path: str) -> dict:
     finally:
         release_lock()
 
-    # LLM enrichment + generate notebook
+    # LLM enrichment + generate notebooks (MD + HTML)
     proj = state.get_project(project_id)
     if proj:
         enrichment = enrich_runs_with_llm(
@@ -597,6 +1212,8 @@ def scan_project_tool(*, state, path: str) -> dict:
         )
         notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
+        notebook_html = generate_html_notebook(proj, enrichment=enrichment)
+        write_experiment_html_notebook(proj, notebook_html)
 
     return {
         "success": True,
@@ -849,8 +1466,9 @@ def delete_run_tool(*, state, project: str, run: str, confirm: bool = False) -> 
 def update_project_tool(*, state, identifier: str,
                         description: str | None = None,
                         tags: list[str] | None = None,
-                        status: str | None = None) -> dict:
-    """Update a project's description, tags, or status."""
+                        status: str | None = None,
+                        key_metric_name: str | None = None) -> dict:
+    """Update a project's description, tags, status, or primary metric."""
     proj, err = _resolve_project(state, identifier)
     if err:
         return err
@@ -865,9 +1483,11 @@ def update_project_tool(*, state, identifier: str,
         if status not in valid_statuses:
             return {"error": f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"}
         updates["status"] = status
+    if key_metric_name is not None:
+        updates["key_metric_name"] = key_metric_name
 
     if not updates:
-        return {"error": "No fields to update. Provide description, tags, or status."}
+        return {"error": "No fields to update. Provide description, tags, status, or key_metric_name."}
 
     state.update_project(proj["id"], **updates)
     state.save()
@@ -927,6 +1547,15 @@ def link_paper_tool(*, state, project: str, paper: str) -> dict:
 
     linked.append(found_title)
     state.update_project(proj["id"], linked_papers=linked)
+
+    # Reverse link: store project reference on the paper
+    if found_key:
+        doc = state.get_document(found_key)
+        if doc:
+            doc.setdefault("linked_projects", [])
+            if proj["id"] not in doc["linked_projects"]:
+                doc["linked_projects"].append(proj["id"])
+
     state.save()
 
     _regen_notebook(proj)
@@ -967,9 +1596,1073 @@ def update_goals_tool(*, state, project: str, goals: list[dict]) -> dict:
     }
 
 
+def get_run_details_tool(*, state, project: str, run: str) -> dict:
+    """Get full details for a single experiment run."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    return {
+        "found": True,
+        "project": proj.get("name", ""),
+        "run": {
+            "id": run_obj.get("id", ""),
+            "name": run_obj.get("name", ""),
+            "status": run_obj.get("status", ""),
+            "decision": run_obj.get("decision", ""),
+            "hypothesis": run_obj.get("hypothesis", ""),
+            "reasoning": run_obj.get("reasoning", ""),
+            "changes": run_obj.get("changes", ""),
+            "hyperparameters": run_obj.get("hyperparameters", {}),
+            "results": run_obj.get("results", {}),
+            "tags": run_obj.get("tags", []),
+            "notes": run_obj.get("notes", []),
+            "started_at": run_obj.get("started_at", ""),
+            "completed_at": run_obj.get("completed_at", ""),
+            "duration_minutes": run_obj.get("duration_minutes", 0),
+            "baseline_comparison": run_obj.get("baseline_comparison", {}),
+        },
+    }
+
+
+def annotate_run_tool(*, state, project: str, run: str,
+                      hypothesis: str = "", note: str = "") -> dict:
+    """Add a note or hypothesis to an experiment run."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    run_obj, err = _resolve_run(runs, run, proj.get("name", ""))
+    if err:
+        return err
+
+    if not hypothesis and not note:
+        return {"error": "Provide at least one of 'hypothesis' or 'note'."}
+
+    changes = []
+    if hypothesis:
+        run_obj["hypothesis"] = hypothesis
+        changes.append("hypothesis")
+    if note:
+        if "notes" not in run_obj:
+            run_obj["notes"] = []
+        run_obj["notes"].append(note)
+        changes.append("note")
+
+    state.save()
+    _regen_notebook(proj)
+
+    return {
+        "success": True,
+        "run": run_obj.get("name", ""),
+        "updated": changes,
+        "message": (
+            f"Updated {' and '.join(changes)} on run "
+            f"'{run_obj.get('name', '')}' in '{proj.get('name', '')}'."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def launch_experiment_tool(*, state, project: str,
+                           model: str = "claude-sonnet-4-5-20250929",
+                           max_turns: int = 100,
+                           host: str | None = None) -> dict:
+    """Launch an auto-research experiment session."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_experiment
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    try:
+        session_data = launch_experiment(
+            _Path(proj_path),
+            host=host,
+            model=model,
+            max_turns=max_turns,
+            project=proj,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    # Save session to state
+    acquire_lock()
+    try:
+        state.reload()
+        state.add_session(proj["id"], session_data["session_id"], session_data)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "tmux_session": session_data["tmux_session"],
+        "model": model,
+        "max_turns": max_turns,
+        "host": host,
+        "message": (
+            f"Launched session '{session_data['tmux_session']}' for "
+            f"'{proj.get('name', '')}'. Use experiment_status to monitor."
+        ),
+    }
+
+
+def experiment_status_tool(*, state, project: str = "") -> dict:
+    """Check status of running experiment sessions."""
+    from distillate.launcher import refresh_session_statuses
+
+    changed = refresh_session_statuses(state)
+    if changed:
+        state.save()
+
+    if project:
+        proj, err = _resolve_project(state, project)
+        if err:
+            return err
+        projects = {proj["id"]: proj}
+    else:
+        projects = state.projects
+
+    results = []
+    for proj_id, proj in projects.items():
+        sessions = proj.get("sessions", {})
+        runs = proj.get("runs", {})
+        active = [s for s in sessions.values() if s.get("status") == "running"]
+
+        proj_info = {
+            "name": proj.get("name", ""),
+            "status": proj.get("status", ""),
+            "total_runs": len(runs),
+            "active_sessions": len(active),
+            "sessions": [],
+        }
+
+        for sess in sessions.values():
+            started = sess.get("started_at", "")
+            proj_info["sessions"].append({
+                "tmux_session": sess.get("tmux_session", ""),
+                "status": sess.get("status", ""),
+                "started_at": started,
+                "model": sess.get("model", ""),
+                "host": sess.get("host"),
+            })
+
+        results.append(proj_info)
+
+    total_active = sum(p["active_sessions"] for p in results)
+    return {
+        "experiments": results,
+        "total_active_sessions": total_active,
+    }
+
+
+def stop_experiment_tool(*, state, project: str) -> dict:
+    """Stop a running experiment session."""
+    from datetime import datetime, timezone
+
+    from distillate.launcher import stop_session
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    sessions = proj.get("sessions", {})
+    running = [(sid, s) for sid, s in sessions.items() if s.get("status") == "running"]
+
+    if not running:
+        return {"error": f"No running sessions for '{proj.get('name', '')}'."}
+
+    stopped = []
+    failed = []
+    for sess_id, sess in running:
+        tmux_name = sess.get("tmux_session", "")
+        host = sess.get("host")
+        ok = stop_session(tmux_name, host)
+        if ok:
+            stopped.append(tmux_name)
+        else:
+            failed.append(tmux_name)
+
+    # Update state
+    acquire_lock()
+    try:
+        state.reload()
+        now = datetime.now(timezone.utc).isoformat()
+        for sess_id, sess in running:
+            tmux_name = sess.get("tmux_session", "")
+            if tmux_name in stopped:
+                state.update_session(proj["id"], sess_id,
+                                     status="completed", completed_at=now)
+        state.save()
+    finally:
+        release_lock()
+
+    if failed:
+        return {
+            "success": False,
+            "stopped": stopped,
+            "failed": failed,
+            "message": f"Stopped {len(stopped)}, failed {len(failed)} session(s).",
+        }
+
+    return {
+        "success": True,
+        "stopped": stopped,
+        "message": f"Stopped {len(stopped)} session(s) for '{proj.get('name', '')}'.",
+    }
+
+
+def sweep_experiment_tool(*, state, project: str,
+                          configs: list[dict],
+                          model: str = "claude-sonnet-4-5-20250929",
+                          max_turns: int = 100) -> dict:
+    """Launch a parallel hyperparameter sweep."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_sweep
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    if not configs or len(configs) < 2:
+        return {"error": "Provide at least 2 config variants for a sweep."}
+
+    try:
+        sessions = launch_sweep(
+            _Path(proj_path), proj, configs,
+            model=model, max_turns=max_turns,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    # Save all sessions to state
+    acquire_lock()
+    try:
+        state.reload()
+        for sd in sessions:
+            state.add_session(proj["id"], sd["session_id"], sd)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "variants": len(sessions),
+        "sessions": [s["tmux_session"] for s in sessions],
+        "model": model,
+        "message": (
+            f"Launched {len(sessions)}-variant sweep for "
+            f"'{proj.get('name', '')}'. Use experiment_status to monitor."
+        ),
+    }
+
+
+def continue_experiment_tool(*, state, project: str,
+                             model: str = "claude-sonnet-4-5-20250929",
+                             max_turns: int = 100) -> dict:
+    """Launch a continuation session with prior-run context."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import launch_continuation, should_continue
+    from distillate.state import acquire_lock, release_lock
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    if not should_continue(proj):
+        return {
+            "success": False,
+            "message": (
+                f"All goals for '{proj.get('name', '')}' appear to be met. "
+                "No continuation needed."
+            ),
+        }
+
+    try:
+        session_data = launch_continuation(
+            _Path(proj_path), proj, model=model, max_turns=max_turns,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    acquire_lock()
+    try:
+        state.reload()
+        state.add_session(proj["id"], session_data["session_id"], session_data)
+        state.save()
+    finally:
+        release_lock()
+
+    return {
+        "success": True,
+        "tmux_session": session_data["tmux_session"],
+        "model": model,
+        "max_turns": max_turns,
+        "message": (
+            f"Launched continuation session '{session_data['tmux_session']}' "
+            f"for '{proj.get('name', '')}' with prior-run context."
+        ),
+    }
+
+
+def steer_experiment_tool(*, state, project: str, text: str) -> dict:
+    """Write steering instructions for the next experiment session."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import write_steering
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    path = write_steering(_Path(proj_path), text)
+    preview = text[:200] + ("..." if len(text) > 200 else "")
+    return {
+        "success": True,
+        "path": str(path),
+        "preview": preview,
+        "message": (
+            f"Steering instructions written for '{proj.get('name', '')}'. "
+            "They'll be injected into the next session's prompt."
+        ),
+    }
+
+
+def manage_session_tool(*, state, action: str, project: str,
+                        model: str = "claude-sonnet-4-5-20250929",
+                        max_turns: int = 100) -> dict:
+    """Unified session management: start, stop, restart, continue, status."""
+    if action == "status":
+        return experiment_status_tool(state=state, project=project)
+    elif action == "stop":
+        return stop_experiment_tool(state=state, project=project)
+    elif action == "start":
+        return launch_experiment_tool(
+            state=state, project=project, model=model, max_turns=max_turns,
+        )
+    elif action == "continue":
+        return continue_experiment_tool(
+            state=state, project=project, model=model, max_turns=max_turns,
+        )
+    elif action == "restart":
+        # Stop first, then start
+        stop_result = stop_experiment_tool(state=state, project=project)
+        if stop_result.get("error"):
+            # No running session to stop — just start fresh
+            pass
+        start_result = launch_experiment_tool(
+            state=state, project=project, model=model, max_turns=max_turns,
+        )
+        if stop_result.get("stopped"):
+            start_result["previously_stopped"] = stop_result["stopped"]
+        return start_result
+    else:
+        return {"error": f"Unknown action '{action}'. Use: start, stop, restart, continue, status."}
+
+
+def compare_projects_tool(*, state, projects: list[str]) -> dict:
+    """Compare best metrics across multiple projects."""
+    if len(projects) < 2:
+        return {"error": "Need at least 2 projects to compare."}
+
+    comparison = []
+    all_metrics: set[str] = set()
+
+    for identifier in projects:
+        proj, err = _resolve_project(state, identifier)
+        if err:
+            return err
+
+        best: dict[str, float] = {}
+        for run in proj.get("runs", {}).values():
+            if run.get("decision") != "keep" and run.get("status") != "keep":
+                continue
+            for k, v in run.get("results", {}).items():
+                if isinstance(v, (int, float)):
+                    if k not in best or v > best[k]:
+                        best[k] = v
+                    all_metrics.add(k)
+
+        comparison.append({
+            "id": proj.get("id", ""),
+            "name": proj.get("name", ""),
+            "run_count": len(proj.get("runs", {})),
+            "best_metrics": best,
+            "goals": proj.get("goals", []),
+        })
+
+    return {
+        "projects": comparison,
+        "metrics": sorted(all_metrics),
+    }
+
+
+def queue_sessions_tool(*, state, project: str, count: int = 1,
+                        model: str = "claude-sonnet-4-5-20250929",
+                        max_turns: int = 100) -> dict:
+    """Queue N continuation sessions for a project."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    state.update_project(proj["id"], continuation_queue={
+        "count": count,
+        "model": model,
+        "max_turns": max_turns,
+    }, auto_continue=True)
+    state.save()
+
+    return {
+        "success": True,
+        "project": proj.get("name", ""),
+        "queued": count,
+        "model": model,
+        "max_turns": max_turns,
+        "message": f"Queued {count} continuation session(s) for '{proj.get('name', '')}'.",
+    }
+
+
+def list_templates_tool(*, state) -> dict:
+    """List available experiment templates."""
+    from distillate.launcher import list_templates
+
+    templates = list_templates()
+    return {
+        "templates": templates,
+        "total": len(templates),
+    }
+
+
+def save_template_tool(*, state, project: str, name: str = "") -> dict:
+    """Save a project config as a reusable template."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import import_template
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    template_name = import_template(_Path(proj_path), name=name or None)
+    return {
+        "success": True,
+        "template_name": template_name,
+        "message": f"Saved template '{template_name}' from project '{proj.get('name', '')}'.",
+    }
+
+
+def create_github_repo_tool(*, state, project: str, name: str = "",
+                             private: bool = False) -> dict:
+    """Create a GitHub repo for a project."""
+    from pathlib import Path as _Path
+
+    from distillate.launcher import create_github_repo
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    proj_path = proj.get("path", "")
+    if not proj_path:
+        return {"error": f"Project '{project}' has no path set."}
+
+    repo_name = name or f"distillate-xp-{proj.get('id', 'experiment')}"
+    result = create_github_repo(_Path(proj_path), repo_name, private=private)
+
+    if result.get("ok"):
+        state.update_project(proj["id"], github_url=result["url"])
+        state.save()
+
+    return result
+
+
+def reading_report_tool(*, state) -> dict:
+    """Get reading insights and statistics."""
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+
+    processed = state.documents_with_status("processed")
+    if not processed:
+        return {"message": "No processed papers yet."}
+
+    total_papers = len(processed)
+    total_pages = sum(d.get("page_count", 0) for d in processed)
+    total_words = sum(d.get("highlight_word_count", 0) for d in processed)
+    engagements = [d.get("engagement", 0) for d in processed if d.get("engagement")]
+    avg_engagement = round(sum(engagements) / len(engagements)) if engagements else 0
+
+    now = datetime.now(timezone.utc)
+
+    # Reading velocity (last 8 weeks)
+    week_counts: dict[str, int] = {}
+    for doc in processed:
+        ts = doc.get("processed_at", "")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+            weeks_ago = (now - dt).days // 7
+            if weeks_ago < 8:
+                monday = dt - timedelta(days=dt.weekday())
+                label = monday.strftime("%b %d")
+                week_counts[label] = week_counts.get(label, 0) + 1
+        except (ValueError, TypeError):
+            pass
+
+    # Top topics
+    topic_counter: Counter = Counter()
+    for doc in processed:
+        for tag in doc.get("metadata", {}).get("tags") or []:
+            topic_counter[tag] += 1
+    top_topics = [{"topic": t, "count": c} for t, c in topic_counter.most_common(5)]
+
+    # Most-cited
+    cited = sorted(
+        [d for d in processed if d.get("metadata", {}).get("citation_count", 0) > 0],
+        key=lambda d: d.get("metadata", {}).get("citation_count", 0),
+        reverse=True,
+    )
+    top_cited = [
+        {"title": d["title"][:60], "citations": d["metadata"]["citation_count"]}
+        for d in cited[:5]
+    ]
+
+    # Top authors
+    author_counter: Counter = Counter()
+    for doc in processed:
+        for author in doc.get("authors", []):
+            if author and author.lower() != "unknown":
+                author_counter[author] += 1
+    top_authors = [
+        {"author": a, "count": c}
+        for a, c in author_counter.most_common(5) if c >= 2
+    ]
+
+    return {
+        "lifetime": {
+            "papers": total_papers,
+            "pages": total_pages,
+            "words_highlighted": total_words,
+            "avg_engagement": avg_engagement,
+        },
+        "velocity": week_counts,
+        "top_topics": top_topics,
+        "most_cited": top_cited,
+        "top_authors": top_authors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Goal auto-parsing from free-form text
+# ---------------------------------------------------------------------------
+
+# Metrics that should default to "minimize" direction
+_MINIMIZE_METRICS = frozenset({
+    "loss", "val_loss", "train_loss", "mse", "rmse", "mae",
+    "error", "perplexity",
+})
+
+# Known metric names we can recognise in text
+_KNOWN_METRICS = [
+    "test_accuracy", "val_accuracy", "val_loss", "train_loss",
+    "best_val_acc", "exact_match", "f1", "accuracy", "precision",
+    "recall", "perplexity", "bleu", "rouge", "auc", "mse", "rmse",
+    "mae", "error", "loss",
+]
+
+# Metrics whose thresholds are typically expressed as percentages (95% → 0.95)
+_PERCENT_METRICS = frozenset({
+    "accuracy", "test_accuracy", "val_accuracy", "best_val_acc",
+    "exact_match", "f1", "precision", "recall", "auc",
+})
+
+
+def _infer_direction(metric: str) -> str:
+    """Return 'minimize' or 'maximize' based on metric name."""
+    return "minimize" if metric in _MINIMIZE_METRICS else "maximize"
+
+
+def _normalise_threshold(value: float, metric: str, was_percent: bool) -> float:
+    """Convert percentage thresholds to decimals for accuracy-like metrics."""
+    if was_percent and metric in _PERCENT_METRICS:
+        return value / 100.0
+    # Heuristic: raw number > 1 for a percent-like metric is probably a %
+    if not was_percent and value > 1.0 and metric in _PERCENT_METRICS:
+        return value / 100.0
+    return value
+
+
+def _parse_goals_from_text(goal: str) -> list[dict]:
+    """Extract structured goals from a free-form goal string.
+
+    Supports patterns like:
+      - "accuracy > 95%"
+      - "loss < 0.1"
+      - "maximize accuracy to 90%"
+      - "minimize perplexity below 20"
+      - "f1 score above 0.85"
+    """
+    import re
+
+    if not goal:
+        return []
+
+    text = goal.lower()
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    # Build a regex alternation for known metrics (longest first to avoid
+    # partial matches like "loss" matching inside "val_loss")
+    sorted_metrics = sorted(_KNOWN_METRICS, key=len, reverse=True)
+    metric_pattern = "|".join(re.escape(m).replace("_", r"[\s_]") for m in sorted_metrics)
+
+    # Pattern 1: "metric_name >/>=/</<= threshold"
+    p1 = re.compile(
+        rf"({metric_pattern})\s*(?:score\s+)?([><]=?)\s*(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p1.finditer(text):
+        metric = re.sub(r"\s+", "_", m.group(1).strip())
+        op = m.group(2)
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        direction = "maximize" if op.startswith(">") else "minimize"
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    # Pattern 2: "maximize/minimize metric_name to/above/below threshold"
+    p2 = re.compile(
+        rf"(maximize|minimize)\s+({metric_pattern})"
+        rf"(?:\s+score)?\s+(?:to|above|over|below|under)\s+(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p2.finditer(text):
+        direction = m.group(1)
+        metric = re.sub(r"\s+", "_", m.group(2).strip())
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    # Pattern 3: "metric_name above/over/exceeding/below/under threshold"
+    p3 = re.compile(
+        rf"({metric_pattern})\s*(?:score\s+)?"
+        rf"(above|over|exceeding|below|under)\s+(\d+(?:\.\d+)?)\s*(%)?",
+    )
+    for m in p3.finditer(text):
+        metric = re.sub(r"\s+", "_", m.group(1).strip())
+        word = m.group(2)
+        value = float(m.group(3))
+        pct = m.group(4) is not None
+        direction = "minimize" if word in ("below", "under") else "maximize"
+        threshold = _normalise_threshold(value, metric, pct)
+        if metric not in seen:
+            seen.add(metric)
+            results.append({"metric": metric, "direction": direction, "threshold": threshold})
+
+    return results
+
+
+def init_experiment_tool(*, state, path: str, goal: str,
+                         name: str = "", constraints: str = "",
+                         duration_minutes: int = 5,
+                         primary_metric: str = "",
+                         metric_direction: str = "",
+                         metric_constraint: str = "") -> dict:
+    """Initialize an experiment project with LLM-drafted PROMPT.md."""
+    import json as _json
+    import subprocess
+    from pathlib import Path as _Path
+
+    from distillate import config
+    from distillate.experiments import slugify
+    from distillate.launcher import _install_hooks_into
+    from distillate.state import acquire_lock, release_lock
+
+    project_path = _Path(path).expanduser().resolve()
+
+    # Create directory if it doesn't exist
+    if not project_path.exists():
+        project_path.mkdir(parents=True, exist_ok=True)
+
+    if not project_path.is_dir():
+        return {"success": False, "error": f"Path is not a directory: {path}"}
+
+    # Reject if PROMPT.md already exists
+    prompt_file = project_path / "PROMPT.md"
+    if prompt_file.exists():
+        return {
+            "success": False,
+            "error": (
+                f"PROMPT.md already exists in {path}. "
+                "Edit it directly or delete it first."
+            ),
+        }
+
+    # --- Step 1: Scan directory ---
+    scan = _scan_directory_for_init(project_path)
+
+    # --- Step 2: Call Claude to draft PROMPT.md ---
+    prompt_md = _generate_prompt_md(goal, scan, name, constraints, duration_minutes,
+                                    primary_metric, metric_direction, metric_constraint)
+    if prompt_md is None:
+        return {
+            "success": False,
+            "error": (
+                "Failed to generate PROMPT.md — no API credentials configured. "
+                "Set ANTHROPIC_API_KEY in your .env file."
+            ),
+        }
+
+    # --- Step 3: Write PROMPT.md ---
+    prompt_file.write_text(prompt_md, encoding="utf-8")
+
+    # --- Step 4: Set up infrastructure ---
+    # git init if not already a repo
+    if not (project_path / ".git").exists():
+        subprocess.run(
+            ["git", "init"],
+            cwd=project_path,
+            capture_output=True,
+        )
+
+    # Create .distillate/ with REPORTING.md
+    distillate_dir = project_path / ".distillate"
+    distillate_dir.mkdir(exist_ok=True)
+    reporting_src = _Path(__file__).parent / "autoresearch" / "REPORTING.md"
+    if reporting_src.exists():
+        import shutil
+        shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
+
+    # Install CLAUDE.md (consolidated protocol — auto-loaded by Claude Code)
+    claude_md_src = _Path(__file__).parent / "autoresearch" / "CLAUDE.md"
+    if claude_md_src.exists():
+        import shutil
+        shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
+
+    # Install hooks
+    _install_hooks_into(project_path)
+
+    # Create .claude/settings.local.json with safe Bash permissions
+    claude_dir = project_path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_local = claude_dir / "settings.local.json"
+    if not settings_local.exists():
+        local_config = {
+            "permissions": {
+                "allow": [
+                    "Bash(python3:*)",
+                    "Bash(tail:*)",
+                    "Bash(ls:*)",
+                    "Bash(cat:*)",
+                    "Bash(head:*)",
+                    "Bash(wc:*)",
+                    "Bash(mkdir:*)",
+                    "Read",
+                    "Write",
+                    "Edit",
+                    "Glob",
+                    "Grep",
+                ],
+            },
+        }
+        settings_local.write_text(
+            _json.dumps(local_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    # --- Step 5: Register in state ---
+    display_name = name or project_path.name.replace("-", " ").replace("_", " ").title()
+    project_id = slugify(display_name)
+
+    if not state.has_project(project_id):
+        from datetime import datetime, timezone
+        acquire_lock()
+        try:
+            state.reload()
+            state.add_project(
+                project_id=project_id,
+                name=display_name,
+                path=str(project_path),
+            )
+            state.update_project(
+                project_id,
+                last_scanned_at=datetime.now(timezone.utc).isoformat(),
+            )
+            # Auto-parse goals from the free-form goal string
+            parsed_goals = _parse_goals_from_text(goal)
+            if parsed_goals:
+                state.update_project(project_id, goals=parsed_goals)
+            # Store primary metric name for hero display
+            if primary_metric:
+                state.update_project(project_id, key_metric_name=primary_metric)
+            state.save()
+        finally:
+            release_lock()
+
+    return {
+        "success": True,
+        "project_id": project_id,
+        "name": display_name,
+        "path": str(project_path),
+        "prompt_md": prompt_md,
+        "message": (
+            f"Initialized '{display_name}' with a draft PROMPT.md. "
+            "Review it above — tell me what to change, or say 'launch it' "
+            "when ready."
+        ),
+    }
+
+
+def _scan_directory_for_init(project_path) -> dict:
+    """Scan a directory for context to feed the PROMPT.md generator."""
+    scan: dict = {
+        "files": [],
+        "readme": "",
+        "code_snippets": {},
+        "data_files": [],
+    }
+
+    # List files (2 levels deep)
+    try:
+        for item in sorted(project_path.rglob("*")):
+            rel = item.relative_to(project_path)
+            if any(p.startswith(".") for p in rel.parts):
+                continue
+            if len(rel.parts) > 2:
+                continue
+            if item.is_file():
+                scan["files"].append(str(rel))
+    except PermissionError:
+        pass
+
+    # Read README
+    for readme_name in ("README.md", "README.txt", "README"):
+        readme = project_path / readme_name
+        if readme.exists():
+            try:
+                text = readme.read_text(encoding="utf-8")
+                scan["readme"] = text[:3000]
+            except OSError:
+                pass
+            break
+
+    # Detect data files
+    data_exts = {".csv", ".json", ".jsonl", ".parquet", ".tsv", ".npy", ".npz", ".h5", ".hdf5"}
+    for f in scan["files"]:
+        from pathlib import Path as _P
+        if _P(f).suffix.lower() in data_exts:
+            scan["data_files"].append(f)
+
+    # Read key code files (first 50 lines)
+    key_names = {"train.py", "model.py", "main.py", "config.py", "config.yaml",
+                 "config.yml", "requirements.txt", "pyproject.toml", "setup.py"}
+    for f in scan["files"]:
+        from pathlib import Path as _P
+        if _P(f).name.lower() in key_names:
+            try:
+                lines = (project_path / f).read_text(encoding="utf-8").splitlines()[:50]
+                scan["code_snippets"][f] = "\n".join(lines)
+            except OSError:
+                pass
+
+    return scan
+
+
+_PROMPT_MD_SYSTEM = """\
+You are an expert ML researcher writing an autonomous experiment prompt. \
+Write a PROMPT.md that is precise, thorough, and gives an autonomous agent \
+everything it needs to run experiments independently.
+
+The PROMPT.md must follow this exact structure:
+
+# Task: <Title that captures the objective>
+
+**Objective:** <One sentence with a specific, measurable target>
+
+## The Task
+
+<Problem definition — what the model/system must do, input/output format, \
+what success looks like>
+
+## Data
+
+<What data exists, file paths relative to the project root, format, \
+train/test splits. If no data exists yet, specify how to obtain or generate it.>
+
+## Rules & Constraints
+
+<Hardware constraints, compute budget, time budget, no internet access, \
+autonomy requirements, no reward hacking, allowed tools and libraries. \
+IMPORTANT: include the time budget the user specified (default: 5 minutes per \
+experiment iteration). Each iteration should fit within this budget.>
+
+**CRITICAL: File Size Limit.** When using the Read tool, tool results must \
+not exceed 51,200 bytes. For files longer than ~400 lines, always use \
+`offset` and `limit` parameters to read in chunks. When writing code, \
+keep individual Python files under 400 lines — split large scripts into \
+separate modules.
+
+## Experiment Tracking (Distillate)
+
+### Prior Runs
+Before starting, **read `.distillate/runs.jsonl`** if it exists. It contains \
+the history of all prior experiment iterations. Build on what worked, avoid \
+repeating failed approaches. Reference prior run IDs in your reasoning. \
+If `.distillate/context.md` exists, read it for a formatted summary.
+
+### Recording Results
+After each experiment iteration, you MUST append one JSON line to \
+`.distillate/runs.jsonl`:
+
+```json
+{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", \
+"status":"keep|discard|crash", "hypothesis":"...", "changes":"...", \
+"hyperparameters":{...}, "results":{...}, "reasoning":"..."}
+```
+
+Set `status` to `keep` if results improved, `discard` if not, `crash` on \
+failure. Include `reasoning` to explain your decision. Create the \
+`.distillate/` directory if it doesn't exist.
+
+## What You Must Deliver
+
+<Numbered list of deliverables — model, training curves, evaluation, \
+written log of decisions>
+
+## Primary Metric
+
+**You MUST explicitly declare the primary metric in this section.** State:
+1. The metric name (e.g. `test_accuracy`, `param_count`, `val_loss`)
+2. The optimization direction: minimize or maximize
+3. Any conditional constraints (e.g. "minimize param_count, subject to \
+test_accuracy >= 99%")
+
+Use this exact format:
+```
+Primary metric: <metric_name> (minimize|maximize)
+Constraints: <metric> >= <threshold> (if any)
+```
+
+This is what Distillate uses as the north star metric for charts and \
+progress tracking. Getting this wrong means the agent optimizes in the \
+wrong direction.
+
+## Evaluation Criteria
+
+<Secondary criteria like methodology quality, code quality, reproducibility>
+
+Write in second person ("you must..."). Be direct and specific. Include \
+concrete numbers for targets where the user provided them. The prompt should \
+be self-contained — an agent reading only this file should know exactly what \
+to do without asking questions.
+
+IMPORTANT: Always include the "Experiment Tracking (Distillate)" section \
+exactly as shown above — this is how experiment data is recorded and tracked.
+
+Do NOT include any meta-commentary, preamble, or explanation outside the \
+PROMPT.md content. Output ONLY the markdown content of the PROMPT.md file."""
+
+
+def _generate_prompt_md(goal: str, scan: dict, name: str,
+                        constraints: str,
+                        duration_minutes: int = 5,
+                        primary_metric: str = "",
+                        metric_direction: str = "",
+                        metric_constraint: str = "") -> str | None:
+    """Call Claude to generate PROMPT.md content."""
+    from distillate.agent_core import create_client
+
+    client = create_client()
+    if client is None:
+        return None
+
+    # Build the user message with all context
+    parts = [f"**Goal:** {goal}"]
+
+    if name:
+        parts.append(f"**Project name:** {name}")
+
+    if primary_metric:
+        direction = metric_direction or "maximize"
+        metric_line = f"**Primary metric:** `{primary_metric}` ({direction})"
+        if metric_constraint:
+            metric_line += f"\n**Metric constraint:** {metric_constraint}"
+        parts.append(metric_line)
+
+    if constraints:
+        parts.append(f"**Constraints:** {constraints}")
+
+    parts.append(f"**Time budget per iteration:** {duration_minutes} minutes")
+
+    if scan["files"]:
+        file_list = "\n".join(f"- {f}" for f in scan["files"][:50])
+        parts.append(f"**Directory contents:**\n{file_list}")
+
+    if scan["readme"]:
+        parts.append(f"**README:**\n```\n{scan['readme']}\n```")
+
+    if scan["data_files"]:
+        parts.append(f"**Data files:** {', '.join(scan['data_files'])}")
+
+    if scan["code_snippets"]:
+        for fname, snippet in scan["code_snippets"].items():
+            parts.append(f"**{fname}** (first 50 lines):\n```\n{snippet}\n```")
+
+    user_msg = "\n\n".join(parts)
+
+    try:
+        from distillate import config
+        response = client.messages.create(
+            model=config.CLAUDE_FAST_MODEL,
+            max_tokens=4096,
+            system=_PROMPT_MD_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        return response.content[0].text.strip()
+    except Exception:
+        log.exception("Failed to generate PROMPT.md via Claude API")
+        return None
+
 
 def _remove_notebook(project_id: str) -> None:
     """Remove the Obsidian notebook file for a project."""
@@ -988,3 +2681,385 @@ def _remove_notebook(project_id: str) -> None:
     # Remove main notebook and any section notebooks
     for md_file in nb_dir.glob(f"{project_id}*.md"):
         md_file.unlink(missing_ok=True)
+
+    # Remove HTML notebook
+    html_dir = nb_dir / "html"
+    if html_dir.is_dir():
+        html_file = html_dir / f"{project_id}.html"
+        html_file.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Paper-experiment integration tools
+# ---------------------------------------------------------------------------
+
+def _gather_paper_context(state, identifier: str) -> dict | None:
+    """Gather full paper context for experiment scaffolding.
+
+    Returns a dict with title, authors, abstract, summary, highlights,
+    github_repo, and citekey — or None if the paper is not found.
+    """
+    from distillate.tools import (
+        _extract_highlights_from_note,
+        _find_papers_from_state,
+        _read_note_content,
+    )
+
+    matches = _find_papers_from_state(identifier, state)
+    if not matches:
+        return None
+
+    key, doc = matches[0]
+    meta = doc.get("metadata", {})
+    citekey = meta.get("citekey", "")
+
+    highlights = ""
+    note_content = _read_note_content(citekey, doc.get("title", ""))
+    if note_content:
+        highlights = _extract_highlights_from_note(note_content)
+
+    return {
+        "key": key,
+        "title": doc.get("title", ""),
+        "authors": doc.get("authors", []),
+        "abstract": meta.get("abstract", ""),
+        "summary": doc.get("summary", ""),
+        "highlights": highlights,
+        "github_repo": meta.get("github_repo", ""),
+        "github_stars": meta.get("github_stars"),
+        "citekey": citekey,
+        "tags": meta.get("tags", []),
+        "citation_count": meta.get("citation_count", 0),
+    }
+
+
+def replicate_paper(*, state, paper: str, path: str = "",
+                    goal: str = "", constraints: str = "") -> dict:
+    """Scaffold an experiment to replicate a paper's results."""
+    import subprocess
+    from pathlib import Path as _Path
+
+    from distillate import config
+    from distillate.experiments import slugify
+
+    ctx = _gather_paper_context(state, paper)
+    if ctx is None:
+        return {"success": False, "error": f"No paper found matching '{paper}'"}
+
+    # Determine experiment path
+    if not path:
+        root = config.EXPERIMENTS_ROOT
+        if not root:
+            return {
+                "success": False,
+                "error": (
+                    "No path specified and EXPERIMENTS_ROOT not set. "
+                    "Provide a path or set EXPERIMENTS_ROOT in .env."
+                ),
+            }
+        slug = slugify(ctx["title"][:60])
+        path = str(_Path(root) / slug)
+
+    project_path = _Path(path).expanduser().resolve()
+
+    # Clone GitHub repo if available and directory doesn't exist yet
+    cloned = False
+    if ctx["github_repo"] and not project_path.exists():
+        repo_url = ctx["github_repo"]
+        if not repo_url.startswith("http"):
+            repo_url = f"https://github.com/{repo_url}"
+        try:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, str(project_path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            cloned = result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    # Build a replication-focused goal
+    if not goal:
+        parts = [f"Reproduce the key results from '{ctx['title']}'."]
+        if ctx["summary"]:
+            parts.append(f"Paper summary: {ctx['summary'][:300]}")
+        if ctx["highlights"]:
+            parts.append(
+                "Focus on the methods and findings highlighted by the reader."
+            )
+        goal = " ".join(parts)
+
+    # Build constraints with paper context
+    paper_context = f"Replicating: {ctx['title']}"
+    if ctx["authors"]:
+        authors_str = ", ".join(ctx["authors"][:3])
+        paper_context += f" by {authors_str}"
+    if constraints:
+        paper_context += f". {constraints}"
+
+    # Call init_experiment with paper-enriched context
+    result = init_experiment_tool(
+        state=state,
+        path=str(project_path),
+        goal=goal,
+        name=f"Replicate: {ctx['title'][:50]}",
+        constraints=paper_context,
+    )
+
+    if not result.get("success"):
+        return result
+
+    # Auto-link the paper to the new project
+    project_id = result.get("project_id", "")
+    if project_id:
+        link_ref = ctx["citekey"] or ctx["title"]
+        proj = state.get_project(project_id)
+        if proj:
+            linked = proj.get("linked_papers", [])
+            if link_ref not in linked:
+                linked.append(link_ref)
+                state.update_project(project_id, linked_papers=linked)
+                # Reverse link on the paper
+                doc = state.get_document(ctx["key"])
+                if doc:
+                    doc.setdefault("linked_projects", [])
+                    if project_id not in doc["linked_projects"]:
+                        doc["linked_projects"].append(project_id)
+                state.save()
+
+    result["paper"] = ctx["title"]
+    result["cloned_repo"] = cloned
+    if cloned:
+        result["message"] = (
+            f"Cloned {ctx['github_repo']} and initialized experiment. "
+            + result.get("message", "")
+        )
+
+    return result
+
+
+def suggest_from_literature(*, state, project: str,
+                            focus: str = "") -> dict:
+    """Suggest experiment steering based on recent paper reads."""
+    from datetime import datetime, timedelta, timezone
+
+    from distillate import config
+    from distillate.tools import (
+        _extract_highlights_from_note,
+        _read_note_content,
+    )
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    # Gather recent reads (last 30 days)
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=30)).isoformat()
+    recent = state.documents_processed_since(since)
+    if not recent:
+        return {
+            "suggestions": [],
+            "message": "No papers read in the last 30 days to draw from.",
+        }
+
+    # Build context for each recent paper
+    paper_contexts = []
+    for doc in reversed(recent[:10]):  # Most recent first, cap at 10
+        meta = doc.get("metadata", {})
+        citekey = meta.get("citekey", "")
+        title = doc.get("title", "")
+
+        parts = [f"**{title}**"]
+        if doc.get("summary"):
+            parts.append(doc["summary"][:200])
+
+        note = _read_note_content(citekey, title)
+        if note:
+            hl = _extract_highlights_from_note(note)
+            if hl:
+                parts.append(hl[:500])
+
+        paper_contexts.append("\n".join(parts))
+
+    # Build experiment context
+    runs = proj.get("runs", {})
+    best_run = None
+    if runs:
+        completed = [r for r in runs.values() if r.get("status") == "completed"]
+        if completed:
+            best_run = max(
+                completed,
+                key=lambda r: max(r.get("results", {}).values(), default=0)
+                if r.get("results") else 0,
+            )
+
+    exp_context = f"Experiment: {proj.get('name', '')}"
+    if proj.get("description"):
+        exp_context += f"\nDescription: {proj['description']}"
+    goals = proj.get("goals", [])
+    if goals:
+        goal_strs = [
+            f"{g['metric']} {g['direction']} {g.get('threshold', '?')}"
+            for g in goals
+        ]
+        exp_context += f"\nGoals: {', '.join(goal_strs)}"
+    if best_run:
+        exp_context += f"\nBest run: {best_run.get('name', '')} — {best_run.get('results', {})}"
+
+    # Call Claude to synthesize suggestions
+    from distillate.agent_core import create_client
+    client = create_client()
+    if client is None:
+        return {
+            "success": False,
+            "error": "No API credentials configured.",
+        }
+
+    focus_clause = ""
+    if focus:
+        focus_clause = f"\nFocus area: {focus}"
+
+    prompt = (
+        f"You are helping a researcher improve their experiment based on "
+        f"papers they've recently read.\n\n"
+        f"## Experiment\n{exp_context}{focus_clause}\n\n"
+        f"## Recent Papers\n"
+        + "\n\n---\n\n".join(paper_contexts)
+        + "\n\n## Task\n"
+        "Suggest 2-3 concrete steering instructions for the experiment "
+        "based on techniques, methods, or findings from these papers. "
+        "Each suggestion should:\n"
+        "1. Reference the specific paper it's drawn from\n"
+        "2. Explain what to try and why\n"
+        "3. Be actionable as a one-line --steer instruction\n\n"
+        "Return as a JSON array of objects with keys: "
+        "paper_title, technique, rationale, steer_instruction"
+    )
+
+    try:
+        import json as _json
+        response = client.messages.create(
+            model=config.CLAUDE_FAST_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        # Parse JSON from response (handle markdown code blocks)
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        suggestions = _json.loads(text)
+    except Exception:
+        log.exception("Failed to generate literature suggestions")
+        return {
+            "success": False,
+            "error": "Failed to generate suggestions from Claude.",
+        }
+
+    return {
+        "success": True,
+        "project": proj.get("name", ""),
+        "suggestions": suggestions,
+        "papers_consulted": len(paper_contexts),
+        "message": (
+            f"Found {len(suggestions)} suggestions from "
+            f"{len(paper_contexts)} recent papers."
+        ),
+    }
+
+
+def extract_baselines(*, state, papers: list[str],
+                      metrics: list[str] | None = None) -> dict:
+    """Extract reported metric baselines from papers."""
+    from distillate import config
+    from distillate.tools import (
+        _extract_highlights_from_note,
+        _find_papers_from_state,
+        _read_note_content,
+    )
+
+    paper_texts = []
+    titles_used = []
+
+    for ident in papers:
+        matches = _find_papers_from_state(ident, state)
+        if not matches:
+            continue
+        key, doc = matches[0]
+        title = doc.get("title", "")
+        titles_used.append(title)
+        meta = doc.get("metadata", {})
+
+        parts = [f"Title: {title}"]
+        if meta.get("abstract"):
+            parts.append(f"Abstract: {meta['abstract'][:800]}")
+        if doc.get("summary"):
+            parts.append(f"Summary: {doc['summary']}")
+
+        citekey = meta.get("citekey", "")
+        note = _read_note_content(citekey, title)
+        if note:
+            hl = _extract_highlights_from_note(note)
+            if hl:
+                parts.append(hl[:1500])
+
+        paper_texts.append("\n".join(parts))
+
+    if not paper_texts:
+        return {"error": "No matching papers found.", "papers_used": []}
+
+    # Call Claude to extract baselines
+    from distillate.agent_core import create_client
+    client = create_client()
+    if client is None:
+        return {"success": False, "error": "No API credentials configured."}
+
+    metrics_clause = ""
+    if metrics:
+        metrics_clause = (
+            f"\nFocus on these metrics: {', '.join(metrics)}. "
+            "But also include any other clearly reported metrics."
+        )
+
+    prompt = (
+        "Extract all reported quantitative results (metrics, baselines, "
+        "benchmarks) from the following papers. For each metric found, "
+        "provide the metric name, value, context (what model/method "
+        "achieved it), and which paper it's from.\n\n"
+        + "\n\n---\n\n".join(paper_texts)
+        + f"{metrics_clause}\n\n"
+        "Return as a JSON array of objects with keys: "
+        "paper_title, metric, value, context, direction "
+        "(maximize or minimize)"
+    )
+
+    try:
+        import json as _json
+        response = client.messages.create(
+            model=config.CLAUDE_FAST_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        baselines = _json.loads(text)
+    except Exception:
+        log.exception("Failed to extract baselines")
+        return {
+            "success": False,
+            "error": "Failed to extract baselines from Claude.",
+        }
+
+    return {
+        "success": True,
+        "baselines": baselines,
+        "papers_used": titles_used,
+        "message": (
+            f"Extracted {len(baselines)} baselines from "
+            f"{len(titles_used)} papers."
+        ),
+    }

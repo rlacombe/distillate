@@ -1193,6 +1193,36 @@ class TestSuggestionFallback:
         assert "Trending" in body
 
 
+class TestNoneTimestampGuard:
+    """Ensure _get_todays_suggestions handles None timestamps gracefully."""
+
+    @patch("distillate.digest.fetch_pending_from_gist")
+    def test_none_timestamp_in_local_state(self, mock_fetch):
+        """A None timestamp in local state should not crash."""
+        from distillate.digest import _get_todays_suggestions
+
+        mock_state = MagicMock()
+        mock_state._data = {"last_suggestion": {"text": "test", "timestamp": None}}
+        mock_fetch.return_value = None
+
+        # Should return None (not crash with TypeError)
+        result = _get_todays_suggestions(mock_state)
+        assert result is None
+
+    @patch("distillate.digest.fetch_pending_from_gist")
+    def test_none_timestamp_in_gist(self, mock_fetch):
+        """A None timestamp in Gist pending should not crash."""
+        from distillate.digest import _get_todays_suggestions
+
+        mock_state = MagicMock()
+        mock_state._data = {}
+        mock_fetch.return_value = {"timestamp": None, "suggestion_text": "test"}
+
+        # Should return None (not crash with TypeError)
+        result = _get_todays_suggestions(mock_state)
+        assert result is None
+
+
 class TestCollectionFiltering:
     """Collection-scoped paper discovery."""
 

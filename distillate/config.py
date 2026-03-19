@@ -119,6 +119,7 @@ EXPERIMENTS_ENABLED: bool = os.environ.get("EXPERIMENTS_ENABLED", "false").strip
 
 HTTP_TIMEOUT: int = int(os.environ.get("HTTP_TIMEOUT", "30"))
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+VERBOSE: bool = False
 CLAUDE_FAST_MODEL: str = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001").strip()
 CLAUDE_SMART_MODEL: str = os.environ.get("CLAUDE_SMART_MODEL", "claude-sonnet-4-5-20250929").strip()
 CLAUDE_AGENT_MODEL: str = os.environ.get("CLAUDE_AGENT_MODEL", "claude-haiku-4-5-20251001").strip()
@@ -183,12 +184,12 @@ def setup_logging() -> None:
     level = getattr(logging, LOG_LEVEL, logging.INFO)
 
     if sys.stdout.isatty() and LOG_LEVEL != "DEBUG":
-        # TTY: console gets warnings only, file gets everything
+        # TTY: console gets warnings only (INFO with --verbose), file gets everything
         root = logging.getLogger()
         root.setLevel(level)
 
         console = logging.StreamHandler()
-        console.setLevel(logging.WARNING)
+        console.setLevel(logging.INFO if VERBOSE else logging.WARNING)
         console.setFormatter(logging.Formatter("%(message)s"))
         root.addHandler(console)
 

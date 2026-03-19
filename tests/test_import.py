@@ -8,18 +8,6 @@ import pytest
 # -- Fixtures --
 
 @pytest.fixture(autouse=True)
-def isolate_state(tmp_path, monkeypatch):
-    """Point state module at a temp directory so tests don't touch real state."""
-    import distillate.state as state_mod
-
-    state_file = tmp_path / "state.json"
-    lock_file = tmp_path / "state.lock"
-    monkeypatch.setattr(state_mod, "STATE_PATH", state_file)
-    monkeypatch.setattr(state_mod, "LOCK_PATH", lock_file)
-    yield tmp_path
-
-
-@pytest.fixture(autouse=True)
 def isolate_config(monkeypatch):
     """Set required config values for tests."""
     monkeypatch.setenv("ZOTERO_API_KEY", "test_key")
@@ -445,7 +433,7 @@ class TestImport:
             )
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
 
         _import(["2"])
 
@@ -509,7 +497,7 @@ class TestImport:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
         monkeypatch.setattr("builtins.input", lambda _: "all")
 
         _import([])
@@ -591,7 +579,7 @@ class TestImport:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
 
         _import(["10"])
 
@@ -628,7 +616,7 @@ class TestInitSeed:
             uploaded.append(paper["key"])
             return True
 
-        monkeypatch.setattr("distillate.main._upload_paper", fake_upload)
+        monkeypatch.setattr("distillate.pipeline._upload_paper", fake_upload)
         monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/rmapi")
         monkeypatch.setenv("REMARKABLE_DEVICE_TOKEN", "tok")
         monkeypatch.setattr(
@@ -821,8 +809,8 @@ class TestSchedule:
         def mock_linux():
             called.append("linux")
 
-        monkeypatch.setattr("distillate.main._schedule_macos", mock_macos)
-        monkeypatch.setattr("distillate.main._schedule_linux", mock_linux)
+        monkeypatch.setattr("distillate.wizard._schedule_macos", mock_macos)
+        monkeypatch.setattr("distillate.wizard._schedule_linux", mock_linux)
 
         monkeypatch.setattr("platform.system", lambda: "Darwin")
         _schedule()

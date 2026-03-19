@@ -802,7 +802,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 13
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 32
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -817,7 +817,14 @@ class TestExperimentToolSchemas:
             "scan_project", "get_experiment_notebook",
             "add_project", "rename_project", "rename_run",
             "delete_project", "delete_run", "update_project",
-            "link_paper", "update_goals",
+            "get_run_details", "link_paper", "update_goals", "annotate_run",
+            "launch_experiment", "experiment_status", "stop_experiment",
+            "init_experiment", "continue_experiment", "sweep_experiment",
+            "steer_experiment",
+            "compare_projects", "queue_sessions", "list_templates",
+            "save_template", "create_github_repo", "reading_report",
+            "manage_session",
+            "replicate_paper", "suggest_from_literature", "extract_baselines",
         }
 
 
@@ -1235,7 +1242,7 @@ class TestLLMEnrichment:
 
     def test_enrichment_cache_round_trip(self, tmp_path):
         from distillate.experiments import (
-            _load_enrichment_cache,
+            load_enrichment_cache,
             _save_enrichment_cache,
         )
 
@@ -1243,14 +1250,14 @@ class TestLLMEnrichment:
             "fingerprint": "abc123",
             "enrichment": _SAMPLE_ENRICHMENT,
         })
-        loaded = _load_enrichment_cache(tmp_path)
+        loaded = load_enrichment_cache(tmp_path)
         assert loaded["fingerprint"] == "abc123"
         assert loaded["enrichment"]["project"]["key_breakthrough"].startswith("Scaling")
 
     def test_enrichment_cache_missing(self, tmp_path):
-        from distillate.experiments import _load_enrichment_cache
+        from distillate.experiments import load_enrichment_cache
 
-        assert _load_enrichment_cache(tmp_path) == {}
+        assert load_enrichment_cache(tmp_path) == {}
 
     def test_build_enrichment_prompt(self):
         from distillate.experiments import _build_enrichment_prompt
@@ -1432,8 +1439,8 @@ class TestLLMEnrichment:
         assert result["runs"]["exp-001"]["name"] == "Baseline Small Transformer"
 
         # Check cache was written
-        from distillate.experiments import _load_enrichment_cache
-        cache = _load_enrichment_cache(tmp_path)
+        from distillate.experiments import load_enrichment_cache
+        cache = load_enrichment_cache(tmp_path)
         assert cache.get("enrichment") is not None
 
 
@@ -1761,3 +1768,1330 @@ class TestUpdateGoalsTool:
         from distillate.experiment_tools import update_goals_tool
         result = update_goals_tool(state=state, project="nope", goals=[])
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# HTML notebook generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestHtmlNotebook:
+    def _make_project(self):
+        return {
+            "id": "test-proj",
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "description": "A test project",
+            "status": "tracking",
+            "goals": [{"metric": "accuracy", "direction": "maximize", "threshold": 0.95}],
+            "linked_papers": ["smith2026"],
+            "runs": {
+                "run-1": {
+                    "id": "run-1", "name": "Baseline",
+                    "status": "completed",
+                    "hyperparameters": {"lr": 0.01, "batch_size": 32},
+                    "results": {"accuracy": 0.8, "loss": 0.5},
+                    "tags": ["v1"], "notes": ["initial run"],
+                    "started_at": "2026-01-01T00:00:00+00:00",
+                    "completed_at": "2026-01-01T01:00:00+00:00",
+                    "duration_minutes": 60,
+                },
+                "run-2": {
+                    "id": "run-2", "name": "Improved",
+                    "status": "completed",
+                    "hyperparameters": {"lr": 0.005, "batch_size": 32},
+                    "results": {"accuracy": 0.9, "loss": 0.3},
+                    "tags": ["v2"], "notes": [],
+                    "started_at": "2026-01-02T00:00:00+00:00",
+                    "completed_at": "2026-01-02T01:00:00+00:00",
+                    "duration_minutes": 45,
+                },
+            },
+        }
+
+    def test_html_contains_structure(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "<!DOCTYPE html>" in html
+        assert "<title>Test Project" in html
+        assert "stats-bar" in html
+        assert "run-card" in html
+        assert "Baseline" in html
+        assert "Improved" in html
+        assert "</html>" in html
+
+    def test_html_escapes_special_chars(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        proj["name"] = "Test <script>alert('xss')</script>"
+        html = generate_html_notebook(proj)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_html_includes_stats(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Experiments" in html
+        assert "Completed" in html
+        assert "stat-value" in html
+
+    def test_html_includes_common_config(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        # batch_size=32 is shared across both runs
+        assert "config-grid" in html
+        assert "batch_size" in html
+
+    def test_html_includes_diff(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "diff-section" in html
+        assert "What Changed" in html
+
+    def test_html_includes_notes(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "initial run" in html
+        assert "notes-block" in html
+
+    def test_html_includes_enrichment(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        enrichment = {
+            "runs": {
+                "run-1": {
+                    "hypothesis": "Lower LR should help",
+                    "approach": "Standard training",
+                    "analysis": "Good results",
+                    "next_steps": "Try more epochs",
+                    "name": "Baseline Experiment",
+                },
+            },
+            "project": {
+                "key_breakthrough": "Found optimal LR",
+                "lessons_learned": ["Batch size matters", "LR decay helps"],
+            },
+        }
+        html = generate_html_notebook(proj, enrichment=enrichment)
+        assert "Research Insights" in html
+        assert "Found optimal LR" in html
+        assert "Batch size matters" in html
+        assert "narrative-block" in html
+        assert "Lower LR should help" in html
+
+    def test_html_includes_goals(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Success Criteria" in html
+        assert "accuracy" in html
+
+    def test_html_includes_linked_papers(self):
+        from distillate.experiments import generate_html_notebook
+        proj = self._make_project()
+        html = generate_html_notebook(proj)
+        assert "Linked Papers" in html
+        assert "smith2026" in html
+
+    def test_html_empty_project(self):
+        from distillate.experiments import generate_html_notebook
+        proj = {"id": "empty", "name": "Empty", "path": "", "runs": {}}
+        html = generate_html_notebook(proj)
+        assert "<!DOCTYPE html>" in html
+        assert "Empty" in html
+
+
+class TestWriteHtmlNotebook:
+    def test_writes_to_html_subdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", str(tmp_path))
+        monkeypatch.setattr("distillate.config.OBSIDIAN_PAPERS_FOLDER", "Distillate")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        from distillate.obsidian import write_experiment_html_notebook
+        proj = {"id": "my-project", "name": "My Project"}
+        path = write_experiment_html_notebook(proj, "<html>test</html>")
+        assert path is not None
+        assert path.exists()
+        assert path.name == "my-project.html"
+        assert "html" in str(path.parent.name)
+        assert path.read_text(encoding="utf-8") == "<html>test</html>"
+
+    def test_returns_none_unconfigured(self, monkeypatch):
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        from distillate.obsidian import write_experiment_html_notebook
+        proj = {"id": "my-project"}
+        assert write_experiment_html_notebook(proj, "html") is None
+
+
+# ---------------------------------------------------------------------------
+# annotate_run tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotateRunTool:
+    def test_add_hypothesis(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            hypothesis="Smaller LR converges better",
+        )
+        assert result["success"] is True
+        assert "hypothesis" in result["updated"]
+        run = state.get_run("test-proj", "run-1")
+        assert run["hypothesis"] == "Smaller LR converges better"
+
+    def test_add_note(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            note="Ran on A100 GPU",
+        )
+        assert result["success"] is True
+        assert "note" in result["updated"]
+        run = state.get_run("test-proj", "run-1")
+        assert "Ran on A100 GPU" in run["notes"]
+
+    def test_add_both(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+            hypothesis="Test hypothesis", note="Test note",
+        )
+        assert result["success"] is True
+        assert "hypothesis" in result["updated"]
+        assert "note" in result["updated"]
+
+    def test_requires_at_least_one_field(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="run-1",
+        )
+        assert "error" in result
+
+    def test_project_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="nope", run="run-1",
+            hypothesis="Test",
+        )
+        assert "error" in result
+
+    def test_run_not_found(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        result = annotate_run_tool(
+            state=state, project="test-proj", run="nope",
+            hypothesis="Test",
+        )
+        assert "error" in result
+
+    def test_hypothesis_precedence_in_notebook(self, tmp_path, monkeypatch):
+        """User-provided hypothesis should appear in the notebook."""
+        from distillate.experiments import generate_notebook
+        proj = {
+            "id": "test", "name": "Test", "path": "",
+            "runs": {
+                "r1": {
+                    "id": "r1", "name": "Run 1", "status": "completed",
+                    "hypothesis": "User's own hypothesis",
+                    "hyperparameters": {}, "results": {},
+                    "tags": [], "notes": [],
+                    "started_at": "", "completed_at": "", "duration_minutes": 0,
+                },
+            },
+        }
+        enrichment = {
+            "runs": {"r1": {"hypothesis": "LLM generated hypothesis"}},
+            "project": {},
+        }
+        md = generate_notebook(proj, enrichment=enrichment)
+        # User hypothesis takes precedence
+        assert "User's own hypothesis" in md
+
+    def test_hypothesis_precedence_in_html(self, tmp_path, monkeypatch):
+        """User-provided hypothesis should appear in HTML notebook too."""
+        from distillate.experiments import generate_html_notebook
+        proj = {
+            "id": "test", "name": "Test", "path": "",
+            "runs": {
+                "r1": {
+                    "id": "r1", "name": "Run 1", "status": "completed",
+                    "hypothesis": "User hypothesis here",
+                    "hyperparameters": {}, "results": {},
+                    "tags": [], "notes": [],
+                    "started_at": "", "completed_at": "", "duration_minutes": 0,
+                },
+            },
+        }
+        enrichment = {
+            "runs": {"r1": {"hypothesis": "LLM hypothesis"}},
+            "project": {},
+        }
+        html = generate_html_notebook(proj, enrichment=enrichment)
+        assert "User hypothesis here" in html
+
+    def test_notes_append(self, tmp_path, monkeypatch):
+        """Multiple annotate calls should accumulate notes."""
+        state = _make_state(tmp_path, monkeypatch)
+        from distillate.experiment_tools import annotate_run_tool
+        annotate_run_tool(state=state, project="test-proj", run="run-1", note="First")
+        annotate_run_tool(state=state, project="test-proj", run="run-1", note="Second")
+        run = state.get_run("test-proj", "run-1")
+        assert len(run["notes"]) == 2
+        assert run["notes"][0] == "First"
+        assert run["notes"][1] == "Second"
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckProjectsForUpdates:
+    def test_no_projects(self):
+        from distillate.experiments import check_projects_for_updates
+        assert check_projects_for_updates({}) == []
+
+    def test_nonexistent_path(self):
+        from distillate.experiments import check_projects_for_updates
+        projects = {
+            "p1": {"id": "p1", "path": "/nonexistent/path", "last_commit_hash": "abc123"},
+        }
+        assert check_projects_for_updates(projects) == []
+
+    def test_detects_new_commits(self, tmp_path):
+        """Test detection when HEAD differs from stored hash."""
+        from distillate.experiments import check_projects_for_updates
+        # Create a git repo with one commit
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        # Get initial hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True,
+        )
+        first_hash = result.stdout.strip()
+
+        # Add another commit
+        (repo / "file2.txt").write_text("world")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "second"], cwd=repo, capture_output=True)
+
+        projects = {
+            "test": {
+                "id": "test", "name": "Test",
+                "path": str(repo),
+                "last_commit_hash": first_hash,
+            },
+        }
+        updates = check_projects_for_updates(projects)
+        assert len(updates) == 1
+        assert updates[0]["new_commits"] == 1
+        assert updates[0]["project"]["name"] == "Test"
+
+    def test_no_updates_when_hash_matches(self, tmp_path):
+        from distillate.experiments import check_projects_for_updates
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True,
+        )
+        current_hash = result.stdout.strip()
+
+        projects = {
+            "test": {
+                "id": "test", "path": str(repo),
+                "last_commit_hash": current_hash,
+            },
+        }
+        assert check_projects_for_updates(projects) == []
+
+    def test_first_scan_no_stored_hash(self, tmp_path):
+        from distillate.experiments import check_projects_for_updates
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        projects = {
+            "test": {"id": "test", "path": str(repo), "last_commit_hash": ""},
+        }
+        updates = check_projects_for_updates(projects)
+        assert len(updates) == 1
+        assert updates[0]["new_commits"] == 1
+
+
+class TestDiscoverGitRepos:
+    """Test _discover_git_repos and multi-repo scan_project_tool."""
+
+    def test_discovers_child_repos(self, tmp_path):
+        from distillate.experiment_tools import _discover_git_repos
+
+        # Create two child repos and one non-repo dir
+        (tmp_path / "repo-a" / ".git").mkdir(parents=True)
+        (tmp_path / "repo-b" / ".git").mkdir(parents=True)
+        (tmp_path / "not-a-repo").mkdir()
+        (tmp_path / ".hidden" / ".git").mkdir(parents=True)
+
+        repos = _discover_git_repos(tmp_path)
+        names = [r.name for r in repos]
+        assert "repo-a" in names
+        assert "repo-b" in names
+        assert "not-a-repo" not in names
+        assert ".hidden" not in names  # hidden dirs skipped
+
+    def test_returns_empty_for_no_repos(self, tmp_path):
+        from distillate.experiment_tools import _discover_git_repos
+
+        (tmp_path / "plain-dir").mkdir()
+        assert _discover_git_repos(tmp_path) == []
+
+    def test_scan_tool_no_git_no_subrepos(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        plain = tmp_path / "empty"
+        plain.mkdir()
+        result = scan_project_tool(state=State(), path=str(plain))
+        assert not result["success"]
+        assert "No git repository" in result["error"]
+
+    def test_scan_tool_multi_repo(self, tmp_path, monkeypatch):
+        """Scanning a parent dir discovers child git repos."""
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+
+        parent = tmp_path / "projects"
+        parent.mkdir()
+
+        # Create two git repos with ML artifacts
+        for name in ("alpha", "beta"):
+            repo = parent / name
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
+            # Write a training log JSON
+            log_data = {
+                "config": {"lr": 0.01, "epochs": 10, "batch_size": 32},
+                "epochs": [{"epoch": 1, "loss": 0.5}],
+            }
+            (repo / "training_log.json").write_text(json.dumps(log_data))
+            subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        result = scan_project_tool(state=State(), path=str(parent))
+        assert result["success"]
+        assert result.get("multi")
+        assert len(result["projects"]) == 2
+        project_names = {p["name"] for p in result["projects"]}
+        assert "Alpha" in project_names
+        assert "Beta" in project_names
+
+    def test_scan_tool_single_git_repo_still_works(self, tmp_path, monkeypatch):
+        """A path with .git at root is scanned directly (no discovery)."""
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.OBSIDIAN_VAULT_PATH", "")
+        monkeypatch.setattr("distillate.config.OUTPUT_PATH", "")
+        monkeypatch.setattr("distillate.config.ANTHROPIC_API_KEY", "")
+
+        repo = tmp_path / "my-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
+        log_data = {
+            "config": {"lr": 0.01, "epochs": 10, "batch_size": 32},
+            "epochs": [{"epoch": 1, "loss": 0.5}],
+        }
+        (repo / "training_log.json").write_text(json.dumps(log_data))
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        from distillate.experiment_tools import scan_project_tool
+        from distillate.state import State
+
+        result = scan_project_tool(state=State(), path=str(repo))
+        assert result["success"]
+        assert "multi" not in result
+        assert result["runs_discovered"] >= 1
+
+
+class TestExperimentsSection:
+    """Test _experiments_section in agent_core."""
+
+    def test_includes_new_commits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.EXPERIMENTS_ENABLED", True)
+        from distillate.state import State
+        state = State()
+        state.add_project("proj-1", "Test Project", str(tmp_path))
+        from distillate.agent_core import _experiments_section
+        updates = [{"project": {"id": "proj-1", "name": "Test Project"}, "new_commits": 3, "current_hash": "abc"}]
+        section = _experiments_section(state, updates=updates)
+        assert "3 new commits" in section
+
+    def test_no_updates(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("distillate.config.EXPERIMENTS_ENABLED", True)
+        from distillate.state import State
+        state = State()
+        state.add_project("proj-1", "Test Project", str(tmp_path))
+        from distillate.agent_core import _experiments_section
+        section = _experiments_section(state)
+        assert "new commit" not in section
+        assert "Test Project" in section
+
+
+# ---------------------------------------------------------------------------
+# Structured reporting (runs.jsonl) tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunsJsonlParsing:
+    """Test parsing of .distillate/runs.jsonl structured reports."""
+
+    def test_parse_empty_file(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        (distillate_dir / "runs.jsonl").write_text("", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert runs == []
+
+    def test_parse_no_file(self, tmp_path):
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert runs == []
+
+    def test_parse_single_keep(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:23:17Z",
+            "status": "keep",
+            "hypothesis": "Larger d_model improves val_bpb",
+            "hyperparameters": {"d_model": 128, "lr": 0.003},
+            "results": {"val_bpb": 0.912},
+            "reasoning": "val_bpb improved from 0.934 to 0.912",
+            "duration_seconds": 312,
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert len(runs) == 1
+        run = runs[0]
+        assert run["id"].startswith("sr-")
+        assert run["decision"] == "keep"
+        assert run["status"] == "completed"
+        assert run["source"] == "structured"
+        assert run["hyperparameters"]["d_model"] == 128
+        assert run["results"]["val_bpb"] == 0.912
+        assert run["agent_reasoning"] == "val_bpb improved from 0.934 to 0.912"
+        assert run["hypothesis"] == "Larger d_model improves val_bpb"
+        assert run["duration_minutes"] == 5  # 312s / 60 -> 5
+
+    def test_parse_crash_status(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_002",
+            "timestamp": "2026-03-09T05:00:00Z",
+            "status": "crash",
+            "hypothesis": "Very small model",
+            "results": {},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["decision"] == "crash"
+        assert runs[0]["status"] == "failed"
+
+    def test_parse_running_status(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_003",
+            "timestamp": "2026-03-09T05:00:00Z",
+            "status": "running",
+            "hypothesis": "Testing",
+            "results": {},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["decision"] == "running"
+        assert runs[0]["status"] == "running"
+
+    def test_skips_invalid_schema(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        lines = [
+            json.dumps({"$schema": "distillate/run/v1", "id": "run_001",
+                        "timestamp": "2026-03-09T04:00:00Z", "status": "keep",
+                        "hypothesis": "a", "results": {"x": 1}}),
+            json.dumps({"$schema": "wrong", "id": "run_002",
+                        "timestamp": "2026-03-09T05:00:00Z", "status": "keep",
+                        "hypothesis": "b", "results": {"x": 2}}),
+            "not json at all",
+            json.dumps({"$schema": "distillate/run/v1", "id": "run_003",
+                        "timestamp": "2026-03-09T06:00:00Z", "status": "discard",
+                        "hypothesis": "c", "results": {"x": 3}}),
+        ]
+        (distillate_dir / "runs.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert len(runs) == 2
+
+    def test_skips_entry_without_id(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "a",
+            "results": {"x": 1},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert runs == []
+
+    def test_multiple_runs(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        lines = []
+        for i in range(5):
+            lines.append(json.dumps({
+                "$schema": "distillate/run/v1",
+                "id": f"run_{i:03d}",
+                "timestamp": f"2026-03-09T0{i}:00:00Z",
+                "status": "keep" if i % 2 == 0 else "discard",
+                "hypothesis": f"Test {i}",
+                "results": {"metric": i * 0.1},
+            }))
+        (distillate_dir / "runs.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_runs_jsonl
+        runs = _parse_runs_jsonl(tmp_path)
+        assert len(runs) == 5
+        assert sum(1 for r in runs if r["decision"] == "keep") == 3
+        assert sum(1 for r in runs if r["decision"] == "discard") == 2
+
+
+# ---------------------------------------------------------------------------
+# Hook event parsing tests
+# ---------------------------------------------------------------------------
+
+
+class TestEventsJsonlParsing:
+    """Test parsing of .distillate/events.jsonl hook events."""
+
+    def test_parse_empty_file(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        (distillate_dir / "events.jsonl").write_text("", encoding="utf-8")
+        from distillate.experiments import _parse_events_jsonl
+        runs = _parse_events_jsonl(tmp_path)
+        assert runs == []
+
+    def test_parse_no_file(self, tmp_path):
+        from distillate.experiments import _parse_events_jsonl
+        runs = _parse_events_jsonl(tmp_path)
+        assert runs == []
+
+    def test_parse_run_completed(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        event = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:23:17Z",
+            "command": "python3 train.py d_model=64 lr=0.001",
+            "hyperparameters": {"d_model": 64, "lr": 0.001},
+            "results": {"loss": 0.045, "accuracy": 0.99},
+            "session_id": "abc12345",
+        })
+        (distillate_dir / "events.jsonl").write_text(event + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_events_jsonl
+        runs = _parse_events_jsonl(tmp_path)
+        assert len(runs) == 1
+        run = runs[0]
+        assert run["source"] == "hooks"
+        assert run["hyperparameters"]["d_model"] == 64
+        assert run["results"]["loss"] == 0.045
+        assert run["command"] == "python3 train.py d_model=64 lr=0.001"
+
+    def test_skips_session_end(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        lines = [
+            json.dumps({"type": "run_completed", "ts": "2026-03-09T04:00:00Z",
+                        "command": "python3 train.py", "hyperparameters": {"lr": 0.01},
+                        "results": {"loss": 0.1}, "session_id": "abc"}),
+            json.dumps({"type": "session_end", "ts": "2026-03-09T05:00:00Z",
+                        "session_id": "abc", "stop_reason": "user"}),
+        ]
+        (distillate_dir / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_events_jsonl
+        runs = _parse_events_jsonl(tmp_path)
+        assert len(runs) == 1
+
+    def test_skips_empty_metrics_and_hp(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        event = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:00:00Z",
+            "command": "echo hello",
+            "hyperparameters": {},
+            "results": {},
+            "session_id": "abc",
+        })
+        (distillate_dir / "events.jsonl").write_text(event + "\n", encoding="utf-8")
+        from distillate.experiments import _parse_events_jsonl
+        runs = _parse_events_jsonl(tmp_path)
+        assert runs == []
+
+
+# ---------------------------------------------------------------------------
+# Dual-source ingestion tests
+# ---------------------------------------------------------------------------
+
+
+class TestIngestRuns:
+    """Test dual-source ingestion (structured + hooks)."""
+
+    def test_empty_project(self, tmp_path):
+        from distillate.experiments import ingest_runs
+        runs = ingest_runs(tmp_path)
+        assert runs == []
+
+    def test_structured_only(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test",
+            "results": {"val_bpb": 0.912},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+        from distillate.experiments import ingest_runs
+        runs = ingest_runs(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["source"] == "structured"
+
+    def test_hooks_only(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        event = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:00:00Z",
+            "command": "python3 train.py d_model=64",
+            "hyperparameters": {"d_model": 64},
+            "results": {"loss": 0.01},
+            "session_id": "abc",
+        })
+        (distillate_dir / "events.jsonl").write_text(event + "\n", encoding="utf-8")
+        from distillate.experiments import ingest_runs
+        runs = ingest_runs(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["source"] == "hooks"
+
+    def test_merge_by_fingerprint(self, tmp_path):
+        """When both sources report same hyperparams, structured wins."""
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        structured = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test",
+            "hyperparameters": {"d_model": 64, "lr": 0.001},
+            "results": {"val_bpb": 0.912},
+        })
+        (distillate_dir / "runs.jsonl").write_text(structured + "\n", encoding="utf-8")
+        hook = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:00:05Z",
+            "command": "python3 train.py d_model=64 lr=0.001",
+            "hyperparameters": {"d_model": 64, "lr": 0.001},
+            "results": {"loss": 0.045},
+            "session_id": "abc",
+        })
+        (distillate_dir / "events.jsonl").write_text(hook + "\n", encoding="utf-8")
+        from distillate.experiments import ingest_runs
+        runs = ingest_runs(tmp_path)
+        # Should merge into one run (structured wins)
+        assert len(runs) == 1
+        assert runs[0]["source"] == "structured"
+        # Hook command should be merged in
+        assert runs[0].get("command") == "python3 train.py d_model=64 lr=0.001"
+
+    def test_no_merge_different_hp(self, tmp_path):
+        """Different hyperparams → two separate runs."""
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        structured = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test",
+            "hyperparameters": {"d_model": 64},
+            "results": {"val_bpb": 0.912},
+        })
+        (distillate_dir / "runs.jsonl").write_text(structured + "\n", encoding="utf-8")
+        hook = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:30:00Z",
+            "command": "python3 train.py d_model=128",
+            "hyperparameters": {"d_model": 128},
+            "results": {"loss": 0.01},
+            "session_id": "abc",
+        })
+        (distillate_dir / "events.jsonl").write_text(hook + "\n", encoding="utf-8")
+        from distillate.experiments import ingest_runs
+        runs = ingest_runs(tmp_path)
+        assert len(runs) == 2
+
+
+# ---------------------------------------------------------------------------
+# Watch artifacts tests
+# ---------------------------------------------------------------------------
+
+
+class TestWatchArtifacts:
+    """Test file watching for experiment changes."""
+
+    def test_watch_empty_project(self, tmp_path):
+        from distillate.experiments import watch_project_artifacts
+        changes = watch_project_artifacts(tmp_path)
+        # No .distillate dir → artifacts_changed (first scan)
+        assert any(c.get("type") == "artifacts_changed" for c in changes)
+
+    def test_watch_detects_new_jsonl_lines(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+
+        # Write initial event
+        events_file = distillate_dir / "events.jsonl"
+        event1 = json.dumps({"type": "run_completed", "ts": "2026-03-09T04:00:00Z",
+                            "command": "python3 train.py", "hyperparameters": {"lr": 0.01},
+                            "results": {"loss": 0.1}, "session_id": "abc"})
+        events_file.write_text(event1 + "\n", encoding="utf-8")
+
+        from distillate.experiments import watch_project_artifacts
+
+        # First watch — picks up everything
+        changes = watch_project_artifacts(tmp_path)
+        event_changes = [c for c in changes if c.get("_source_file") == "events.jsonl"]
+        assert len(event_changes) == 1
+
+        # No changes → empty
+        changes = watch_project_artifacts(tmp_path)
+        event_changes = [c for c in changes if c.get("_source_file") == "events.jsonl"]
+        assert len(event_changes) == 0
+
+        # Append new event
+        with open(events_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "run_completed", "ts": "2026-03-09T05:00:00Z",
+                               "command": "python3 train.py lr=0.02",
+                               "hyperparameters": {"lr": 0.02},
+                               "results": {"loss": 0.05}, "session_id": "def"}) + "\n")
+
+        # Should detect the new line
+        changes = watch_project_artifacts(tmp_path)
+        event_changes = [c for c in changes if c.get("_source_file") == "events.jsonl"]
+        assert len(event_changes) == 1
+
+
+# ---------------------------------------------------------------------------
+# Hook parsing tests
+# ---------------------------------------------------------------------------
+
+
+class TestPostBashHook:
+    """Test the post_bash hook's detection and extraction logic."""
+
+    def test_is_training_command(self):
+        from distillate.hooks.post_bash import _is_training_command
+        assert _is_training_command("python3 train.py d_model=64 lr=0.001")
+        assert _is_training_command("python train_model.py")
+        assert _is_training_command("python3 experiment/train.py")
+        assert _is_training_command("python3 run_experiment.py")
+        assert not _is_training_command("python3 plot.py")
+        assert not _is_training_command("ls -la")
+        assert not _is_training_command("cat train.py")  # no python invocation
+
+    def test_is_training_command_ml_keywords(self):
+        from distillate.hooks.post_bash import _is_training_command
+        assert _is_training_command("python3 main.py --epochs 10 --lr 0.001")
+        assert _is_training_command("python3 run.py --loss cross_entropy --batch 32")
+
+    def test_extract_hyperparams(self):
+        from distillate.hooks.post_bash import _extract_hyperparams
+        hp = _extract_hyperparams("python3 train.py d_model=64 lr=0.001 epochs=10")
+        assert hp == {"d_model": 64, "lr": 0.001, "epochs": 10}
+
+    def test_extract_metrics(self):
+        from distillate.hooks.post_bash import _extract_metrics
+        text = "Epoch 10: loss=0.045, accuracy=0.99, val_bpb=0.912"
+        metrics = _extract_metrics(text)
+        assert metrics["loss"] == 0.045
+        assert metrics["accuracy"] == 0.99
+        assert metrics["val_bpb"] == 0.912
+
+    def test_extract_config_block(self):
+        from distillate.hooks.post_bash import _extract_config_block
+        text = 'Config: {"d_model": 64, "lr": 0.001, "layers": 4}'
+        config = _extract_config_block(text)
+        assert config == {"d_model": 64, "lr": 0.001, "layers": 4}
+
+    def test_extract_config_block_no_match(self):
+        from distillate.hooks.post_bash import _extract_config_block
+        assert _extract_config_block("no config here") == {}
+
+    def test_coerce_values(self):
+        from distillate.hooks.post_bash import _coerce
+        assert _coerce("42") == 42
+        assert _coerce("0.001") == 0.001
+        assert _coerce("True") is True
+        assert _coerce("false") is False
+        assert _coerce("3e-4") == 3e-4
+
+    def test_find_project_root(self, tmp_path, monkeypatch):
+        # Create a .git directory
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        from distillate.hooks.post_bash import _find_project_root
+        root = _find_project_root()
+        assert root == tmp_path
+
+    def test_find_project_root_distillate_dir(self, tmp_path, monkeypatch):
+        (tmp_path / ".distillate").mkdir()
+        monkeypatch.chdir(tmp_path)
+        from distillate.hooks.post_bash import _find_project_root
+        root = _find_project_root()
+        assert root == tmp_path
+
+    def test_append_event(self, tmp_path):
+        from distillate.hooks.post_bash import _append_event
+        _append_event(tmp_path, {"type": "test", "ts": "2026-03-09T04:00:00Z"})
+        events_file = tmp_path / ".distillate" / "events.jsonl"
+        assert events_file.exists()
+        lines = events_file.read_text(encoding="utf-8").strip().split("\n")
+        assert len(lines) == 1
+        data = json.loads(lines[0])
+        assert data["type"] == "test"
+
+        # Append another
+        _append_event(tmp_path, {"type": "test2", "ts": "2026-03-09T05:00:00Z"})
+        lines = events_file.read_text(encoding="utf-8").strip().split("\n")
+        assert len(lines) == 2
+
+
+class TestOnStopHook:
+    """Test the on_stop hook."""
+
+    def test_find_project_root(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        from distillate.hooks.on_stop import _find_project_root
+        root = _find_project_root()
+        assert root == tmp_path
+
+    def test_append_event(self, tmp_path):
+        from distillate.hooks.on_stop import _append_event
+        _append_event(tmp_path, {"type": "session_end", "ts": "2026-03-09T04:00:00Z"})
+        events_file = tmp_path / ".distillate" / "events.jsonl"
+        assert events_file.exists()
+        data = json.loads(events_file.read_text(encoding="utf-8").strip())
+        assert data["type"] == "session_end"
+
+
+# ---------------------------------------------------------------------------
+# Decision-aware notebook tests
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionNotebook:
+    """Test decision column and reasoning in generated notebooks."""
+
+    def _make_project_with_decisions(self):
+        return {
+            "name": "Test Project",
+            "path": "/tmp/test",
+            "description": "A test project",
+            "goals": [],
+            "linked_papers": [],
+            "runs": {
+                "sr-aaa": {
+                    "id": "sr-aaa", "name": "run_001", "status": "completed",
+                    "decision": "keep", "hypothesis": "Larger model",
+                    "hyperparameters": {"d_model": 128},
+                    "results": {"val_bpb": 0.912},
+                    "agent_reasoning": "val_bpb improved significantly",
+                    "tags": [], "notes": [], "started_at": "2026-03-09T04:00:00Z",
+                    "completed_at": "2026-03-09T04:05:00Z", "duration_minutes": 5,
+                    "git_commits": [], "files_created": [],
+                },
+                "sr-bbb": {
+                    "id": "sr-bbb", "name": "run_002", "status": "completed",
+                    "decision": "discard", "hypothesis": "Even larger model",
+                    "hyperparameters": {"d_model": 256},
+                    "results": {"val_bpb": 0.950},
+                    "agent_reasoning": "val_bpb regressed, reverting",
+                    "tags": [], "notes": [], "started_at": "2026-03-09T05:00:00Z",
+                    "completed_at": "2026-03-09T05:10:00Z", "duration_minutes": 10,
+                    "git_commits": [], "files_created": [],
+                },
+                "sr-ccc": {
+                    "id": "sr-ccc", "name": "run_003", "status": "failed",
+                    "decision": "crash", "hypothesis": "Tiny model",
+                    "hyperparameters": {"d_model": 4},
+                    "results": {},
+                    "agent_reasoning": "OOM error",
+                    "tags": [], "notes": [], "started_at": "2026-03-09T06:00:00Z",
+                    "completed_at": "2026-03-09T06:01:00Z", "duration_minutes": 1,
+                    "git_commits": [], "files_created": [],
+                },
+            },
+        }
+
+    def test_md_notebook_has_decision_column(self):
+        from distillate.experiments import generate_notebook
+        project = self._make_project_with_decisions()
+        md = generate_notebook(project)
+        assert "Decision" in md
+        assert "✓ keep" in md
+        assert "✗ discard" in md
+        assert "⚠ crash" in md
+        assert "**1** kept" in md
+        assert "**1** discarded" in md
+        assert "**1** crashed" in md
+
+    def test_md_notebook_has_reasoning(self):
+        from distillate.experiments import generate_notebook
+        project = self._make_project_with_decisions()
+        md = generate_notebook(project)
+        assert "Agent Reasoning" in md
+        assert "val_bpb improved significantly" in md
+
+    def test_html_notebook_has_decision_column(self):
+        from distillate.experiments import generate_html_notebook
+        project = self._make_project_with_decisions()
+        html = generate_html_notebook(project)
+        assert "Decision" in html
+        assert "decision-keep" in html
+        assert "decision-discard" in html
+        assert "decision-crash" in html
+        assert "Kept" in html
+        assert "Discarded" in html
+
+    def test_html_notebook_has_reasoning_block(self):
+        from distillate.experiments import generate_html_notebook
+        project = self._make_project_with_decisions()
+        html = generate_html_notebook(project)
+        assert "reasoning-block" in html
+        assert "val_bpb improved significantly" in html
+
+    def test_html_notebook_has_metric_chart(self):
+        from distillate.experiments import generate_html_notebook
+        project = self._make_project_with_decisions()
+        html = generate_html_notebook(project)
+        assert "Metric Progression" in html
+        assert "<svg" in html
+        assert "polyline" in html
+        # Green for keep, red for discard
+        assert "#3fb950" in html
+        assert "#f85149" in html
+
+    def test_no_decision_column_without_decisions(self):
+        """Projects without decisions should use the original status column."""
+        from distillate.experiments import generate_notebook, generate_html_notebook
+        project = {
+            "name": "Plain Project",
+            "path": "/tmp/test",
+            "goals": [], "linked_papers": [],
+            "runs": {
+                "exp-aaa": {
+                    "id": "exp-aaa", "name": "run_1", "status": "completed",
+                    "hyperparameters": {"lr": 0.01},
+                    "results": {"loss": 0.1},
+                    "tags": [], "notes": [], "started_at": "2026-03-09T04:00:00Z",
+                    "completed_at": "2026-03-09T04:05:00Z", "duration_minutes": 5,
+                    "git_commits": [], "files_created": [],
+                },
+            },
+        }
+        md = generate_notebook(project)
+        assert "| Status |" in md
+        assert "| Decision |" not in md
+        html = generate_html_notebook(project)
+        assert ">Decision<" not in html
+
+
+# ---------------------------------------------------------------------------
+# Metric chart rendering tests
+# ---------------------------------------------------------------------------
+
+
+class TestMetricChart:
+    """Test the SVG metric chart renderer."""
+
+    def test_render_chart_with_decisions(self):
+        from distillate.experiments import _render_metric_chart
+        runs = [
+            {"results": {"val_bpb": 0.95}, "decision": "keep"},
+            {"results": {"val_bpb": 0.91}, "decision": "keep"},
+            {"results": {"val_bpb": 0.93}, "decision": "discard"},
+        ]
+        svg = _render_metric_chart(runs)
+        assert "<svg" in svg
+        assert "polyline" in svg
+        assert "#3fb950" in svg  # green for keep
+        assert "#f85149" in svg  # red for discard
+
+    def test_no_chart_with_single_run(self):
+        from distillate.experiments import _render_metric_chart
+        runs = [{"results": {"val_bpb": 0.95}, "decision": "keep"}]
+        svg = _render_metric_chart(runs)
+        assert svg == ""
+
+    def test_no_chart_without_metrics(self):
+        from distillate.experiments import _render_metric_chart
+        runs = [
+            {"results": {}, "decision": "keep"},
+            {"results": {}, "decision": "discard"},
+        ]
+        svg = _render_metric_chart(runs)
+        assert svg == ""
+
+
+# ---------------------------------------------------------------------------
+# Install hooks CLI test
+# ---------------------------------------------------------------------------
+
+
+class TestInstallHooks:
+    """Test the --install-hooks CLI command."""
+
+    def test_install_creates_distillate_dir(self, tmp_path):
+        from distillate.main import _install_hooks
+        _install_hooks([str(tmp_path)])
+        assert (tmp_path / ".distillate").is_dir()
+
+    def test_install_creates_claude_settings(self, tmp_path):
+        from distillate.main import _install_hooks
+        _install_hooks([str(tmp_path)])
+        settings_file = tmp_path / ".claude" / "settings.json"
+        assert settings_file.exists()
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        assert "hooks" in settings
+        assert "PostToolUse" in settings["hooks"]
+        assert "Stop" in settings["hooks"]
+
+    def test_install_merges_existing_settings(self, tmp_path):
+        # Create existing settings
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        existing = {"permissions": {"allow": ["Bash"]},
+                    "hooks": {"PostToolUse": [{"matcher": "Bash", "command": "echo test"}]}}
+        (claude_dir / "settings.json").write_text(
+            json.dumps(existing), encoding="utf-8")
+
+        from distillate.main import _install_hooks
+        _install_hooks([str(tmp_path)])
+
+        settings = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
+        # Should have both the original and new hooks
+        assert len(settings["hooks"]["PostToolUse"]) == 2
+        assert settings["permissions"] == {"allow": ["Bash"]}
+
+    def test_install_idempotent(self, tmp_path):
+        from distillate.main import _install_hooks
+        _install_hooks([str(tmp_path)])
+        _install_hooks([str(tmp_path)])  # second time
+        settings = json.loads(
+            (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        # Should not duplicate hooks
+        assert len(settings["hooks"]["PostToolUse"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Scan project integration with ingestion
+# ---------------------------------------------------------------------------
+
+
+class TestScanProjectWithIngestion:
+    """Test that scan_project() integrates structured + hook runs."""
+
+    def test_scan_picks_up_runs_jsonl(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test structured",
+            "hyperparameters": {"d_model": 64},
+            "results": {"accuracy": 0.99},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+        # Should find the structured run
+        runs = result["runs"]
+        structured_runs = [r for r in runs.values() if r.get("source") == "structured"]
+        assert len(structured_runs) == 1
+        assert structured_runs[0]["decision"] == "keep"
+
+    def test_scan_picks_up_events_jsonl(self, tmp_path):
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        event = json.dumps({
+            "type": "run_completed",
+            "ts": "2026-03-09T04:00:00Z",
+            "command": "python3 train.py d_model=32",
+            "hyperparameters": {"d_model": 32},
+            "results": {"loss": 0.01},
+            "session_id": "abc",
+        })
+        (distillate_dir / "events.jsonl").write_text(event + "\n", encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+        runs = result["runs"]
+        hook_runs = [r for r in runs.values() if r.get("source") == "hooks"]
+        assert len(hook_runs) == 1
+
+    def test_structured_run_deduplicates_artifact_scanned(self, tmp_path):
+        """Structured runs from runs.jsonl should replace artifact-scanned
+        duplicates that share the same hyperparameters (double-curve bug).
+
+        Without dedup, scan_project() returns two runs for the same experiment
+        — one from artifact scanning (hash-based ID) and one from runs.jsonl
+        (sr- prefixed ID) — causing a double curve on the chart.
+        """
+        # Create an artifact that scan_project will discover
+        results_dir = tmp_path / "experiment"
+        results_dir.mkdir()
+        (results_dir / "train_v1.json").write_text(json.dumps({
+            "config": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "total_time": 3600,
+            "best_val_acc": 0.85,
+            "epochs": [
+                {"epoch": 1, "loss": 1.0, "val_acc": 0.5},
+                {"epoch": 10, "loss": 0.2, "val_acc": 0.85},
+            ],
+        }))
+
+        # Create a structured run with the SAME hyperparameters
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test dedup",
+            "hyperparameters": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "results": {"val_acc": 0.85},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+
+        runs = result["runs"]
+        # Should have exactly ONE run, not two
+        runs_with_hp = [
+            r for r in runs.values()
+            if r.get("hyperparameters", {}).get("d_model") == 64
+        ]
+        assert len(runs_with_hp) == 1, (
+            f"Expected 1 run with d_model=64 but got {len(runs_with_hp)}: "
+            f"{[r['id'] for r in runs_with_hp]}"
+        )
+        # The surviving run should be the structured one
+        assert runs_with_hp[0]["source"] == "structured"
+        assert runs_with_hp[0]["name"] == "run_001"
+
+    def test_structured_runs_with_same_hyperparameters_all_kept(self, tmp_path):
+        """Multiple structured runs sharing identical hyperparameters must all
+        survive — the dedup should only remove artifact-scanned duplicates,
+        never other structured runs."""
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        lines = []
+        for i in range(1, 4):
+            lines.append(json.dumps({
+                "$schema": "distillate/run/v1",
+                "id": f"run_{i:03d}",
+                "timestamp": f"2026-03-09T0{i}:00:00Z",
+                "status": "keep" if i % 2 else "discard",
+                "hyperparameters": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+                "results": {"accuracy": 0.5 + i * 0.1},
+            }))
+        (distillate_dir / "runs.jsonl").write_text("\n".join(lines) + "\n",
+                                                   encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+
+        structured = [r for r in result["runs"].values()
+                      if r.get("source") == "structured"]
+        assert len(structured) == 3, (
+            f"Expected 3 structured runs but got {len(structured)}: "
+            f"{[r['name'] for r in structured]}"
+        )
