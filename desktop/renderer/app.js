@@ -50,7 +50,7 @@ const bottomPanel = document.getElementById("bottom-panel");
 const chatArea = document.getElementById("chat-area");
 
 /* ───── Model selector ───── */
-let selectedModel = "claude-haiku-4-5-20251001";
+let selectedModel = "claude-sonnet-4-6";
 
 if (modelSelect) {
   modelSelect.addEventListener("change", () => {
@@ -64,6 +64,7 @@ if (modelSelect) {
 
 /* ───── Tool labels (hardcoded defaults, can be overridden by server) ───── */
 let toolLabels = {
+  // Paper library tools
   search_papers: "\uD83D\uDD0D Searching the library",
   get_paper_details: "\uD83D\uDCDC Unrolling the manuscript",
   get_reading_stats: "\uD83D\uDCCA Tallying the ledger",
@@ -76,12 +77,37 @@ let toolLabels = {
   promote_papers: "\u2B50 Promoting to the shelf",
   get_trending_papers: "\uD83D\uDCC8 Scanning the latest papers",
   add_paper_to_zotero: "\uD83D\uDCD6 Adding to the library",
+  delete_paper: "\uD83D\uDDD1\uFE0F Removing from the library",
   refresh_metadata: "\uD83D\uDD04 Refreshing metadata",
-  scan_project: "\uD83D\uDD2C Scanning project",
-  launch_experiment: "\uD83D\uDE80 Launching experiment",
-  stop_experiment: "\u23F9\uFE0F Stopping experiment",
-  experiment_status: "\uD83D\uDCCA Checking experiment status",
+  reading_report: "\uD83D\uDCCA Compiling reading report",
+  // Experiment tools
+  list_projects: "\uD83E\uDDEA Surveying the laboratory",
+  get_project_details: "\uD83D\uDD2C Examining the experiment",
+  compare_runs: "\u2696\uFE0F Weighing the results",
+  scan_project: "\uD83D\uDD0D Scanning for experiments",
+  get_experiment_notebook: "\uD83D\uDCD3 Opening the lab notebook",
+  add_project: "\uD83D\uDCC1 Adding project to the lab",
+  rename_project: "\u270F\uFE0F Relabeling the project",
+  rename_run: "\u270F\uFE0F Relabeling the run",
+  delete_project: "\uD83D\uDDD1\uFE0F Removing from the lab",
+  delete_run: "\uD83D\uDDD1\uFE0F Removing the run",
+  update_project: "\uD83D\uDCDD Updating project details",
+  link_paper: "\uD83D\uDD17 Linking paper to project",
+  update_goals: "\uD83C\uDFAF Setting project goals",
+  annotate_run: "\uD83D\uDCDD Adding note to run",
+  init_experiment: "\u2697\uFE0F Drafting experiment prompt",
+  continue_experiment: "\uD83D\uDD04 Continuing experiment",
+  sweep_experiment: "\uD83E\uDDF9 Launching sweep",
+  steer_experiment: "\uD83E\uDDE7 Steering the experiment",
+  compare_projects: "\u2696\uFE0F Comparing experiments",
+  queue_sessions: "\uD83D\uDCCB Queuing sessions",
+  list_templates: "\uD83D\uDCC4 Listing templates",
+  save_template: "\uD83D\uDCBE Saving template",
+  create_github_repo: "\uD83D\uDCE4 Creating GitHub repo",
   manage_session: "\uD83C\uDFAC Managing session",
+  replicate_paper: "\uD83E\uDDEA Scaffolding from paper",
+  suggest_from_literature: "\uD83D\uDCDA Mining the literature",
+  extract_baselines: "\uD83D\uDCCF Extracting baselines",
   // Claude Code built-in tools
   Read: "\uD83D\uDCC4 Reading file",
   Edit: "\u270F\uFE0F Editing file",
@@ -92,6 +118,11 @@ let toolLabels = {
   WebSearch: "\uD83C\uDF10 Searching the web",
   WebFetch: "\uD83C\uDF10 Fetching page",
   Agent: "\uD83E\uDD16 Delegating to subagent",
+  ToolSearch: "\uD83D\uDD0D Loading tools",
+  NotebookEdit: "\uD83D\uDCD3 Editing notebook",
+  TodoWrite: "\u2611\uFE0F Updating tasks",
+  TaskCreate: "\uD83D\uDCCB Creating task",
+  TaskUpdate: "\uD83D\uDCCB Updating task",
 };
 
 /* ───── marked.js config ───── */
@@ -240,7 +271,7 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      addToolIndicator(event.name, false, event.input);
+      addToolIndicator(event.name, false, event.input, event.label);
       scrollToBottom();
       break;
 
@@ -328,12 +359,12 @@ function finishStreaming() {
   inputEl.focus();
 }
 
-function addToolIndicator(name, done, input) {
+function addToolIndicator(name, done, input, serverLabel) {
   const el = document.createElement("div");
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  const label = toolLabels[name] || name.replace(/_/g, " ");
+  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ");
 
   // Build dynamic subtitle from tool input
   let subtitle = "";
@@ -3425,25 +3456,6 @@ function renderProjectDetail(projectId) {
     header.appendChild(learning);
   }
 
-  // Research Insights from LLM enrichment
-  if (proj.insights && (proj.insights.key_breakthrough || (proj.insights.lessons_learned && proj.insights.lessons_learned.length))) {
-    const insightsEl = document.createElement("div");
-    insightsEl.className = "research-insights";
-    let insightsHtml = '<h3 class="insights-heading">Research Insights</h3>';
-    if (proj.insights.key_breakthrough) {
-      insightsHtml += `<div class="insight-breakthrough"><span class="insight-section-label">Key Breakthrough</span><p>${escapeHtml(proj.insights.key_breakthrough)}</p></div>`;
-    }
-    if (proj.insights.lessons_learned && proj.insights.lessons_learned.length) {
-      insightsHtml += '<div class="insight-lessons"><span class="insight-section-label">Lessons Learned</span><ul>';
-      for (const lesson of proj.insights.lessons_learned) {
-        insightsHtml += `<li>${escapeHtml(lesson)}</li>`;
-      }
-      insightsHtml += '</ul></div>';
-    }
-    insightsEl.innerHTML = insightsHtml;
-    header.appendChild(insightsEl);
-  }
-
   // Goal chips
   {
     const goalsEl = document.createElement("div");
@@ -3749,6 +3761,32 @@ function renderProjectDetail(projectId) {
       renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
       setupChartResize(chartContainer, canvas, proj.runs, () => activeMetric, () => proj.id, () => ({ logScale: chartLogScale }));
     });
+  }
+
+  // Research Insights (collapsible, after chart)
+  if (proj.insights && (proj.insights.key_breakthrough || (proj.insights.lessons_learned && proj.insights.lessons_learned.length))) {
+    const insightsSection = document.createElement("details");
+    insightsSection.className = "research-insights-collapsible";
+    const summary = document.createElement("summary");
+    summary.className = "insights-summary";
+    summary.textContent = "Research Insights";
+    insightsSection.appendChild(summary);
+
+    const body = document.createElement("div");
+    body.className = "insights-body";
+    if (proj.insights.key_breakthrough) {
+      body.innerHTML += `<div class="insight-breakthrough"><span class="insight-section-label">Key Breakthrough</span><p>${escapeHtml(proj.insights.key_breakthrough)}</p></div>`;
+    }
+    if (proj.insights.lessons_learned && proj.insights.lessons_learned.length) {
+      let lessonsHtml = '<div class="insight-lessons"><span class="insight-section-label">Lessons Learned</span><ul>';
+      for (const lesson of proj.insights.lessons_learned) {
+        lessonsHtml += `<li>${escapeHtml(lesson)}</li>`;
+      }
+      lessonsHtml += '</ul></div>';
+      body.innerHTML += lessonsHtml;
+    }
+    insightsSection.appendChild(body);
+    detailEl.appendChild(insightsSection);
   }
 
   // Runs grid

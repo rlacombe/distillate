@@ -70,22 +70,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from distillate.agent_core import stream_turn
-
-try:
-    import claude_agent_sdk  # noqa: F401
-    from distillate.agent_sdk import stream_nicolas
-    _HAS_AGENT_SDK = True
-except ImportError:
-    _HAS_AGENT_SDK = False
-
+from distillate.agent_sdk import NicolasClient, _classify_error
 from distillate.server_helpers import (
     _summarize_tool_result,
     _parse_stream_json,
-    _conversations_path,
-    _load_sessions,
-    _save_session,
-    _MAX_SESSIONS,
 )
 from distillate.state import State, acquire_lock, release_lock
 
@@ -635,7 +623,6 @@ def _create_app():
 
         from distillate.experiments import (
             backfill_runs_from_events,
-            enrich_runs_with_llm,
             scan_project,
             slugify,
         )
@@ -704,23 +691,9 @@ def _create_app():
         finally:
             release_lock()
 
-        # Background LLM enrichment (fingerprint cache makes this a
-        # no-op when runs haven't changed)
-        updated_proj = _state.get_project(proj_id)
-        if updated_proj and updated_proj.get("runs"):
-            import threading
-            def _bg_enrich(r=updated_proj["runs"],
-                           n=updated_proj.get("name", proj_id),
-                           p=proj_path):
-                try:
-                    enrich_runs_with_llm(r, n, p)
-                except Exception:
-                    log.exception("Background enrichment failed for %s",
-                                  proj_id)
-            threading.Thread(target=_bg_enrich, daemon=True).start()
-
         # Find best metric across all kept runs
         best_metric = None
+        updated_proj = _state.get_project(proj_id)
         if updated_proj:
             for run in updated_proj.get("runs", {}).values():
                 if run.get("decision") != "keep" and run.get("status") != "keep":
@@ -1710,7 +1683,6 @@ def _create_app():
         from starlette.responses import HTMLResponse
 
         from distillate.experiments import (
-            enrich_runs_with_llm,
             generate_html_notebook,
             load_enrichment_cache,
         )
@@ -1720,21 +1692,7 @@ def _create_app():
         proj_path = Path(proj.get("path", ""))
         enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
 
-        # Return notebook immediately with cached enrichment
         html = generate_html_notebook(proj, enrichment=enrichment)
-
-        # Trigger LLM enrichment in background (don't block response)
-        if proj_path.exists():
-            runs = proj.get("runs", {})
-            if runs:
-                import threading
-                def _bg_enrich(r=runs, n=proj.get("name", project_id), p=proj_path):
-                    try:
-                        enrich_runs_with_llm(r, n, p)
-                    except Exception:
-                        log.debug("Background LLM enrichment failed", exc_info=True)
-                threading.Thread(target=_bg_enrich, daemon=True).start()
-
         return HTMLResponse(html)
 
     @app.get("/experiments/{project_id}/chart/export")
@@ -2046,27 +2004,7 @@ def _create_app():
     async def ws_chat(websocket: WebSocket):
         await websocket.accept()
 
-        api_key = config.ANTHROPIC_API_KEY
-        if not api_key:
-            from distillate.agent_core import create_client
-            client = create_client()
-            if client is None:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "No API credentials configured",
-                    "category": "invalid_key",
-                })
-                await websocket.close()
-                return
-        else:
-            client = None  # Only needed for legacy path
-
-        # Session state
-        session_id = None
-        selected_model = ""
-        conversation: list[dict] = []  # For legacy stream_turn path
-        all_sessions: list[dict] = _load_sessions()
-        loop = asyncio.get_event_loop()
+        nicolas = NicolasClient(_state)
 
         try:
             while True:
@@ -2076,22 +2014,14 @@ def _create_app():
                 except json.JSONDecodeError:
                     msg = {"text": raw}
 
-                # Handle new conversation request
                 if msg.get("type") == "new_conversation":
-                    if not _HAS_AGENT_SDK and conversation:
-                        _save_session(all_sessions, conversation)
-                    session_id = None
-                    conversation = []
+                    await nicolas.new_conversation()
                     continue
 
-                # Handle model change
                 if msg.get("type") == "set_model":
                     new_model = msg.get("model")
                     if new_model:
-                        selected_model = new_model
-                        if not _HAS_AGENT_SDK:
-                            from distillate import agent_core
-                            agent_core._AGENT_MODEL = new_model
+                        await nicolas.set_model(new_model)
                         log.info("Model changed to %s", new_model)
                     continue
 
@@ -2099,59 +2029,23 @@ def _create_app():
                 if not user_input:
                     continue
 
-                if _HAS_AGENT_SDK:
-                    # Stream Agent SDK events directly to WebSocket
-                    async for event in stream_nicolas(
-                        _state, user_input,
-                        session_id=session_id,
-                        api_key=api_key,
-                        model=selected_model,
-                        past_sessions=all_sessions,
-                    ):
-                        if event.get("type") == "turn_end":
-                            session_id = event.get("session_id")
-                        elif event.get("type") == "session_init":
-                            session_id = event.get("session_id")
+                try:
+                    async for event in nicolas.send(user_input):
                         await websocket.send_json(event)
-                else:
-                    # Legacy path: run stream_turn in thread pool
-                    if client is None:
-                        from distillate.agent_core import create_client
-                        client = create_client()
-                    queue: asyncio.Queue = asyncio.Queue()
-
-                    def _run_turn():
-                        try:
-                            for event in stream_turn(
-                                client, _state, conversation, user_input,
-                                past_sessions=all_sessions,
-                            ):
-                                loop.call_soon_threadsafe(queue.put_nowait, event)
-                        except Exception as exc:
-                            log.exception("stream_turn crashed")
-                            loop.call_soon_threadsafe(
-                                queue.put_nowait,
-                                {"type": "error", "message": str(exc), "category": "unknown"},
-                            )
-                        finally:
-                            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-                    _executor.submit(_run_turn)
-
-                    while True:
-                        event = await queue.get()
-                        if event is None:
-                            break
-                        await websocket.send_json(event)
+                except Exception as exc:
+                    log.exception("Nicolas query failed")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(exc),
+                        "category": _classify_error(str(exc)),
+                    })
 
         except WebSocketDisconnect:
             log.info("WebSocket client disconnected")
-            if not _HAS_AGENT_SDK and conversation:
-                _save_session(all_sessions, conversation)
         except Exception:
             log.exception("WebSocket error")
-            if not _HAS_AGENT_SDK and conversation:
-                _save_session(all_sessions, conversation)
+        finally:
+            await nicolas.disconnect()
 
     return app
 

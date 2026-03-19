@@ -147,7 +147,7 @@ def _regen_notebook(proj: dict) -> None:
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+        generate_html_notebook, generate_notebook, load_enrichment_cache,
     )
     from distillate.obsidian import (
         write_experiment_html_notebook, write_experiment_notebook,
@@ -156,9 +156,9 @@ def _regen_notebook(proj: dict) -> None:
     proj_path = proj.get("path", "")
     enrichment = None
     if proj_path:
-        enrichment = enrich_runs_with_llm(
-            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
-        )
+        enrichment = load_enrichment_cache(_Path(proj_path))
+        if enrichment:
+            enrichment = enrichment.get("enrichment", enrichment)
     notebook_md = generate_notebook(proj, enrichment=enrichment)
     write_experiment_notebook(proj, notebook_md)
     notebook_html = generate_html_notebook(proj, enrichment=enrichment)
@@ -1101,7 +1101,7 @@ def scan_project_tool(*, state, path: str) -> dict:
     from pathlib import Path as _Path
 
     from distillate.experiments import (
-        enrich_runs_with_llm, generate_html_notebook, generate_notebook,
+        generate_html_notebook, generate_notebook, load_enrichment_cache,
         scan_project, slugify,
     )
     from distillate.obsidian import (
@@ -1204,12 +1204,12 @@ def scan_project_tool(*, state, path: str) -> dict:
     finally:
         release_lock()
 
-    # LLM enrichment + generate notebooks (MD + HTML)
+    # Generate notebooks (MD + HTML) with cached enrichment
     proj = state.get_project(project_id)
     if proj:
-        enrichment = enrich_runs_with_llm(
-            proj.get("runs", {}), proj.get("name", ""), repo_path,
-        )
+        enrichment = load_enrichment_cache(repo_path)
+        if enrichment:
+            enrichment = enrichment.get("enrichment", enrichment)
         notebook_md = generate_notebook(proj, enrichment=enrichment)
         write_experiment_notebook(proj, notebook_md)
         notebook_html = generate_html_notebook(proj, enrichment=enrichment)
@@ -1225,10 +1225,17 @@ def scan_project_tool(*, state, path: str) -> dict:
 
 
 def get_experiment_notebook(*, state, project: str, section: str = "main") -> dict:
-    """Get or regenerate the lab notebook for a project."""
+    """Get or regenerate the lab notebook for a project.
+
+    Uses cached enrichment only — enrichment is produced by the
+    experiment agents themselves, not by server-side API calls.
+    """
     from pathlib import Path as _Path
 
-    from distillate.experiments import enrich_runs_with_llm, generate_notebook
+    from distillate.experiments import (
+        generate_notebook,
+        load_enrichment_cache,
+    )
     from distillate.obsidian import write_experiment_notebook
 
     proj, err = _resolve_project(state, project)
@@ -1238,9 +1245,9 @@ def get_experiment_notebook(*, state, project: str, section: str = "main") -> di
     enrichment = None
     proj_path = proj.get("path", "")
     if proj_path:
-        enrichment = enrich_runs_with_llm(
-            proj.get("runs", {}), proj.get("name", ""), _Path(proj_path),
-        )
+        enrichment = load_enrichment_cache(_Path(proj_path))
+        if enrichment:
+            enrichment = enrichment.get("enrichment", enrichment)
 
     notebook_md = generate_notebook(proj, section=section, enrichment=enrichment)
 
