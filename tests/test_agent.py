@@ -36,12 +36,6 @@ class MockState:
             key=lambda d: d.get("processed_at", ""),
         )
 
-    def index_of(self, zotero_item_key):
-        for i, key in enumerate(self._documents, 1):
-            if key == zotero_item_key:
-                return i
-        return 0
-
     def reload(self):
         pass
 

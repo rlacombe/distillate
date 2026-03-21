@@ -803,7 +803,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 37
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 35
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -827,7 +827,6 @@ class TestExperimentToolSchemas:
             "manage_session",
             "replicate_paper", "suggest_from_literature", "extract_baselines",
             "save_enrichment", "start_run", "conclude_run",
-            "purge_hook_runs", "discover_relevant_papers",
         }
 
 

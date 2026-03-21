@@ -1238,8 +1238,6 @@ def _hyperparam_fingerprint(hp: dict) -> str:
         v = hp[k]
         if isinstance(v, float):
             v = round(v, 8)
-        elif isinstance(v, (list, tuple)):
-            v = str(v)
         items.append(f"{k}={v}")
     return "|".join(items)
 
