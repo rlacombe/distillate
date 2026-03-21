@@ -75,8 +75,6 @@ TOOL_LABELS = {
     "save_enrichment": "\U0001F4A1 Saving research insights",
     "start_run": "\U0001F3C1 Starting run",
     "conclude_run": "\U0001F3C1 Concluding run",
-    "purge_hook_runs": "\U0001F9F9 Purging spurious runs",
-    "discover_relevant_papers": "\U0001F517 Finding related papers",
 }
 
 
@@ -150,36 +148,11 @@ def _experiments_section(state: State, updates: list[dict] | None = None) -> str
     lines = ["## Lab"]
     for proj in projects.values():
         runs = proj.get("runs", {})
-        kept = sum(1 for r in runs.values()
-                   if (r.get("decision") or r.get("status", "")) == "keep")
-        discarded = sum(1 for r in runs.values()
-                        if (r.get("decision") or r.get("status", "")) == "discard")
-
-        # Session status
-        sessions = proj.get("sessions", {})
-        has_session = any(s.get("status") == "running" for s in sessions.values())
-        has_active_run = any(r.get("status") == "running" for r in runs.values())
-
-        parts = [f"{len(runs)} runs"]
-        if kept:
-            parts.append(f"{kept} kept")
-        if discarded:
-            parts.append(f"{discarded} discarded")
-
-        line = f"- {proj.get('name', '?')}: {', '.join(parts)}"
-
-        if has_session and has_active_run:
-            line += " — running"
-        elif has_session:
-            line += " — ready"
-        else:
-            line += " — paused"
-
-        # Linked papers
-        linked = proj.get("linked_papers", [])
-        if linked:
-            line += f" [papers: {len(linked)}]"
-
+        completed = sum(1 for r in runs.values() if r.get("status") == "completed")
+        line = (
+            f"- {proj.get('name', '?')}: {len(runs)} runs "
+            f"({completed} completed)"
+        )
         n_new = update_map.get(proj.get("id", ""), 0)
         if n_new:
             line += f" — {n_new} new commit{'s' if n_new != 1 else ''} since last scan"
@@ -220,32 +193,6 @@ def build_system_prompt(
 
     recent_section = "\n".join(recent_lines) if recent_lines else "(none this week)"
     tags_section = ", ".join(top_tags) if top_tags else "(not enough data yet)"
-
-    # Queue snapshot for instant answers (no tool call needed)
-    queue_lines = []
-    if queue:
-        # Sort by upload date, newest first
-        sorted_q = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)
-        # Newest 5
-        for doc in sorted_q[:5]:
-            idx = state.index_of(doc.get("key", ""))
-            title = doc.get("title", "?")
-            days = (now - datetime.fromisoformat(doc.get("uploaded_at", now.isoformat()).replace("Z", "+00:00"))).days
-            queue_lines.append(f"- [{idx}] **{title}** ({days}d ago)")
-        # Promoted
-        promoted = [d for d in queue if d.get("promoted_at")]
-        if promoted:
-            queue_lines.append("Promoted:")
-            for doc in promoted[:3]:
-                idx = state.index_of(doc.get("key", ""))
-                queue_lines.append(f"- [{idx}] **{doc.get('title', '?')}**")
-        # Oldest
-        oldest = sorted_q[-1] if len(sorted_q) > 5 else None
-        if oldest:
-            idx = state.index_of(oldest.get("key", ""))
-            days = (now - datetime.fromisoformat(oldest.get("uploaded_at", now.isoformat()).replace("Z", "+00:00"))).days
-            queue_lines.append(f"Oldest: [{idx}] **{oldest.get('title', '?')}** ({days}d)")
-    queue_section = "\n".join(queue_lines) if queue_lines else "(empty)"
 
     experiments_identity = ""
     if config.EXPERIMENTS_ENABLED:
@@ -307,8 +254,6 @@ def build_system_prompt(
         f"- {len(processed)} papers read, {len(queue)} in queue"
         f", {len(awaiting)} awaiting PDF\n"
         f"- This week: {len(recent)} papers read\n\n"
-        "## Queue Snapshot\n"
-        f"{queue_section}\n\n"
         "## Recent Reads\n"
         f"{recent_section}\n\n"
         "## Research Interests\n"
@@ -354,25 +299,14 @@ def build_system_prompt(
             "ideas \u2014 connects paper insights to running experiments.\n"
             "- Use extract_baselines to pull reported metrics from papers "
             "for setting experiment goals.\n"
-            "- When a user discusses a paper's technique in an experiment "
-            "context, use link_paper to connect them.\n"
-            "- Use suggest_from_literature when an experiment is stuck "
-            "\u2014 the user's reading may contain relevant techniques.\n"
-            "- When concluding a run that implements a paper's idea, set "
-            "inspired_by to credit the paper.\n"
-            "- Use discover_relevant_papers to find papers in the library "
-            "that may be relevant to an experiment's goals or methods.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )
-        + "- For quick queue questions (newest, oldest, promoted, count), "
-        "use the Queue Snapshot above \u2014 answer instantly, no tool call. "
-        "Only call get_queue for full listings or searches.\n"
+        + "- Look up papers with tools before answering \u2014 don't guess "
+        "from memory. When the user asks about recent papers, their queue, "
+        "or what they added recently, call get_queue \u2014 it's sorted "
+        "newest-first with upload timestamps.\n"
         "- Show paper [index] numbers for easy reference.\n"
         "- **Bold paper titles** with markdown **title** for readability.\n"
-        "- NEVER use markdown tables \u2014 they render poorly. Use bullet "
-        "lists instead. Format paper lists as:\n"
-        "  - [42] **Paper Title** \u2014 brief note\n"
-        "  - [17] **Another Paper** \u2014 brief note\n"
         "- You may sprinkle one or two chemistry/alchemy emojis "
         "(\u2697\ufe0f \U0001F9EA \U0001F52C \u2728 \U0001F4DC) inline in a response "
         "\u2014 but NEVER start a message with an emoji. Keep them subtle.\n"
@@ -474,8 +408,6 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "save_enrichment": et.save_enrichment,
             "start_run": et.start_run,
             "conclude_run": et.conclude_run,
-            "purge_hook_runs": et.purge_hook_runs_tool,
-            "discover_relevant_papers": et.discover_relevant_papers,
         })
 
     fn = dispatch.get(name)

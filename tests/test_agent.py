@@ -36,12 +36,6 @@ class MockState:
             key=lambda d: d.get("processed_at", ""),
         )
 
-    def index_of(self, zotero_item_key):
-        for i, key in enumerate(self._documents, 1):
-            if key == zotero_item_key:
-                return i
-        return 0
-
     def reload(self):
         pass
 
@@ -96,67 +90,6 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(state)
         assert "0 papers read" in prompt
         assert "none this week" in prompt
-
-    def test_queue_snapshot_includes_newest_papers(self):
-        """Queue snapshot section lists paper titles from the queue."""
-        from distillate.agent import _build_system_prompt
-        now = datetime.now(timezone.utc)
-        state = MockState({
-            "K1": _make_doc(status="processed"),
-            "K2": {
-                "title": "Attention Is All You Need",
-                "status": "on_remarkable",
-                "key": "K2",
-                "metadata": {"tags": []},
-                "engagement": 0,
-                "highlight_count": 0,
-                "uploaded_at": (now - timedelta(days=2)).isoformat(),
-            },
-            "K3": {
-                "title": "BERT: Pre-training",
-                "status": "on_remarkable",
-                "key": "K3",
-                "metadata": {"tags": []},
-                "engagement": 0,
-                "highlight_count": 0,
-                "uploaded_at": (now - timedelta(days=1)).isoformat(),
-            },
-        })
-        prompt = _build_system_prompt(state)
-        assert "Queue Snapshot" in prompt
-        assert "Attention Is All You Need" in prompt
-        assert "BERT: Pre-training" in prompt
-
-    def test_queue_snapshot_includes_promoted(self):
-        """Promoted papers appear in the queue snapshot section."""
-        from distillate.agent import _build_system_prompt
-        now = datetime.now(timezone.utc)
-        state = MockState({
-            "K1": {
-                "title": "Promoted Paper",
-                "status": "on_remarkable",
-                "key": "K1",
-                "metadata": {"tags": []},
-                "engagement": 0,
-                "highlight_count": 0,
-                "uploaded_at": (now - timedelta(days=3)).isoformat(),
-                "promoted_at": now.isoformat(),
-            },
-        })
-        prompt = _build_system_prompt(state)
-        assert "Queue Snapshot" in prompt
-        assert "Promoted:" in prompt
-        assert "Promoted Paper" in prompt
-
-    def test_queue_snapshot_empty_queue(self):
-        """Empty queue shows '(empty)' in the snapshot section."""
-        from distillate.agent import _build_system_prompt
-        state = MockState({
-            "K1": _make_doc(status="processed"),
-        })
-        prompt = _build_system_prompt(state)
-        assert "Queue Snapshot" in prompt
-        assert "(empty)" in prompt
 
 
 class TestExecuteTool:
@@ -260,33 +193,3 @@ class TestPrintWelcome:
         assert "Nicolas" in output
         assert "1 papers read" in output
         assert "2 in queue" in output
-
-    def test_first_use_onboarding(self, capsys):
-        """First-use users (n_read=0, no projects) see onboarding message."""
-        from distillate.agent import _print_welcome
-        state = MockState({})
-        _print_welcome(state)
-        output = capsys.readouterr().out
-        assert "Two ways to get started" in output
-        assert "conjure" in output
-        assert "/init" in output
-
-    def test_rotating_tips_shown(self, capsys, monkeypatch):
-        """Returning users see a 'Tip:' line in the welcome banner."""
-        from distillate.agent import _print_welcome
-        # Seed random so the tip is deterministic
-        monkeypatch.setattr("random.choice", lambda tips: tips[0])
-        state = MockState({
-            "K1": _make_doc(status="processed"),
-        })
-        _print_welcome(state)
-        output = capsys.readouterr().out
-        assert "Tip:" in output
-
-    def test_no_tips_for_first_use(self, capsys):
-        """First-use users do NOT see rotating tips."""
-        from distillate.agent import _print_welcome
-        state = MockState({})
-        _print_welcome(state)
-        output = capsys.readouterr().out
-        assert "Tip:" not in output

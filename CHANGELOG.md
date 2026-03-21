@@ -1,64 +1,52 @@
 # Changelog
 
-## 0.42.0 — 2026-03-22
+## 0.314.0 — 2026-03-20
 
-Autonomous research platform with desktop IDE, paper-experiment integration, and one-click onboarding.
+Autonomous research platform: experiments, paper library, desktop IDE, and 9 alchemy skills.
 
 ### Highlights
 
-- **One-click onboarding**: new users see CTAs to launch a demo experiment or connect their paper library — install to live experiment in 60 seconds
-- **Paper-experiment integration**: link papers to experiments, discover relevant papers, credit papers via `inspired_by` on runs — what you read informs what you try
-- **Desktop IDE**: four-tab Electron app (Control Panel, Session, Results, Prompt) with context-aware chat, stop generation, and full highlight display
+- **Autonomous experiments**: describe a hypothesis, Nicolas spawns an agent to test it. Time-budgeted sessions, live metric tracking, and automatic insight extraction.
+- **Alchemy skill system**: 9 slash commands across 3 roles — The Laboratory (`/survey`, `/conjure`, `/steer`, `/assay`, `/distill`), The Apothecary (`/brew`, `/forage`, `/tincture`), and The Bridge (`/transmute`)
+- **Desktop IDE**: four-tab Electron app — Control Panel, Session, Results, Prompt. Available as a macOS download alongside the CLI.
 - **No API key needed**: runs entirely through your Claude Code subscription (Max or Pro)
 
 ### New Features
 
-- **Autonomous experiments**: describe a hypothesis, Nicolas spawns an agent to test it. Time-budgeted sessions, live metric tracking, and automatic insight extraction
-- **Alchemy skill system**: 9 slash commands — The Laboratory (`/survey`, `/conjure`, `/steer`, `/assay`, `/distill`), The Library (`/brew`, `/forage`, `/tincture`), and `/transmute` to bridge papers and experiments
-- **Onboarding flow**: sidebar CTA, welcome screen CTA, chat suggestion — all lead to a 3-step scaffold/GitHub/launch flow that gets you to a running experiment in under a minute
-- **Library setup wizard**: "Connect your library" CTA in papers sidebar → Zotero credentials → reading surface choice (reMarkable / iPad / any device) → sync
-- **Paper-experiment cross-references**: linked papers in experiment detail, linked experiments in paper detail, both clickable for navigation
-- **`discover_relevant_papers` tool**: keyword-matches your paper library against experiment goals, returns candidates with relevance reasons
-- **`inspired_by` on runs**: `conclude_run` accepts a paper reference, auto-links it to the project
-- **Stop generation**: red stop button interrupts Claude via SDK, Nicolas says "Stopped. What should I do instead?"
-- **Context-aware suggestions**: chat pills above the input update based on context — experiment (steer, analyze, compare) or paper (summarize, experiment ideas, similar papers)
-- **Link handling**: external links open in system browser, arXiv/DOI links show popup with "Open in browser" or "Add to library queue"
-- **Windows support**: `install.ps1` script, `npm run install:win`, homepage auto-detects OS via user agent
-- **`purge_hook_runs` tool**: clean up accumulated noise from manual script executions
-- **49 MCP tools**: paper library, experiments, bridge, and cleanup tools via the Distillate MCP server
 - **Monorepo**: desktop app, MCP server, and Agent SDK in a single repository
-- **GitHub integration**: public repos by default (`distillate-xp-` prefix), GitHub flare in control panel
+- **Live experiment capture**: structured reports (`.distillate/runs.jsonl`), Claude Code hooks (passive), and artifact scanning
+- **Claude Code hooks**: `post_bash.py` captures training runs from Bash stdout, `on_stop.py` logs session boundaries
+- **Time budgets**: `duration_minutes` parameter in `init_experiment` and `manage_session` — agents respect limits and report when done
+- **Desktop app**: Electron shell with syntax highlighting, tool indicators, and keyboard shortcuts (Cmd+K/E/R/1-4)
+- **47 MCP tools**: paper library, experiments, and bridge tools all accessible via the Distillate MCP server
+- **`--install-hooks <path>`**: one-command Claude Code hook setup for any experiment repo
+- **`--watch <path>`**: watch an experiment repo, regenerate notebooks on changes
+- **Desktop notifications**: new baseline alerts, stuck agent detection, crash alerts
+- **GitHub integration**: public repos by default (`distillate-xp-` prefix), GitHub flare in control panel links to repo
 
 ### Desktop IDE
 
-- **Control Panel**: metric chart with log scale toggle, export to PNG, session timer, goal chips
-- **Session tab**: embedded xterm.js terminal attached to the running Claude Code agent
-- **Results tab**: runs grid with research insights (key breakthrough, lessons learned, dead ends)
 - **Prompt tab**: view and edit PROMPT.md with markdown rendering and syntax highlighting
-- **Three experiment states**: running (green triangle), ready (purple circle), paused (gray square)
-- **Chat UX**: purple presence dot on Nicolas messages, thinking spinner after tool completion, tool subtitles showing what's happening (search terms, project names, etc.)
-- **Full highlights**: paper detail view shows complete highlights (no truncation)
-- **Keyboard shortcuts**: Cmd+R refresh, Cmd+1-4 switch tabs, Cmd+E toggle sidebar, Cmd+K toggle chat
+- **Results tab**: runs grid, research insights (key breakthrough, lessons learned, dead ends)
+- **Session tab**: embedded xterm.js terminal attached to the running Claude Code session
+- **Control Panel**: metric chart with log scale toggle, export to PNG, session timer, goal chips
+- **Three session states**: active (green triangle), ready (blue circle), stopped (grey square)
+- **Keyboard shortcuts**: Cmd+R refresh data, Cmd+Shift+R hard reload, Cmd+1-4 switch tabs, Cmd+E toggle sidebar, Cmd+K toggle chat
+- **Tab refresh on project switch**: Results and Prompt tabs update immediately when clicking a different project
 
-### CLI
+### CLI & Internals
 
-- **Onboarding**: first-use welcome with two clear paths — conjure an experiment or connect Zotero via `/init`
-- **Contextual suggestions**: hints adapt to what you have (papers, experiments, or both)
-- **Rotating tips**: one random skill tip per session
 - **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown
 - **`--export-state` / `--import-state`**: backup and restore tracked papers and reading history
+- **Agent SDK migration**: NicolasClient wraps ClaudeSDKClient — same engine for CLI and desktop
+- **State schema versioning**: migration framework for future state.json changes
 
 ### Bug Fixes
 
-- **Scanner spurious runs**: hooks fired on all Bash commands, creating ghost runs. Now gated by `DISTILLATE_SESSION` env var — only fires inside Distillate-managed tmux sessions
-- **`compare_projects` null values**: skipped non-"keep" runs and used wrong direction for loss metrics. Now includes all non-discarded runs with direction-aware best (min for loss, max for accuracy)
-- **Unhashable list crash on delete**: run names in set comprehensions crashed with list-valued hyperparameters. Defensive `str()` wrapping
-- **Highlights truncated at 3000 chars**: desktop paper detail used the MCP tool's truncation limit. Now reads full highlights directly
-- **Links opened inside Electron app**: no navigation interception. Added `will-navigate` + `setWindowOpenHandler` guards
-- **Control panel disappeared on select**: `isReady` variable removed during refactor but still referenced, crashing the render
-- **Tab hijack on polling**: 15-second session poll re-rendered the detail pane, snapping back to Control Panel. Polling now only updates sidebar
-- **Sync 501 errors in DevTools**: `triggerCloudSync()` called `.json()` on non-ok responses
-- **Dock icon too large in dev mode**: now uses `.icns` with proper resolutions
+- **Prompt tab showed "No PROMPT.md yet" for valid prompts**: `hljs.highlightElement` threw inside the try block; catch handler replaced rendered content with error placeholder
+- **Results/Prompt tabs stale on project switch**: tab refresh only covered the sidebar-click path; background refreshes (poll, SSE) left tabs showing previous project's data
+- **Bullet point misalignment in insights**: `<p>` tags from markdown rendering pushed text below `::before` bullet pseudo-elements
+- **Cmd+R not in menu**: only Cmd+Shift+R was available; added Cmd+R for soft data refresh
 
 ### Migration from 0.6.x
 

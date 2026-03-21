@@ -141,22 +141,6 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-
-  // Prevent external URLs from navigating inside the app
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    // Allow local server and data: URLs (splash screen)
-    if (url.startsWith("http://127.0.0.1") || url.startsWith("data:")) return;
-    event.preventDefault();
-    shell.openExternal(url);
-  });
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http://127.0.0.1") || url.startsWith("data:")) {
-      return { action: "allow" };
-    }
-    shell.openExternal(url);
-    return { action: "deny" };
-  });
 }
 
 /**
@@ -189,7 +173,14 @@ app.setAsDefaultProtocolClient("distillate");
 app.setName("Distillate");
 
 app.on("ready", async () => {
-  // In dev mode, the dock icon comes from Electron.app's bundle — patched by postinstall
+  // Set dock icon in dev mode (macOS)
+  if (process.platform === "darwin" && app.dock && process.resourcesPath?.includes("node_modules")) {
+    const iconPath = path.join(__dirname, "..", "resources", "icon.png");
+    if (fs.existsSync(iconPath)) {
+      const icon = nativeImage.createFromPath(iconPath);
+      app.dock.setIcon(icon);
+    }
+  }
   // Build app menu
   buildMenu({
     onNewConversation: newConversation,

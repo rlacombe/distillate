@@ -1167,7 +1167,7 @@ def _create_app():
         """Stop a campaign permanently."""
         proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
-        campaign["status"] = "paused"
+        campaign["status"] = "stopped"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
         _state.update_project(project_id, campaign=campaign)
@@ -1677,9 +1677,6 @@ def _create_app():
                     key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
                 )],
             }
-            linked_papers = proj.get("linked_papers", [])
-            if linked_papers:
-                entry["linked_papers"] = linked_papers
             github_url = proj.get("github_url", "")
             if github_url:
                 entry["github_url"] = github_url
@@ -1998,30 +1995,15 @@ def _create_app():
         meta = doc.get("metadata", {})
         idx = _state.index_of(paper_key)
 
-        # Read highlights from Obsidian note if available (no truncation for desktop)
+        # Read highlights from Obsidian note if available
         highlights = ""
         try:
-            from distillate.tools import _read_note_content
+            from distillate.tools import _read_note_content, _extract_highlights_from_note
             note = _read_note_content(meta.get("citekey", ""), doc.get("title", ""))
             if note:
-                start = note.find("## Highlights")
-                if start >= 0:
-                    end = note.find("\n## ", start + 1)
-                    highlights = note[start:end] if end > 0 else note[start:]
+                highlights = _extract_highlights_from_note(note)
         except Exception:
             pass
-
-        # Resolve linked projects to names
-        linked_projects = []
-        for pid in doc.get("linked_projects", []):
-            p = _state.find_project(pid)
-            if p:
-                linked_projects.append({
-                    "id": p.get("id", pid),
-                    "name": p.get("name", pid),
-                })
-            else:
-                linked_projects.append({"id": pid, "name": pid})
 
         return JSONResponse({"ok": True, "paper": {
             "index": idx,
@@ -2044,7 +2026,6 @@ def _create_app():
             "processed_at": doc.get("processed_at", ""),
             "promoted_at": doc.get("promoted_at", ""),
             "highlights": highlights,
-            "linked_projects": linked_projects,
         }})
 
     # -------------------------------------------------------------------
@@ -2200,7 +2181,6 @@ def _create_app():
         await websocket.accept()
 
         nicolas = NicolasClient(_state)
-        _cancel_flag = asyncio.Event()
 
         try:
             while True:
@@ -2221,25 +2201,12 @@ def _create_app():
                         log.info("Model changed to %s", new_model)
                     continue
 
-                if msg.get("type") == "cancel":
-                    _cancel_flag.set()
-                    try:
-                        await nicolas.interrupt()
-                    except Exception:
-                        log.debug("Interrupt failed (non-critical)", exc_info=True)
-                    continue
-
                 user_input = msg.get("text", "").strip()
                 if not user_input:
                     continue
 
-                _cancel_flag.clear()
-
                 try:
                     async for event in nicolas.send(user_input):
-                        if _cancel_flag.is_set():
-                            await websocket.send_json({"type": "cancelled"})
-                            break
                         await websocket.send_json(event)
                 except Exception as exc:
                     log.exception("Nicolas query failed")

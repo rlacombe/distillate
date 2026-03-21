@@ -585,12 +585,12 @@ def _campaign(args: list[str]) -> None:
         if not campaign or campaign.get("status") not in ("running", "paused"):
             print(f"  No active campaign for '{proj_name}'.")
             return
-        campaign["status"] = "paused"
+        campaign["status"] = "stopped"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
         state.update_project(proj["id"], campaign=campaign)
         state.save()
-        print(f"  Campaign paused for '{proj_name}'.")
+        print(f"  Campaign stopped for '{proj_name}'.")
         return
 
     # --- start ---
@@ -684,7 +684,7 @@ def _campaign(args: list[str]) -> None:
     p = state.get_project(proj["id"])
     if p:
         c = dict(p.get("campaign", {}))
-        c["status"] = "paused"
+        c["status"] = "completed" if reason != "user_stopped" else "paused"
         c["stop_reason"] = reason
         c["completed_at"] = datetime.now(timezone.utc).isoformat()
         state.update_project(proj["id"], campaign=c)

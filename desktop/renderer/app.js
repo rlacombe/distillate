@@ -23,39 +23,6 @@ let libraryConfigured = false;  // Set from /status — whether Zotero credentia
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
 
-// Delegated click handler for paper refs and external links in messages
-messagesEl?.addEventListener("click", (e) => {
-  // Paper [N] references
-  const paperRef = e.target.closest(".paper-ref");
-  if (paperRef) {
-    e.preventDefault();
-    const idx = parseInt(paperRef.dataset.index);
-    if (window._cachedPapersData) {
-      const paper = window._cachedPapersData.find((p) => p.index === idx);
-      if (paper) { selectPaper(paper.key); return; }
-    }
-    if (typeof serverPort !== "undefined" && serverPort) {
-      fetch(`http://127.0.0.1:${serverPort}/papers`)
-        .then((r) => r.json())
-        .then((data) => {
-          const paper = (data.papers || []).find((p) => p.index === idx);
-          if (paper) selectPaper(paper.key);
-        })
-        .catch(() => {});
-    }
-    return;
-  }
-  // External links in assistant messages
-  const link = e.target.closest(".message.assistant a[href]");
-  if (link && !link.classList.contains("paper-ref") && !link.classList.contains("copy-btn")) {
-    const href = link.getAttribute("href");
-    if (href && !href.startsWith("#")) {
-      e.preventDefault();
-      handleExternalLink(href, link);
-    }
-  }
-});
-
 const NICOLAS_GREETINGS = [
   "Hello! What concoction shall we explore today?",
   "The laboratory is warm and the flasks are clean. What shall we work on?",
@@ -96,24 +63,29 @@ function injectChatBanner(stats) {
         <span class="banner-dashes-tail"></span>
       </div>
       <div class="banner-body">
-        <p class="banner-tagline">Your research alchemist.</p>
+        <p class="banner-tagline">Your research command center.</p>
         ${expLine ? `<p class="banner-stats">${expLine}</p>` : ""}
         <p class="banner-stats">${papersLine}</p>
       </div>
       <div class="banner-footer"></div>
     </div>
+    <div class="chat-tips">
+      <span>/conjure</span> launch experiment
+      <span class="tip-sep">&middot;</span>
+      <span>/brew</span> sync papers
+      <span class="tip-sep">&middot;</span>
+      <span>/survey</span> status check
+    </div>
   </div>
-  <div class="message assistant">${greeting}</div>`;
+  <div class="message assistant chat-greeting">${greeting}</div>
+  <div class="suggestions"></div>`;
 
   messagesEl.insertAdjacentHTML("afterbegin", bannerHtml);
-
-  // Ensure chat input is focused after banner renders
-  setTimeout(() => inputEl?.focus(), 50);
 }
 
-// Restore chat messages from previous session (survives app restart)
+// Restore chat messages from previous session (survives page reload)
 try {
-  const savedChat = localStorage.getItem("distillate-chat");
+  const savedChat = sessionStorage.getItem("distillate-chat");
   if (savedChat && messagesEl) {
     messagesEl.innerHTML = savedChat;
     chatBannerInjected = true;
@@ -124,7 +96,7 @@ try {
 window.addEventListener("beforeunload", () => {
   try {
     if (messagesEl && messagesEl.children.length > 0) {
-      localStorage.setItem("distillate-chat", messagesEl.innerHTML);
+      sessionStorage.setItem("distillate-chat", messagesEl.innerHTML);
     }
   } catch {}
 });
@@ -211,7 +183,7 @@ let toolLabels = {
   WebSearch: "\uD83C\uDF10 Searching the web",
   WebFetch: "\uD83C\uDF10 Fetching page",
   Agent: "\uD83E\uDD16 Delegating to subagent",
-  ToolSearch: "\u2697\uFE0F Preparing the apparatus",
+  ToolSearch: "\uD83D\uDD0D Loading tools",
   NotebookEdit: "\uD83D\uDCD3 Editing notebook",
   TodoWrite: "\u2611\uFE0F Updating tasks",
   TaskCreate: "\uD83D\uDCCB Creating task",
@@ -316,10 +288,6 @@ function connect(port) {
 /* ───── Event handling ───── */
 
 function handleEvent(event) {
-  // Ignore events from a cancelled turn (except turn_end which resets state)
-  if (_cancelledTurn && event.type !== "turn_end") return;
-  if (_cancelledTurn && event.type === "turn_end") { _cancelledTurn = false; return; }
-
   switch (event.type) {
     case "text_delta":
       removeThinkingIndicator();
@@ -340,11 +308,8 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      // Hide internal plumbing tools (ToolSearch just loads schemas)
-      if (event.name !== "ToolSearch") {
-        addToolIndicator(event.name, false, event.input, event.label);
-        scrollToBottom();
-      }
+      addToolIndicator(event.name, false, event.input, event.label);
+      scrollToBottom();
       break;
 
     case "tool_done": {
@@ -358,13 +323,10 @@ function handleEvent(event) {
         turnHadMutation = true;
       }
       markToolDone(event.tool_use_id || event.name);
-      // Show thinking indicator while agent processes the tool result
-      showThinkingIndicator();
       break;
     }
 
     case "turn_end":
-      clearTimeout(_inputSafetyTimer);
       finishStreaming();
       if (turnHadMutation) {
         triggerCloudSync();
@@ -386,18 +348,13 @@ function handleEvent(event) {
       finishStreaming();
       addErrorMessage(event.message || "Something went wrong.");
       break;
-
-    case "cancelled":
-      // Server confirmed cancellation — UI already handled by stopGeneration()
-      removeThinkingIndicator();
-      finishStreaming();
-      break;
   }
 }
 
 /* ───── Message rendering ───── */
 
 function addUserMessage(text) {
+  welcomeEl.classList.add("hidden");
   const el = document.createElement("div");
   el.className = "message user";
   el.textContent = text;
@@ -407,90 +364,22 @@ function addUserMessage(text) {
 
 function startAssistantMessage() {
   currentAssistantEl = document.createElement("div");
-  currentAssistantEl.className = "message assistant markdown-body streaming-cursor";
+  currentAssistantEl.className = "message assistant streaming-cursor";
   messagesEl.appendChild(currentAssistantEl);
   currentText = "";
   isStreaming = true;
   setStreamingUI(true);
-  // Hide suggestions while streaming
-  const cs = document.getElementById("chat-suggestions");
-  if (cs) cs.classList.add("hidden");
 }
 
 function renderAssistantMessage() {
   if (!currentAssistantEl) return;
   if (typeof marked !== "undefined") {
     currentAssistantEl.innerHTML = window.markedParse(currentText);
-    // Turn [N] paper references into clickable links
-    currentAssistantEl.innerHTML = currentAssistantEl.innerHTML.replace(
-      /\[(\d{1,4})\]/g,
-      '<a href="#" class="paper-ref" data-index="$1">[$1]</a>'
-    );
+    // Attach copy button listeners to any new code blocks
+    currentAssistantEl.querySelectorAll(".copy-btn").forEach(attachCopyHandler);
   } else {
     currentAssistantEl.textContent = currentText;
   }
-}
-
-function _extractPaperId(url) {
-  // arXiv: arxiv.org/abs/2301.12345 or arxiv.org/pdf/2301.12345
-  const arxiv = url.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)/);
-  if (arxiv) return { type: "arxiv", id: arxiv[1], label: `arXiv:${arxiv[1]}` };
-  // DOI
-  const doi = url.match(/doi\.org\/(10\.\d{4,}\/\S+)/);
-  if (doi) return { type: "doi", id: doi[1], label: `DOI:${doi[1]}` };
-  // Semantic Scholar
-  if (url.includes("semanticscholar.org/paper/")) return { type: "url", id: url, label: "Semantic Scholar paper" };
-  return null;
-}
-
-function handleExternalLink(url, anchorEl) {
-  const paper = _extractPaperId(url);
-
-  if (!paper) {
-    // Not a paper link — just open externally
-    if (window.nicolas?.openExternal) window.nicolas.openExternal(url);
-    else window.open(url, "_blank");
-    return;
-  }
-
-  // Paper link — show popup with options
-  const existing = document.querySelector(".link-popup");
-  if (existing) existing.remove();
-
-  const popup = document.createElement("div");
-  popup.className = "link-popup";
-  popup.innerHTML = `
-    <div class="link-popup-header">${paper.label}</div>
-    <button class="link-popup-btn" data-action="open">Open in browser</button>
-    <button class="link-popup-btn link-popup-btn-accent" data-action="queue">Add to library queue</button>`;
-
-  popup.addEventListener("click", async (e) => {
-    const action = e.target.dataset?.action;
-    if (!action) return;
-    popup.remove();
-    if (action === "open") {
-      if (window.nicolas?.openExternal) window.nicolas.openExternal(url);
-      else window.open(url, "_blank");
-    } else if (action === "queue") {
-      // Use the add_paper_to_zotero tool via chat
-      const identifier = paper.type === "arxiv" ? paper.id : url;
-      inputEl.value = `Add this paper to my queue: ${identifier}`;
-      sendMessage();
-    }
-  });
-
-  // Position near the link
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.position = "fixed";
-  popup.style.left = `${rect.left}px`;
-  popup.style.top = `${rect.bottom + 4}px`;
-  document.body.appendChild(popup);
-
-  // Close on click outside
-  const close = (e) => {
-    if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener("mousedown", close); }
-  };
-  setTimeout(() => document.addEventListener("mousedown", close), 0);
 }
 
 function finishStreaming() {
@@ -505,25 +394,6 @@ function finishStreaming() {
   sendBtn.disabled = false;
   setStreamingUI(false);
   inputEl.focus();
-  // Restore suggestions after streaming
-  const cs = document.getElementById("chat-suggestions");
-  if (cs) cs.classList.remove("hidden");
-  refreshChatSuggestions();
-
-  // Send queued message if user typed while agent was working
-  if (_queuedMessage) {
-    const queued = _queuedMessage;
-    _queuedMessage = null;
-    // Upgrade the dimmed queued message to normal style
-    const qEl = messagesEl.querySelector(".message.queued");
-    if (qEl) qEl.classList.remove("queued");
-    // Send it
-    lastUserMessage = queued;
-    showThinkingIndicator();
-    ws.send(JSON.stringify({ text: queued }));
-    inputEl.disabled = true;
-    sendBtn.disabled = true;
-  }
 }
 
 function addToolIndicator(name, done, input, serverLabel) {
@@ -531,7 +401,7 @@ function addToolIndicator(name, done, input, serverLabel) {
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ");
 
   // Build dynamic subtitle from tool input
   let subtitle = "";
@@ -563,32 +433,6 @@ function addToolIndicator(name, done, input, serverLabel) {
       subtitle = `\u2018${p}\u2019`;
     } else if (name === "manage_session" && input.action) {
       subtitle = `${input.action}${input.project ? ` \u2014 ${input.project}` : ""}`;
-    } else if (name === "suggest_from_literature") {
-      const parts = [];
-      if (input.project) parts.push(input.project);
-      if (input.focus) parts.push(`\u2018${input.focus}\u2019`);
-      subtitle = parts.join(" \u2014 ");
-    } else if (name === "compare_projects" && input.projects) {
-      subtitle = input.projects.join(" vs ");
-    } else if (name === "compare_runs") {
-      const parts = [];
-      if (input.run_a) parts.push(input.run_a);
-      if (input.run_b) parts.push(input.run_b);
-      subtitle = parts.join(" vs ");
-    } else if (name === "list_projects") {
-      subtitle = "all experiments";
-    } else if (name === "get_project_details" && input.identifier) {
-      subtitle = input.identifier;
-    } else if (name === "extract_baselines" && input.paper) {
-      subtitle = input.paper;
-    } else if (name === "replicate_paper" && input.paper) {
-      subtitle = input.paper;
-    } else if (name === "steer_experiment" && input.project) {
-      subtitle = input.project;
-    } else if (name === "continue_experiment" && input.project) {
-      subtitle = input.project;
-    } else if (name === "init_experiment" && input.name) {
-      subtitle = input.name;
     }
     // Claude Code built-in tools
     else if ((name === "Read" || name === "Edit" || name === "Write") && input.file_path) {
@@ -606,16 +450,6 @@ function addToolIndicator(name, done, input, serverLabel) {
       try { subtitle = new URL(input.url).hostname; } catch { subtitle = input.url.slice(0, 40); }
     } else if (name === "Agent" && input.description) {
       subtitle = input.description;
-    } else if (name === "ToolSearch" && input.query) {
-      // Translate raw tool queries into readable text
-      const q = input.query;
-      if (q.includes("mcp__distillate__")) {
-        const toolName = q.replace(/.*mcp__distillate__/, "").replace(/,.*/, "").trim();
-        const readable = toolLabels[toolName] || toolName.replace(/_/g, " ");
-        subtitle = readable.replace(/^[^\w]*/, "").toLowerCase();
-      } else {
-        subtitle = q.replace(/^select:/, "").replace(/mcp__\w+__/g, "").replace(/_/g, " ");
-      }
     }
   }
 
@@ -805,125 +639,41 @@ function fetchWelcomeStats() {
 }
 
 function updateSuggestions(isFirstUse, hasPapers, hasExperiments) {
-  const container = document.getElementById("chat-suggestions");
-  const suggestions = _buildSuggestions(isFirstUse, hasPapers, hasExperiments);
-  _renderSuggestions(container, suggestions);
-}
-
-function refreshChatSuggestions() {
-  const container = document.getElementById("chat-suggestions");
+  const container = document.querySelector(".suggestions");
   if (!container) return;
 
   let suggestions;
-
-  // Context: experiment selected
-  if (currentProjectId) {
-    const proj = cachedProjects.find((p) => p.id === currentProjectId);
-    if (proj) {
-      suggestions = [];
-      if (proj.active_sessions > 0) {
-        suggestions.push({ text: `How is ${proj.name || proj.id} going?`, label: "Check progress" });
-        suggestions.push({ text: `Steer ${proj.name || proj.id} — what should it try next?`, label: "Steer experiment" });
-      } else if (proj.run_count > 0) {
-        suggestions.push({ text: `Analyze the results for ${proj.name || proj.id}`, label: "Analyze results" });
-        suggestions.push({ text: `Continue ${proj.name || proj.id} with a new session`, label: "Continue experiment" });
-      } else {
-        suggestions.push({ text: `Launch ${proj.name || proj.id}`, label: "Launch experiment" });
-      }
-      if (proj.run_count >= 2) {
-        suggestions.push({ text: `Compare the runs in ${proj.name || proj.id}`, label: "Compare runs" });
-      }
-      suggestions.push({ text: `What papers are relevant to ${proj.name || proj.id}?`, label: "Find related papers" });
-    }
-  }
-
-  // Context: paper selected
-  else if (currentPaperKey) {
-    const paper = cachedPapers.find((p) => p.key === currentPaperKey);
-    if (paper) {
-      const shortTitle = (paper.title || "").length > 40
-        ? paper.title.slice(0, 40) + "\u2026"
-        : paper.title;
-      suggestions = [];
-      if (paper.status === "processed") {
-        suggestions.push({ text: `Summarize "${shortTitle}"`, label: "Summarize" });
-        suggestions.push({ text: `What are the key insights from "${shortTitle}"?`, label: "Key insights" });
-        suggestions.push({ text: `What experiments could I run based on "${shortTitle}"?`, label: "Experiment ideas" });
-      } else {
-        suggestions.push({ text: `What is "${shortTitle}" about?`, label: "Quick overview" });
-      }
-      suggestions.push({ text: `Find papers similar to "${shortTitle}"`, label: "Similar papers" });
-      if (!paper.promoted) {
-        suggestions.push({ text: `Why should I promote "${shortTitle}"?`, label: "Worth promoting?" });
-      }
-    }
-  }
-
-  // Context: nothing selected — global suggestions
-  else {
-    const hasRunning = cachedProjects.some((p) => p.active_sessions > 0);
-    const hasPapers = cachedPapers.length > 0;
-    const hasExps = cachedProjects.length > 0;
-
-    suggestions = [];
-    if (hasRunning) {
-      suggestions.push({ text: "What's running right now?", label: "Live status" });
-    }
-    if (hasExps) {
-      suggestions.push({ text: "How are my experiments going?", label: "Experiment status" });
-    }
-    if (hasPapers) {
-      suggestions.push({ text: "What's in my reading queue?", label: "Reading queue" });
-      suggestions.push({ text: "Summarize my last read", label: "Last read" });
-    }
-    if (hasExps && hasPapers) {
-      suggestions.push({ text: "What should I try next based on what I've read?", label: "What's next?" });
-    }
-    if (!hasExps && !hasPapers) {
-      suggestions.push({ text: "__launch_demo__", label: "Launch demo experiment", action: launchDemoExperiment });
-      suggestions.push({ text: "What can you do?", label: "What can you do?" });
-    }
-  }
-
-  if (suggestions) {
-    _renderSuggestions(container, suggestions);
-  }
-}
-
-function _buildSuggestions(isFirstUse, hasPapers, hasExperiments) {
   if (isFirstUse) {
-    return [
+    suggestions = [
       { text: "__launch_demo__", label: "Launch demo experiment", action: launchDemoExperiment },
       { text: "What can you do?", label: "What can you do?" },
       { text: "How does this work?", label: "How does it work?" },
       { text: "How do I connect my Zotero library?", label: "Connect Zotero" },
     ];
   } else if (!hasExperiments) {
-    return [
+    suggestions = [
       { text: "What's in my queue?", label: "What's in my queue?" },
       { text: "Run my first experiment", label: "My first experiment" },
       { text: "Summarize my last read", label: "Summarize last read" },
       { text: "What should I try next?", label: "What should I try?" },
     ];
   } else if (!hasPapers) {
-    return [
+    suggestions = [
       { text: "How are my experiments going?", label: "Experiment status" },
       { text: "How do I connect my Zotero library?", label: "Connect Zotero" },
       { text: "What should I try next?", label: "What should I try?" },
       { text: "Run a new experiment", label: "New experiment" },
     ];
   } else {
-    return [
+    // Returning user with both papers and experiments
+    suggestions = [
       { text: "What's in my queue?", label: "What's in my queue?" },
       { text: "How are my experiments going?", label: "Experiment status" },
       { text: "Summarize my last read", label: "Summarize last read" },
       { text: "What should I try next?", label: "What should I try?" },
     ];
   }
-}
 
-function _renderSuggestions(container, suggestions) {
-  if (!container) return;
   container.innerHTML = "";
   for (const s of suggestions) {
     const btn = document.createElement("button");
@@ -932,7 +682,6 @@ function _renderSuggestions(container, suggestions) {
     btn.textContent = s.label;
     btn.addEventListener("click", () => {
       if (s.action) { s.action(); return; }
-      if (s.text === "__launch_demo__") { launchDemoExperiment(); return; }
       inputEl.value = s.text;
       sendMessage();
     });
@@ -1001,30 +750,10 @@ sendBtn.addEventListener("mousedown", (e) => {
   }
 });
 
-// Message history (arrow up/down like CLI)
-const _messageHistory = [];
-let _historyIndex = -1;
-let _historyDraft = "";
-
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
-    return;
-  }
-
-  // Arrow up/down for history navigation (only when cursor is at start/end)
-  if (e.key === "ArrowUp" && inputEl.selectionStart === 0 && _messageHistory.length > 0) {
-    e.preventDefault();
-    if (_historyIndex === -1) _historyDraft = inputEl.value;
-    _historyIndex = Math.min(_historyIndex + 1, _messageHistory.length - 1);
-    inputEl.value = _messageHistory[_historyIndex];
-    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-  } else if (e.key === "ArrowDown" && _historyIndex >= 0) {
-    e.preventDefault();
-    _historyIndex--;
-    inputEl.value = _historyIndex >= 0 ? _messageHistory[_historyIndex] : _historyDraft;
-    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
   }
 });
 
@@ -1052,43 +781,16 @@ function setStreamingUI(streaming) {
   }
 }
 
-let _cancelledTurn = false;
-
 function stopGeneration() {
   if (!isStreaming) return;
-
-  _cancelledTurn = true;
-
-  // Tell the server to interrupt Claude
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "cancel" }));
-  }
 
   // Finish whatever partial text we have
   removeThinkingIndicator();
   finishStreaming();
 
-  // Mark any in-progress tool indicators as stopped
-  document.querySelectorAll(".tool-indicator:not(.done)").forEach((el) => {
-    el.classList.add("done", "cancelled");
-    const spinner = el.querySelector(".spinner");
-    if (spinner) spinner.remove();
-  });
-
-  // Show interruption indicator (styled like a tool indicator)
-  const stopEl = document.createElement("div");
-  stopEl.className = "tool-indicator done cancelled";
-  stopEl.innerHTML = '<span class="stop-x">\u2715</span><span>Nicolas was interrupted by the user.</span>';
-  messagesEl.appendChild(stopEl);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-
-  // Re-enable input and pre-fill with last message for easy retry
+  // Re-enable input so the user can type their next message
   inputEl.disabled = false;
   sendBtn.disabled = false;
-  if (lastUserMessage) {
-    inputEl.value = lastUserMessage;
-    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-  }
   inputEl.focus();
 }
 
@@ -1119,53 +821,23 @@ function removeThinkingIndicator() {
   if (el) el.remove();
 }
 
-let _inputSafetyTimer = null;
-let _queuedMessage = null;
-
 function sendMessage() {
   const text = inputEl.value.trim();
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // If agent is still working, queue the message instead of blocking
-  if (isStreaming || inputEl.disabled) {
-    _queuedMessage = text;
-    // Show queued message in dimmed style
-    const qEl = document.createElement("div");
-    qEl.className = "message user queued";
-    qEl.textContent = text;
-    messagesEl.appendChild(qEl);
-    scrollToBottom(true);
-    inputEl.value = "";
-    inputEl.style.height = "auto";
-    return;
-  }
+  // Hide suggestion pills after first message
+  const suggestionsEl = document.querySelector(".suggestions");
+  if (suggestionsEl) suggestionsEl.classList.add("hidden");
 
-  _cancelledTurn = false;
   lastUserMessage = text;
-  _messageHistory.unshift(text);
-  if (_messageHistory.length > 50) _messageHistory.pop();
-  _historyIndex = -1;
-  _historyDraft = "";
   addUserMessage(text);
   showThinkingIndicator();
   ws.send(JSON.stringify({ text }));
 
-  // Immediately enter streaming mode so stop button is visible
-  isStreaming = true;
-  setStreamingUI(true);
-
   inputEl.value = "";
   inputEl.style.height = "auto";
-
-  // Safety: re-enable input after 120s if turn_end never arrives
-  clearTimeout(_inputSafetyTimer);
-  _inputSafetyTimer = setTimeout(() => {
-    if (isStreaming) {
-      console.warn("[safety] Re-enabling input after timeout");
-      removeThinkingIndicator();
-      finishStreaming();
-    }
-  }, 120000);
+  inputEl.disabled = true;
+  sendBtn.disabled = true;
 }
 
 /* ───── Settings modal ───── */
@@ -1275,10 +947,14 @@ if (importBtn) {
   });
 }
 
-// Esc to close settings — handled here because settingsOverlay is in scope
+// Esc to close settings or stop generation
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
-    closeSettings();
+  if (e.key === "Escape") {
+    if (!settingsOverlay.classList.contains("hidden")) {
+      closeSettings();
+    } else if (isStreaming) {
+      stopGeneration();
+    }
   }
 });
 
@@ -1701,6 +1377,14 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     togglePane("sidebar-left");
   }
+  if ((e.metaKey || e.ctrlKey) && e.key === "e") {
+    e.preventDefault();
+    togglePane("sidebar-left");
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+    e.preventDefault();
+    togglePane("bottom-panel");
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === "r") {
     e.preventDefault();
     reloadCurrentProject();
@@ -1712,16 +1396,22 @@ document.addEventListener("keydown", (e) => {
     const tabs = ["control-panel", "session", "results", "prompt-editor"];
     switchEditorTab(tabs[parseInt(e.key) - 1]);
   }
-  // Escape: stop generation first, then deselect experiment
+  // Escape to deselect experiment
   if (e.key === "Escape" && !e.metaKey && !e.ctrlKey) {
     const settingsOverlay = document.getElementById("settings-overlay");
-    if (settingsOverlay && !settingsOverlay.classList.contains("hidden")) return;
-    if (isStreaming) {
+    if (settingsOverlay && !settingsOverlay.classList.contains("hidden")) return; // let settings handle it
+    if (currentProjectId) {
       e.preventDefault();
-      stopGeneration();
-    } else if (currentProjectId || currentPaperKey) {
-      e.preventDefault();
-      deselectAll();
+      currentProjectId = null;
+      const detailEl = document.getElementById("experiment-detail");
+      if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; }
+      welcomeEl?.classList.remove("hidden");
+      const tabLabel = document.getElementById("editor-tabs-project-name");
+      if (tabLabel) tabLabel.textContent = "";
+      document.querySelectorAll("#experiments-sidebar .sidebar-item").forEach((el) => el.classList.remove("active"));
+      resetResultsTab();
+      resetSetupTab();
+      switchEditorTab("control-panel");
     }
   }
 });
@@ -1807,12 +1497,7 @@ function restoreLayoutState() {
   } catch {}
 }
 
-// Only restore layout if not a fresh app launch (preserves sizes within session,
-// but resets to CSS defaults on full restart)
-if (sessionStorage.getItem("distillate-session-active")) {
-  restoreLayoutState();
-}
-sessionStorage.setItem("distillate-session-active", "1");
+restoreLayoutState();
 
 /* ───── refreshTabData replacement ───── */
 
@@ -1906,9 +1591,8 @@ function handleSSEEvent(data) {
         proj.run_count = proj.runs.length;
       }
 
-      // Re-render if this project is displayed AND control panel is visible
-      const cpVisible = !document.getElementById("control-panel-view")?.classList.contains("hidden");
-      if (currentProjectId === data.project_id && cpVisible) {
+      // Re-render if this project is currently displayed
+      if (currentProjectId === data.project_id) {
         renderProjectDetail(data.project_id);
       }
       // Update sidebar counts
@@ -2072,14 +1756,6 @@ if (papersInsightsToggle) {
   });
 }
 
-const brewSyncBtn = document.getElementById("brew-sync-btn");
-if (brewSyncBtn) {
-  brewSyncBtn.addEventListener("click", () => {
-    inputEl.value = "Sync my paper library";
-    sendMessage();
-  });
-}
-
 let papersFirstLoad = true;
 
 function fetchPapersData() {
@@ -2093,8 +1769,7 @@ function fetchPapersData() {
     .then((data) => {
       papersFirstLoad = false;
       if (!data.ok) return;
-      window._cachedPapersData = data.papers || [];
-      renderPapersList(window._cachedPapersData);
+      renderPapersList(data.papers || []);
     })
     .catch(() => { papersFirstLoad = false; });
 }
@@ -2296,8 +1971,8 @@ function renderPapersList(papers) {
     papersSidebarEl.innerHTML = `
       <div class="sidebar-empty sidebar-empty-onboarding">
         <p>Your library is empty</p>
-        <button class="onboarding-btn" id="library-setup-btn">Connect your library</button>
-        <p class="sidebar-empty-hint">Sync your papers, highlights, and reading notes</p>
+        <button class="onboarding-btn" id="library-setup-btn">Connect Zotero</button>
+        <p class="sidebar-empty-hint">Link your Zotero library to start reading and annotating papers</p>
       </div>`;
     papersSidebarEl.querySelector("#library-setup-btn")
       ?.addEventListener("click", launchLibrarySetup);
@@ -2400,8 +2075,8 @@ async function launchLibrarySetup() {
 
   detailEl.innerHTML = `
     <div class="onboarding-progress">
-      <h2 class="exp-detail-title">Connect your paper library</h2>
-      <p class="exp-detail-meta">Distillate syncs with Zotero to track your reading and extract highlights.</p>
+      <h2 class="exp-detail-title">Connect your library</h2>
+      <p class="exp-detail-meta">Link your Zotero account to start syncing papers.</p>
 
       <div class="library-setup-wizard" id="library-wizard">
         <div class="library-step" id="lib-step-zotero">
@@ -2560,27 +2235,18 @@ async function launchLibrarySetup() {
 }
 
 function selectPaper(paperKey) {
-  // Toggle: clicking the already-selected paper deselects
-  if (currentPaperKey === paperKey) {
-    deselectAll();
-    return;
-  }
   currentPaperKey = paperKey;
-  currentProjectId = null;
 
   // Update sidebar selection
   papersSidebarEl?.querySelectorAll(".sidebar-item").forEach((el) => {
     el.classList.toggle("active", el.dataset.key === paperKey);
   });
-  refreshChatSuggestions();
 
   // Show paper detail in experiment-detail area (reuse editor area)
   const detailEl = document.getElementById("experiment-detail");
   if (!detailEl || !serverPort) return;
 
-  // Hide experiment tabs, switch to control panel and show detail
-  const editorTabs = document.getElementById("editor-tabs");
-  if (editorTabs) editorTabs.classList.add("hidden");
+  // Switch to control panel and show detail
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   detailEl.innerHTML = '<div class="exp-detail-loading">Loading paper...</div>';
@@ -2607,68 +2273,72 @@ function selectPaper(paperKey) {
       title.textContent = data.title || paperKey;
       header.appendChild(title);
 
-      // Authors + date + venue on one line
-      const metaLine1 = [];
-      if (data.authors && data.authors.length) metaLine1.push(data.authors.join(", "));
-      if (data.publication_date) metaLine1.push(data.publication_date);
-      if (data.venue) metaLine1.push(data.venue);
-      if (metaLine1.length) {
-        const el = document.createElement("div");
-        el.className = "exp-detail-meta";
-        el.style.marginTop = "6px";
-        el.textContent = metaLine1.join(" \u00B7 ");
-        header.appendChild(el);
-      }
-
-      // URL + stats + badges on one line
-      const metaLine2 = document.createElement("div");
-      metaLine2.className = "exp-detail-meta";
-      metaLine2.style.display = "flex";
-      metaLine2.style.alignItems = "center";
-      metaLine2.style.gap = "12px";
-      metaLine2.style.flexWrap = "wrap";
-
-      const paperUrl = data.url
-        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
-        || (data.doi ? `https://doi.org/${data.doi}` : "");
+      // Status badges
+      const badges = document.createElement("div");
+      badges.className = "exp-detail-badges";
       if (data.status === "processed") {
         const b = document.createElement("span");
         b.className = "exp-detail-badge keep";
         b.textContent = "read";
-        metaLine2.appendChild(b);
+        badges.appendChild(b);
       }
       if (data.promoted) {
         const b = document.createElement("span");
         b.className = "exp-detail-badge";
         b.style.background = "var(--accent)";
         b.textContent = "promoted";
-        metaLine2.appendChild(b);
+        badges.appendChild(b);
+      }
+      header.appendChild(badges);
+
+      // Authors
+      if (data.authors && data.authors.length) {
+        const authorsEl = document.createElement("div");
+        authorsEl.className = "exp-detail-meta";
+        authorsEl.textContent = data.authors.join(", ");
+        header.appendChild(authorsEl);
       }
 
-      const statParts = [];
-      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
-      if (data.page_count) statParts.push(`${data.page_count} pages`);
-      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
-      if (statParts.length) {
-        const statsSpan = document.createElement("span");
-        statsSpan.textContent = statParts.join(" \u00B7 ");
-        metaLine2.appendChild(statsSpan);
+      // Venue + date + IDs
+      const metaParts = [];
+      if (data.venue) metaParts.push(data.venue);
+      if (data.publication_date) metaParts.push(data.publication_date);
+      if (data.doi) metaParts.push(`DOI: ${data.doi}`);
+      if (data.arxiv_id) metaParts.push(`arXiv: ${data.arxiv_id}`);
+      if (metaParts.length) {
+        const metaEl = document.createElement("div");
+        metaEl.className = "exp-detail-meta";
+        metaEl.textContent = metaParts.join(" \u00B7 ");
+        header.appendChild(metaEl);
       }
 
+      // Paper URL link
+      const paperUrl = data.url
+        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
+        || (data.doi ? `https://doi.org/${data.doi}` : "");
       if (paperUrl) {
         const linkEl = document.createElement("a");
         linkEl.className = "paper-external-link";
         linkEl.href = "#";
-        linkEl.style.margin = "0";
         linkEl.textContent = data.arxiv_id ? `arxiv.org/abs/${data.arxiv_id}` : paperUrl.replace(/^https?:\/\//, "");
         linkEl.addEventListener("click", (e) => {
           e.preventDefault();
           window.nicolas.openExternal(paperUrl);
         });
-        metaLine2.appendChild(linkEl);
+        header.appendChild(linkEl);
       }
 
-      if (metaLine2.children.length) header.appendChild(metaLine2);
+      // Stats row
+      const statParts = [];
+      if (data.page_count) statParts.push(`${data.page_count} pages`);
+      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
+      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
+      if (statParts.length) {
+        const statsEl = document.createElement("div");
+        statsEl.className = "exp-detail-meta";
+        statsEl.textContent = statParts.join(" \u00B7 ");
+        header.appendChild(statsEl);
+      }
 
       detailEl.appendChild(header);
 
@@ -2740,51 +2410,24 @@ function selectPaper(paperKey) {
 
       // Highlights
       if (data.highlights && data.highlights.length) {
-        let hlText = typeof data.highlights === "string"
-          ? data.highlights
-          : data.highlights.map((h) => typeof h === "string" ? `- ${h}` : `- ${h.text || JSON.stringify(h)}`).join("\n");
-        // Strip leading markdown heading (already shown as section title)
-        hlText = hlText.replace(/^#{1,3}\s*Highlights?\s*\n*/i, "").trim();
-        if (hlText) {
-          const section = document.createElement("div");
-          section.className = "exp-detail-section";
-          const sTitle = document.createElement("h3");
-          sTitle.textContent = "Highlights";
-          section.appendChild(sTitle);
-          const hl = document.createElement("div");
-          hl.className = "paper-highlights-list markdown-body";
-          hl.innerHTML = window.markedParse(hlText);
-          section.appendChild(hl);
-          detailEl.appendChild(section);
-        }
-      }
-
-      // Related Experiments (cross-reference from linked_projects)
-      if (data.linked_projects && data.linked_projects.length > 0) {
         const section = document.createElement("div");
         section.className = "exp-detail-section";
         const sTitle = document.createElement("h3");
-        sTitle.textContent = "Related Experiments";
+        sTitle.textContent = "Highlights";
         section.appendChild(sTitle);
-        const list = document.createElement("div");
-        list.className = "related-experiments-list";
-        for (const proj of data.linked_projects) {
-          const item = document.createElement("div");
-          item.className = "related-experiment-item";
-          item.textContent = proj.name || proj.id;
-          item.style.cursor = "pointer";
-          item.addEventListener("click", () => {
-            selectProject(proj.id);
-          });
-          list.appendChild(item);
+        const ul = document.createElement("ul");
+        ul.className = "paper-highlights-list";
+        for (const h of data.highlights) {
+          const li = document.createElement("li");
+          li.textContent = typeof h === "string" ? h : h.text || JSON.stringify(h);
+          ul.appendChild(li);
         }
-        section.appendChild(list);
+        section.appendChild(ul);
         detailEl.appendChild(section);
       }
     })
-    .catch((err) => {
-      console.error("[paper-detail] Error:", err);
-      detailEl.innerHTML = `<div class="exp-detail-loading">Failed to load paper details: ${err.message || err}</div>`;
+    .catch(() => {
+      detailEl.innerHTML = '<div class="exp-detail-loading">Failed to load paper details.</div>';
     });
 }
 
@@ -2808,24 +2451,18 @@ function togglePromote(paperKey, promote, btn) {
         // Sync source data so re-renders (filters/sort) stay correct
         const paperObj = cachedPapers.find((p) => p.key === paperKey);
         if (paperObj) paperObj.promoted = nowPromoted;
-        // Update the badge on the card (if in paper card view)
+        // Update the badge on the card
         const card = btn.closest(".paper-card");
-        if (card) {
-          const header = card.querySelector(".paper-card-header");
-          if (header) {
-            const existingBadge = header.querySelector(".paper-promoted-badge");
-            if (nowPromoted && !existingBadge) {
-              const badge = document.createElement("span");
-              badge.className = "paper-promoted-badge";
-              badge.textContent = "promoted";
-              header.appendChild(badge);
-            } else if (!nowPromoted && existingBadge) {
-              existingBadge.remove();
-            }
-          }
+        const header = card.querySelector(".paper-card-header");
+        const existingBadge = header.querySelector(".paper-promoted-badge");
+        if (nowPromoted && !existingBadge) {
+          const badge = document.createElement("span");
+          badge.className = "paper-promoted-badge";
+          badge.textContent = "promoted";
+          header.appendChild(badge);
+        } else if (!nowPromoted && existingBadge) {
+          existingBadge.remove();
         }
-        // Update sidebar badge
-        fetchPapersData();
       }
     })
     .catch(() => {
@@ -3421,6 +3058,10 @@ function fetchExperimentsList() {
       if (!data.ok) return;
       const projects = data.projects || [];
       renderProjectsList(projects);
+      // Re-render the detail view if a project is selected (picks up new runs/metrics)
+      if (currentProjectId && cachedProjects.find((p) => p.id === currentProjectId)) {
+        renderProjectDetail(currentProjectId);
+      }
       // Start SSE if we have projects with active sessions
       if (projects.some((p) => p.active_sessions > 0)) {
         startExperimentSSE();
@@ -3536,18 +3177,19 @@ function renderProjectsList(projects) {
 
     const icon = document.createElement("span");
     icon.className = "sidebar-item-icon";
-    if (proj.active_sessions > 0 && proj.current_run !== "Session active") {
-      // Running: agent actively working
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" class="blink-play"><polygon points="1,0 9,5 1,10" fill="#22c55e"/></svg>`;
-      icon.title = "Running";
-    } else if (proj.active_sessions > 0) {
-      // Ready: session alive, agent waiting for steering
+    if (proj.active_sessions > 0 && proj.current_run === "Session active") {
+      // Ready: session alive, agent awaiting instructions
       icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#7366f1"/></svg>`;
       icon.title = "Ready";
-    } else {
-      // Paused: no active session
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="#8888a0"/></svg>`;
+    } else if (proj.active_sessions > 0) {
+      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" class="blink-play"><polygon points="1,0 9,5 1,10" fill="#22c55e"/></svg>`;
+      icon.title = "Running";
+    } else if (proj.status === "paused") {
+      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/><rect x="6" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/></svg>`;
       icon.title = "Paused";
+    } else {
+      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="#8888a0"/></svg>`;
+      icon.title = "Stopped";
     }
     item.appendChild(icon);
 
@@ -3584,6 +3226,11 @@ function renderProjectsList(projects) {
     experimentsSidebarEl.appendChild(item);
   }
 
+  // Re-render detail if the currently selected project was updated
+  if (currentProjectId) {
+    const stillExists = projects.find((p) => p.id === currentProjectId);
+    if (stillExists) renderProjectDetail(currentProjectId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4065,37 +3712,11 @@ function refreshExperiments(selectId) {
     .catch(() => {});
 }
 
-function deselectAll() {
-  currentProjectId = null;
-  currentPaperKey = null;
-  const detailEl = document.getElementById("experiment-detail");
-  if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; }
-  welcomeEl?.classList.remove("hidden");
-  const editorTabs = document.getElementById("editor-tabs");
-  if (editorTabs) editorTabs.classList.add("hidden");
-  const tabLabel = document.getElementById("editor-tabs-project-name");
-  if (tabLabel) tabLabel.textContent = "";
-  document.querySelectorAll("#experiments-sidebar .sidebar-item").forEach((el) => el.classList.remove("active"));
-  papersSidebarEl?.querySelectorAll(".sidebar-item").forEach((el) => el.classList.remove("active"));
-  resetResultsTab();
-  resetSetupTab();
-  switchEditorTab("control-panel");
-  refreshChatSuggestions();
-}
-
 function selectProject(projectId) {
-  // Toggle: clicking the already-selected project deselects
-  if (currentProjectId === projectId) {
-    deselectAll();
-    return;
-  }
   const previousProject = currentProjectId;
   currentProjectId = projectId;
-  currentPaperKey = null;
 
-  // Show experiment tabs and name
-  const editorTabs = document.getElementById("editor-tabs");
-  if (editorTabs) editorTabs.classList.remove("hidden");
+  // Show experiment name in tab bar
   const tabLabel = document.getElementById("editor-tabs-project-name");
   if (tabLabel) {
     const proj = cachedProjects.find((p) => p.id === projectId);
@@ -4119,7 +3740,6 @@ function selectProject(projectId) {
   }
 
   renderProjectDetail(projectId);
-  refreshChatSuggestions();
 }
 
 function renderProjectDetail(projectId) {
@@ -4129,7 +3749,7 @@ function renderProjectDetail(projectId) {
   const proj = cachedProjects.find((p) => p.id === projectId);
   if (!proj) return;
 
-  // Show detail
+  // Show detail (only switch to control panel if no tab is active yet)
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   // Clean up any live timers from previous render
@@ -4139,18 +3759,8 @@ function renderProjectDetail(projectId) {
   }
   detailEl.innerHTML = "";
 
-  // Switch to control panel only if it's currently hidden (first selection / coming from paper)
-  // Don't force-switch if user is on Session/Results/Prompt tab (avoids yanking them back)
-  const cpView = document.getElementById("control-panel-view");
-  if (cpView && cpView.classList.contains("hidden")) {
-    for (const v of editorViews) {
-      const viewEl = document.getElementById(`${v}-view`);
-      if (viewEl) viewEl.classList.toggle("hidden", v !== "control-panel");
-    }
-    document.querySelectorAll(".editor-tab").forEach((t) => t.classList.remove("active"));
-    document.querySelector('.editor-tab[data-view="control-panel"]')?.classList.add("active");
-  }
-
+  const activeTab = document.querySelector(".editor-tab.active");
+  if (!activeTab) switchEditorTab("control-panel");
 
   // Light up Session tab when there's an active session
   const sessionTab = document.querySelector('.editor-tab[data-view="session"]');
@@ -4182,18 +3792,12 @@ function renderProjectDetail(projectId) {
   title.textContent = proj.name || proj.id;
   titleLeft.appendChild(title);
   const isReady = proj.active_sessions > 0 && proj.current_run === "Session active";
-  const badge = document.createElement("span");
-  if (proj.active_sessions > 0 && !isReady) {
-    badge.className = "exp-detail-badge running";
-    badge.innerHTML = `<span class="badge-play-icon">\u25B6</span> running`;
-    titleLeft.appendChild(badge);
-  } else if (proj.active_sessions > 0) {
-    badge.className = "exp-detail-badge ready";
-    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`;
-    titleLeft.appendChild(badge);
-  } else {
-    badge.className = "exp-detail-badge paused";
-    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/></svg> paused`;
+  if (proj.active_sessions > 0) {
+    const badge = document.createElement("span");
+    badge.className = isReady ? "exp-detail-badge ready" : "exp-detail-badge running";
+    badge.innerHTML = isReady
+      ? `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`
+      : `<span class="badge-play-icon">\u25B6</span> active`;
     titleLeft.appendChild(badge);
   }
 
@@ -4542,35 +4146,6 @@ function renderProjectDetail(projectId) {
   }
 
   // Runs grid and insights are rendered in the Results tab (see loadResults)
-
-  // Related Papers section (cross-reference)
-  if (proj.linked_papers && proj.linked_papers.length > 0) {
-    const section = document.createElement("div");
-    section.className = "exp-detail-section";
-    const sTitle = document.createElement("h3");
-    sTitle.textContent = "Related Papers";
-    section.appendChild(sTitle);
-    const list = document.createElement("div");
-    list.className = "related-papers-list";
-    for (const paperTitle of proj.linked_papers) {
-      const item = document.createElement("div");
-      item.className = "related-paper-item";
-      item.textContent = paperTitle;
-      item.style.cursor = "pointer";
-      item.addEventListener("click", () => {
-        // Try to find the paper in cached papers by title match
-        const match = (cachedPapers || []).find(
-          (p) => p.title === paperTitle || p.citekey === paperTitle
-        );
-        if (match) {
-          selectPaper(match.key);
-        }
-      });
-      list.appendChild(item);
-    }
-    section.appendChild(list);
-    detailEl.appendChild(section);
-  }
 
   // Refresh the visible tab's content (Results or Prompt) for this project
   const visibleTab = document.querySelector(".editor-tab.active")?.dataset?.view;

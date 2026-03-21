@@ -427,7 +427,7 @@ def _print_welcome(state: State) -> None:
     n_queue = len(queue)
 
     lines = []
-    lines.append("[dim]Your research alchemist.[/dim]")
+    lines.append("[dim]Your research command center.[/dim]")
 
     # Experiments first
     if config.EXPERIMENTS_ENABLED and state.projects:
@@ -475,15 +475,6 @@ def _print_welcome(state: State) -> None:
     print(f"  {_dim('/report')}           {_dim('Reading stats')}")
     print(f"  {_dim('/help')}             {_dim('All commands')}")
 
-    # First-use onboarding
-    is_first_use = n_read == 0 and not state.projects
-    if is_first_use:
-        print(f"\n  {_dim('Welcome! Two ways to get started:')}")
-        print(f"  {_dim('1.')} Ask me to conjure an experiment {_dim('(works right away)')}")
-        print(f"  {_dim('2.')} Run {_bold('/init')} {_dim('to connect your Zotero library')}")
-        print()
-        return
-
     # Contextual suggestions
     hints = []
     if config.EXPERIMENTS_ENABLED and state.projects:
@@ -495,21 +486,6 @@ def _print_welcome(state: State) -> None:
     hints.append("What's trending in AI?")
     sep = " \u00b7 "
     print(f"\n  {_dim('Or just ask:')} {_dim(sep.join(hints))}")
-
-    # Rotating tips (one per session)
-    import random
-    tips = [
-        "Tip: /conjure launches an autonomous experiment from a research question.",
-        "Tip: /survey scans all experiments for breakthroughs.",
-        "Tip: /brew syncs your paper library from Zotero.",
-        "Tip: /transmute turns paper insights into experiment ideas.",
-        "Tip: /distill extracts key findings from an experiment's history.",
-        "Tip: /forage discovers trending papers and reading suggestions.",
-        "Tip: /steer lets you redirect a running experiment mid-session.",
-        "Tip: /tincture does a deep extraction from a single paper.",
-        "Tip: /assay compares experiment runs side-by-side.",
-    ]
-    print(f"  {_dim(random.choice(tips))}")
 
 
 def _run_init() -> None:

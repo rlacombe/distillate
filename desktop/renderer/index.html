@@ -99,7 +99,7 @@
     <div id="center-column">
       <!-- Editor area -->
       <div id="editor-area">
-        <div id="editor-tabs" class="hidden">
+        <div id="editor-tabs">
           <button class="editor-tab active" data-view="control-panel">Control Panel</button>
           <button class="editor-tab" data-view="session">Session</button>
           <button class="editor-tab" data-view="results">Results</button>
@@ -214,9 +214,30 @@
           </div>
         </div>
         <div id="chat-area">
+          <div id="chat-welcome">
+            <div class="welcome-banner">
+              <div class="banner-line">
+                <span class="banner-dashes">&#x2500;&#x2500;&#x2500;</span>
+                <span class="banner-flask">&#x2697;&#xFE0F;</span>
+                <span class="banner-name">Nicolas</span>
+                <span class="banner-dashes-tail"></span>
+              </div>
+              <div class="banner-body">
+                <p class="banner-tagline">Your research alchemist</p>
+                <p id="welcome-stats-experiments" class="banner-stats"></p>
+                <p id="welcome-stats" class="banner-stats"></p>
+              </div>
+              <div class="banner-footer"></div>
+            </div>
+            <div class="suggestions">
+              <button class="suggestion" data-text="What's in my queue?">What's in my queue?</button>
+              <button class="suggestion" data-text="Summarize my last read">Summarize last read</button>
+              <button class="suggestion" data-text="How are my experiments going?">Experiment status</button>
+              <button class="suggestion" data-text="What should I try next?">What should I try next?</button>
+            </div>
+          </div>
           <div id="messages" role="log" aria-live="polite"></div>
         </div>
-        <div id="chat-suggestions" class="suggestions"></div>
         <div id="input-area">
           <form id="input-form">
             <textarea id="input" placeholder="Ask Nicolas anything..." rows="1"
@@ -245,14 +266,6 @@
       <div class="sidebar-header">
         <span class="sidebar-title">Papers</span>
         <span id="papers-count" class="sidebar-count"></span>
-        <button id="brew-sync-btn" class="sidebar-action-btn brew-btn" title="Brew — sync paper library">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 8V5a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v3"/>
-            <path d="M7 8l-2.5 9A2 2 0 0 0 6.4 20h11.2a2 2 0 0 0 1.9-2.6L17 8H7z"/>
-            <path d="M10 12c0 1.5 1 3 2 3s2-1.5 2-3"/>
-          </svg>
-        </button>
         <button id="papers-insights-toggle" class="sidebar-action-btn" title="Insights">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -280,14 +293,6 @@
     </span>
   </div>
 
-  <script src="marked.min.js"></script>
-  <script>
-    // Configure marked and expose markedParse globally
-    if (typeof marked !== "undefined") {
-      marked.setOptions({ breaks: true, gfm: true });
-      window.markedParse = (text) => marked.parse(text);
-    }
-  </script>
   <script src="app.js"></script>
 </body>
 </html>
