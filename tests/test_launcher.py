@@ -717,7 +717,7 @@ class TestStateSessionMethods:
 class TestExperimentToolSchemas:
     def test_schema_count(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 35  # 29 + 3 paper-experiment + save_enrichment + start_run + conclude_run
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 37  # 35 + purge_hook_runs + discover_relevant_papers
 
     def test_new_tool_names(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS

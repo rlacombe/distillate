@@ -768,7 +768,7 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Source bash login profile for SSO auth, then run the command
     bash_profile = Path.home() / ".bash_profile"
     source_line = f"source {shlex.quote(str(bash_profile))} >/dev/null 2>&1; " if bash_profile.exists() else ""
-    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; export DISTILLATE_SESSION=1; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
 
     print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
     print(f"[launch] command: {full_command}")
@@ -820,7 +820,7 @@ def _spawn_ssh(
     session_name: str, host: str, remote_dir: str, command: str,
 ) -> None:
     """Spawn a remote tmux session via SSH."""
-    ssh_cmd = f"cd {shlex.quote(remote_dir)} && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
@@ -1202,7 +1202,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
             return None
         old_runs = existing.get("runs", {})
         old_count = len(old_runs)
-        existing_names = {r["name"] for r in old_runs.values()}
+        existing_names = {str(r.get("name", "")) for r in old_runs.values()}
         new_runs = 0
         for run_id, run_data in result.get("runs", {}).items():
             if run_data["name"] not in existing_names:
@@ -1285,7 +1285,7 @@ def run_campaign(
 
         campaign = proj.get("campaign", {})
         if campaign.get("status") not in ("running", None):
-            # Externally paused/stopped
+            # Externally paused
             return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
 
         # Budget check

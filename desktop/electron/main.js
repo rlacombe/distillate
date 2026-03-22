@@ -189,14 +189,7 @@ app.setAsDefaultProtocolClient("distillate");
 app.setName("Distillate");
 
 app.on("ready", async () => {
-  // Set dock icon in dev mode (macOS) — resize to standard 128x128
-  if (process.platform === "darwin" && app.dock && process.resourcesPath?.includes("node_modules")) {
-    const iconPath = path.join(__dirname, "..", "resources", "icon.png");
-    if (fs.existsSync(iconPath)) {
-      const icon = nativeImage.createFromPath(iconPath).resize({ width: 128, height: 128 });
-      app.dock.setIcon(icon);
-    }
-  }
+  // In dev mode, the dock icon comes from Electron.app's bundle — patched by postinstall
   // Build app menu
   buildMenu({
     onNewConversation: newConversation,

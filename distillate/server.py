@@ -1167,7 +1167,7 @@ def _create_app():
         """Stop a campaign permanently."""
         proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
-        campaign["status"] = "stopped"
+        campaign["status"] = "paused"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
         _state.update_project(project_id, campaign=campaign)
@@ -1677,6 +1677,9 @@ def _create_app():
                     key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
                 )],
             }
+            linked_papers = proj.get("linked_papers", [])
+            if linked_papers:
+                entry["linked_papers"] = linked_papers
             github_url = proj.get("github_url", "")
             if github_url:
                 entry["github_url"] = github_url
@@ -2008,6 +2011,18 @@ def _create_app():
         except Exception:
             pass
 
+        # Resolve linked projects to names
+        linked_projects = []
+        for pid in doc.get("linked_projects", []):
+            p = _state.find_project(pid)
+            if p:
+                linked_projects.append({
+                    "id": p.get("id", pid),
+                    "name": p.get("name", pid),
+                })
+            else:
+                linked_projects.append({"id": pid, "name": pid})
+
         return JSONResponse({"ok": True, "paper": {
             "index": idx,
             "key": paper_key,
@@ -2029,6 +2044,7 @@ def _create_app():
             "processed_at": doc.get("processed_at", ""),
             "promoted_at": doc.get("promoted_at", ""),
             "highlights": highlights,
+            "linked_projects": linked_projects,
         }})
 
     # -------------------------------------------------------------------

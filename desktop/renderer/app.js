@@ -23,6 +23,39 @@ let libraryConfigured = false;  // Set from /status — whether Zotero credentia
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
 
+// Delegated click handler for paper refs and external links in messages
+messagesEl?.addEventListener("click", (e) => {
+  // Paper [N] references
+  const paperRef = e.target.closest(".paper-ref");
+  if (paperRef) {
+    e.preventDefault();
+    const idx = parseInt(paperRef.dataset.index);
+    if (window._cachedPapersData) {
+      const paper = window._cachedPapersData.find((p) => p.index === idx);
+      if (paper) { selectPaper(paper.key); return; }
+    }
+    if (typeof serverPort !== "undefined" && serverPort) {
+      fetch(`http://127.0.0.1:${serverPort}/papers`)
+        .then((r) => r.json())
+        .then((data) => {
+          const paper = (data.papers || []).find((p) => p.index === idx);
+          if (paper) selectPaper(paper.key);
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+  // External links in assistant messages
+  const link = e.target.closest(".message.assistant a[href]");
+  if (link && !link.classList.contains("paper-ref") && !link.classList.contains("copy-btn")) {
+    const href = link.getAttribute("href");
+    if (href && !href.startsWith("#")) {
+      e.preventDefault();
+      handleExternalLink(href, link);
+    }
+  }
+});
+
 const NICOLAS_GREETINGS = [
   "Hello! What concoction shall we explore today?",
   "The laboratory is warm and the flasks are clean. What shall we work on?",
@@ -70,7 +103,7 @@ function injectChatBanner(stats) {
       <div class="banner-footer"></div>
     </div>
   </div>
-  <div class="message assistant chat-greeting">${greeting}</div>`;
+  <div class="message assistant">${greeting}</div>`;
 
   messagesEl.insertAdjacentHTML("afterbegin", bannerHtml);
 
@@ -307,8 +340,11 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      addToolIndicator(event.name, false, event.input, event.label);
-      scrollToBottom();
+      // Hide internal plumbing tools (ToolSearch just loads schemas)
+      if (event.name !== "ToolSearch") {
+        addToolIndicator(event.name, false, event.input, event.label);
+        scrollToBottom();
+      }
       break;
 
     case "tool_done": {
@@ -390,44 +426,6 @@ function renderAssistantMessage() {
       /\[(\d{1,4})\]/g,
       '<a href="#" class="paper-ref" data-index="$1">[$1]</a>'
     );
-    // Attach click handlers for paper refs — open paper detail directly
-    currentAssistantEl.querySelectorAll(".paper-ref").forEach((el) => {
-      el.addEventListener("click", (e) => {
-        e.preventDefault();
-        const idx = parseInt(el.dataset.index);
-        // Find the paper key by index from cached papers
-        if (window._cachedPapersData) {
-          const paper = window._cachedPapersData.find((p) => p.index === idx);
-          if (paper) {
-            selectPaper(paper.key);
-            return;
-          }
-        }
-        // Fallback: search cachedProjects papers list isn't available,
-        // use the server endpoint directly
-        if (serverPort) {
-          fetch(`http://127.0.0.1:${serverPort}/papers`)
-            .then((r) => r.json())
-            .then((data) => {
-              const paper = (data.papers || []).find((p) => p.index === idx);
-              if (paper) selectPaper(paper.key);
-            })
-            .catch(() => {});
-        }
-      });
-    });
-    // Attach copy button listeners to any new code blocks
-    currentAssistantEl.querySelectorAll(".copy-btn").forEach(attachCopyHandler);
-    // Handle external links — open in browser, offer "add to queue" for papers
-    currentAssistantEl.querySelectorAll("a[href]").forEach((a) => {
-      if (a.classList.contains("paper-ref") || a.classList.contains("copy-btn")) return;
-      const href = a.getAttribute("href");
-      if (!href || href.startsWith("#")) return;
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        handleExternalLink(href, a);
-      });
-    });
   } else {
     currentAssistantEl.textContent = currentText;
   }
@@ -533,7 +531,7 @@ function addToolIndicator(name, done, input, serverLabel) {
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ");
+  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 
   // Build dynamic subtitle from tool input
   let subtitle = "";
@@ -565,6 +563,32 @@ function addToolIndicator(name, done, input, serverLabel) {
       subtitle = `\u2018${p}\u2019`;
     } else if (name === "manage_session" && input.action) {
       subtitle = `${input.action}${input.project ? ` \u2014 ${input.project}` : ""}`;
+    } else if (name === "suggest_from_literature") {
+      const parts = [];
+      if (input.project) parts.push(input.project);
+      if (input.focus) parts.push(`\u2018${input.focus}\u2019`);
+      subtitle = parts.join(" \u2014 ");
+    } else if (name === "compare_projects" && input.projects) {
+      subtitle = input.projects.join(" vs ");
+    } else if (name === "compare_runs") {
+      const parts = [];
+      if (input.run_a) parts.push(input.run_a);
+      if (input.run_b) parts.push(input.run_b);
+      subtitle = parts.join(" vs ");
+    } else if (name === "list_projects") {
+      subtitle = "all experiments";
+    } else if (name === "get_project_details" && input.identifier) {
+      subtitle = input.identifier;
+    } else if (name === "extract_baselines" && input.paper) {
+      subtitle = input.paper;
+    } else if (name === "replicate_paper" && input.paper) {
+      subtitle = input.paper;
+    } else if (name === "steer_experiment" && input.project) {
+      subtitle = input.project;
+    } else if (name === "continue_experiment" && input.project) {
+      subtitle = input.project;
+    } else if (name === "init_experiment" && input.name) {
+      subtitle = input.name;
     }
     // Claude Code built-in tools
     else if ((name === "Read" || name === "Edit" || name === "Write") && input.file_path) {
@@ -583,7 +607,15 @@ function addToolIndicator(name, done, input, serverLabel) {
     } else if (name === "Agent" && input.description) {
       subtitle = input.description;
     } else if (name === "ToolSearch" && input.query) {
-      subtitle = input.query;
+      // Translate raw tool queries into readable text
+      const q = input.query;
+      if (q.includes("mcp__distillate__")) {
+        const toolName = q.replace(/.*mcp__distillate__/, "").replace(/,.*/, "").trim();
+        const readable = toolLabels[toolName] || toolName.replace(/_/g, " ");
+        subtitle = readable.replace(/^[^\w]*/, "").toLowerCase();
+      } else {
+        subtitle = q.replace(/^select:/, "").replace(/mcp__\w+__/g, "").replace(/_/g, " ");
+      }
     }
   }
 
@@ -1243,14 +1275,10 @@ if (importBtn) {
   });
 }
 
-// Esc to close settings or stop generation
+// Esc to close settings — handled here because settingsOverlay is in scope
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (!settingsOverlay.classList.contains("hidden")) {
-      closeSettings();
-    } else if (isStreaming) {
-      stopGeneration();
-    }
+  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
+    closeSettings();
   }
 });
 
@@ -1673,14 +1701,6 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     togglePane("sidebar-left");
   }
-  if ((e.metaKey || e.ctrlKey) && e.key === "e") {
-    e.preventDefault();
-    togglePane("sidebar-left");
-  }
-  if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-    e.preventDefault();
-    togglePane("bottom-panel");
-  }
   if ((e.metaKey || e.ctrlKey) && e.key === "r") {
     e.preventDefault();
     reloadCurrentProject();
@@ -1886,8 +1906,9 @@ function handleSSEEvent(data) {
         proj.run_count = proj.runs.length;
       }
 
-      // Re-render if this project is currently displayed
-      if (currentProjectId === data.project_id) {
+      // Re-render if this project is displayed AND control panel is visible
+      const cpVisible = !document.getElementById("control-panel-view")?.classList.contains("hidden");
+      if (currentProjectId === data.project_id && cpVisible) {
         renderProjectDetail(data.project_id);
       }
       // Update sidebar counts
@@ -2549,7 +2570,9 @@ function selectPaper(paperKey) {
   const detailEl = document.getElementById("experiment-detail");
   if (!detailEl || !serverPort) return;
 
-  // Switch to control panel and show detail
+  // Hide experiment tabs, switch to control panel and show detail
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.add("hidden");
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   detailEl.innerHTML = '<div class="exp-detail-loading">Loading paper...</div>';
@@ -2576,72 +2599,68 @@ function selectPaper(paperKey) {
       title.textContent = data.title || paperKey;
       header.appendChild(title);
 
-      // Status badges
-      const badges = document.createElement("div");
-      badges.className = "exp-detail-badges";
+      // Authors + date + venue on one line
+      const metaLine1 = [];
+      if (data.authors && data.authors.length) metaLine1.push(data.authors.join(", "));
+      if (data.publication_date) metaLine1.push(data.publication_date);
+      if (data.venue) metaLine1.push(data.venue);
+      if (metaLine1.length) {
+        const el = document.createElement("div");
+        el.className = "exp-detail-meta";
+        el.style.marginTop = "6px";
+        el.textContent = metaLine1.join(" \u00B7 ");
+        header.appendChild(el);
+      }
+
+      // URL + stats + badges on one line
+      const metaLine2 = document.createElement("div");
+      metaLine2.className = "exp-detail-meta";
+      metaLine2.style.display = "flex";
+      metaLine2.style.alignItems = "center";
+      metaLine2.style.gap = "12px";
+      metaLine2.style.flexWrap = "wrap";
+
+      const paperUrl = data.url
+        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
+        || (data.doi ? `https://doi.org/${data.doi}` : "");
       if (data.status === "processed") {
         const b = document.createElement("span");
         b.className = "exp-detail-badge keep";
         b.textContent = "read";
-        badges.appendChild(b);
+        metaLine2.appendChild(b);
       }
       if (data.promoted) {
         const b = document.createElement("span");
         b.className = "exp-detail-badge";
         b.style.background = "var(--accent)";
         b.textContent = "promoted";
-        badges.appendChild(b);
-      }
-      header.appendChild(badges);
-
-      // Authors
-      if (data.authors && data.authors.length) {
-        const authorsEl = document.createElement("div");
-        authorsEl.className = "exp-detail-meta";
-        authorsEl.textContent = data.authors.join(", ");
-        header.appendChild(authorsEl);
+        metaLine2.appendChild(b);
       }
 
-      // Venue + date + IDs
-      const metaParts = [];
-      if (data.venue) metaParts.push(data.venue);
-      if (data.publication_date) metaParts.push(data.publication_date);
-      if (data.doi) metaParts.push(`DOI: ${data.doi}`);
-      if (data.arxiv_id) metaParts.push(`arXiv: ${data.arxiv_id}`);
-      if (metaParts.length) {
-        const metaEl = document.createElement("div");
-        metaEl.className = "exp-detail-meta";
-        metaEl.textContent = metaParts.join(" \u00B7 ");
-        header.appendChild(metaEl);
+      const statParts = [];
+      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
+      if (data.page_count) statParts.push(`${data.page_count} pages`);
+      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
+      if (statParts.length) {
+        const statsSpan = document.createElement("span");
+        statsSpan.textContent = statParts.join(" \u00B7 ");
+        metaLine2.appendChild(statsSpan);
       }
 
-      // Paper URL link
-      const paperUrl = data.url
-        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
-        || (data.doi ? `https://doi.org/${data.doi}` : "");
       if (paperUrl) {
         const linkEl = document.createElement("a");
         linkEl.className = "paper-external-link";
         linkEl.href = "#";
+        linkEl.style.margin = "0";
         linkEl.textContent = data.arxiv_id ? `arxiv.org/abs/${data.arxiv_id}` : paperUrl.replace(/^https?:\/\//, "");
         linkEl.addEventListener("click", (e) => {
           e.preventDefault();
           window.nicolas.openExternal(paperUrl);
         });
-        header.appendChild(linkEl);
+        metaLine2.appendChild(linkEl);
       }
 
-      // Stats row
-      const statParts = [];
-      if (data.page_count) statParts.push(`${data.page_count} pages`);
-      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
-      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
-      if (statParts.length) {
-        const statsEl = document.createElement("div");
-        statsEl.className = "exp-detail-meta";
-        statsEl.textContent = statParts.join(" \u00B7 ");
-        header.appendChild(statsEl);
-      }
+      if (metaLine2.children.length) header.appendChild(metaLine2);
 
       detailEl.appendChild(header);
 
@@ -2713,10 +2732,12 @@ function selectPaper(paperKey) {
 
       // Highlights
       if (data.highlights && data.highlights.length) {
-        const highlights = typeof data.highlights === "string"
-          ? data.highlights.split("\n").filter((l) => l.trim())
-          : Array.isArray(data.highlights) ? data.highlights : [];
-        if (highlights.length) {
+        let hlText = typeof data.highlights === "string"
+          ? data.highlights
+          : data.highlights.map((h) => typeof h === "string" ? `- ${h}` : `- ${h.text || JSON.stringify(h)}`).join("\n");
+        // Strip leading markdown heading (already shown as section title)
+        hlText = hlText.replace(/^#{1,3}\s*Highlights?\s*\n*/i, "").trim();
+        if (hlText) {
           const section = document.createElement("div");
           section.className = "exp-detail-section";
           const sTitle = document.createElement("h3");
@@ -2724,14 +2745,33 @@ function selectPaper(paperKey) {
           section.appendChild(sTitle);
           const hl = document.createElement("div");
           hl.className = "paper-highlights-list markdown-body";
-          hl.innerHTML = window.markedParse(
-            typeof data.highlights === "string"
-              ? data.highlights
-              : highlights.map((h) => typeof h === "string" ? `- ${h}` : `- ${h.text || JSON.stringify(h)}`).join("\n")
-          );
+          hl.innerHTML = window.markedParse(hlText);
           section.appendChild(hl);
           detailEl.appendChild(section);
         }
+      }
+
+      // Related Experiments (cross-reference from linked_projects)
+      if (data.linked_projects && data.linked_projects.length > 0) {
+        const section = document.createElement("div");
+        section.className = "exp-detail-section";
+        const sTitle = document.createElement("h3");
+        sTitle.textContent = "Related Experiments";
+        section.appendChild(sTitle);
+        const list = document.createElement("div");
+        list.className = "related-experiments-list";
+        for (const proj of data.linked_projects) {
+          const item = document.createElement("div");
+          item.className = "related-experiment-item";
+          item.textContent = proj.name || proj.id;
+          item.style.cursor = "pointer";
+          item.addEventListener("click", () => {
+            selectProject(proj.id);
+          });
+          list.appendChild(item);
+        }
+        section.appendChild(list);
+        detailEl.appendChild(section);
       }
     })
     .catch((err) => {
@@ -2760,18 +2800,24 @@ function togglePromote(paperKey, promote, btn) {
         // Sync source data so re-renders (filters/sort) stay correct
         const paperObj = cachedPapers.find((p) => p.key === paperKey);
         if (paperObj) paperObj.promoted = nowPromoted;
-        // Update the badge on the card
+        // Update the badge on the card (if in paper card view)
         const card = btn.closest(".paper-card");
-        const header = card.querySelector(".paper-card-header");
-        const existingBadge = header.querySelector(".paper-promoted-badge");
-        if (nowPromoted && !existingBadge) {
-          const badge = document.createElement("span");
-          badge.className = "paper-promoted-badge";
-          badge.textContent = "promoted";
-          header.appendChild(badge);
-        } else if (!nowPromoted && existingBadge) {
-          existingBadge.remove();
+        if (card) {
+          const header = card.querySelector(".paper-card-header");
+          if (header) {
+            const existingBadge = header.querySelector(".paper-promoted-badge");
+            if (nowPromoted && !existingBadge) {
+              const badge = document.createElement("span");
+              badge.className = "paper-promoted-badge";
+              badge.textContent = "promoted";
+              header.appendChild(badge);
+            } else if (!nowPromoted && existingBadge) {
+              existingBadge.remove();
+            }
+          }
         }
+        // Update sidebar badge
+        fetchPapersData();
       }
     })
     .catch(() => {
@@ -3367,10 +3413,6 @@ function fetchExperimentsList() {
       if (!data.ok) return;
       const projects = data.projects || [];
       renderProjectsList(projects);
-      // Re-render the detail view if a project is selected (picks up new runs/metrics)
-      if (currentProjectId && cachedProjects.find((p) => p.id === currentProjectId)) {
-        renderProjectDetail(currentProjectId);
-      }
       // Start SSE if we have projects with active sessions
       if (projects.some((p) => p.active_sessions > 0)) {
         startExperimentSSE();
@@ -3486,19 +3528,18 @@ function renderProjectsList(projects) {
 
     const icon = document.createElement("span");
     icon.className = "sidebar-item-icon";
-    if (proj.active_sessions > 0 && proj.current_run === "Session active") {
-      // Ready: session alive, agent awaiting instructions
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#7366f1"/></svg>`;
-      icon.title = "Ready";
-    } else if (proj.active_sessions > 0) {
+    if (proj.active_sessions > 0 && proj.current_run !== "Session active") {
+      // Running: agent actively working
       icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" class="blink-play"><polygon points="1,0 9,5 1,10" fill="#22c55e"/></svg>`;
       icon.title = "Running";
-    } else if (proj.status === "paused") {
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/><rect x="6" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/></svg>`;
-      icon.title = "Paused";
+    } else if (proj.active_sessions > 0) {
+      // Ready: session alive, agent waiting for steering
+      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#7366f1"/></svg>`;
+      icon.title = "Ready";
     } else {
+      // Paused: no active session
       icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="#8888a0"/></svg>`;
-      icon.title = "Stopped";
+      icon.title = "Paused";
     }
     item.appendChild(icon);
 
@@ -3535,11 +3576,6 @@ function renderProjectsList(projects) {
     experimentsSidebarEl.appendChild(item);
   }
 
-  // Re-render detail if the currently selected project was updated
-  if (currentProjectId) {
-    const stillExists = projects.find((p) => p.id === currentProjectId);
-    if (stillExists) renderProjectDetail(currentProjectId);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4027,6 +4063,8 @@ function deselectAll() {
   const detailEl = document.getElementById("experiment-detail");
   if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; }
   welcomeEl?.classList.remove("hidden");
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.add("hidden");
   const tabLabel = document.getElementById("editor-tabs-project-name");
   if (tabLabel) tabLabel.textContent = "";
   document.querySelectorAll("#experiments-sidebar .sidebar-item").forEach((el) => el.classList.remove("active"));
@@ -4047,7 +4085,9 @@ function selectProject(projectId) {
   currentProjectId = projectId;
   currentPaperKey = null;
 
-  // Show experiment name in tab bar
+  // Show experiment tabs and name
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.remove("hidden");
   const tabLabel = document.getElementById("editor-tabs-project-name");
   if (tabLabel) {
     const proj = cachedProjects.find((p) => p.id === projectId);
@@ -4081,7 +4121,7 @@ function renderProjectDetail(projectId) {
   const proj = cachedProjects.find((p) => p.id === projectId);
   if (!proj) return;
 
-  // Show detail (only switch to control panel if no tab is active yet)
+  // Show detail
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   // Clean up any live timers from previous render
@@ -4091,8 +4131,18 @@ function renderProjectDetail(projectId) {
   }
   detailEl.innerHTML = "";
 
-  const activeTab = document.querySelector(".editor-tab.active");
-  if (!activeTab) switchEditorTab("control-panel");
+  // Switch to control panel only if it's currently hidden (first selection / coming from paper)
+  // Don't force-switch if user is on Session/Results/Prompt tab (avoids yanking them back)
+  const cpView = document.getElementById("control-panel-view");
+  if (cpView && cpView.classList.contains("hidden")) {
+    for (const v of editorViews) {
+      const viewEl = document.getElementById(`${v}-view`);
+      if (viewEl) viewEl.classList.toggle("hidden", v !== "control-panel");
+    }
+    document.querySelectorAll(".editor-tab").forEach((t) => t.classList.remove("active"));
+    document.querySelector('.editor-tab[data-view="control-panel"]')?.classList.add("active");
+  }
+
 
   // Light up Session tab when there's an active session
   const sessionTab = document.querySelector('.editor-tab[data-view="session"]');
@@ -4124,12 +4174,18 @@ function renderProjectDetail(projectId) {
   title.textContent = proj.name || proj.id;
   titleLeft.appendChild(title);
   const isReady = proj.active_sessions > 0 && proj.current_run === "Session active";
-  if (proj.active_sessions > 0) {
-    const badge = document.createElement("span");
-    badge.className = isReady ? "exp-detail-badge ready" : "exp-detail-badge running";
-    badge.innerHTML = isReady
-      ? `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`
-      : `<span class="badge-play-icon">\u25B6</span> active`;
+  const badge = document.createElement("span");
+  if (proj.active_sessions > 0 && !isReady) {
+    badge.className = "exp-detail-badge running";
+    badge.innerHTML = `<span class="badge-play-icon">\u25B6</span> running`;
+    titleLeft.appendChild(badge);
+  } else if (proj.active_sessions > 0) {
+    badge.className = "exp-detail-badge ready";
+    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`;
+    titleLeft.appendChild(badge);
+  } else {
+    badge.className = "exp-detail-badge paused";
+    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/></svg> paused`;
     titleLeft.appendChild(badge);
   }
 
@@ -4478,6 +4534,35 @@ function renderProjectDetail(projectId) {
   }
 
   // Runs grid and insights are rendered in the Results tab (see loadResults)
+
+  // Related Papers section (cross-reference)
+  if (proj.linked_papers && proj.linked_papers.length > 0) {
+    const section = document.createElement("div");
+    section.className = "exp-detail-section";
+    const sTitle = document.createElement("h3");
+    sTitle.textContent = "Related Papers";
+    section.appendChild(sTitle);
+    const list = document.createElement("div");
+    list.className = "related-papers-list";
+    for (const paperTitle of proj.linked_papers) {
+      const item = document.createElement("div");
+      item.className = "related-paper-item";
+      item.textContent = paperTitle;
+      item.style.cursor = "pointer";
+      item.addEventListener("click", () => {
+        // Try to find the paper in cached papers by title match
+        const match = (cachedPapers || []).find(
+          (p) => p.title === paperTitle || p.citekey === paperTitle
+        );
+        if (match) {
+          selectPaper(match.key);
+        }
+      });
+      list.appendChild(item);
+    }
+    section.appendChild(list);
+    detailEl.appendChild(section);
+  }
 
   // Refresh the visible tab's content (Results or Prompt) for this project
   const visibleTab = document.querySelector(".editor-tab.active")?.dataset?.view;

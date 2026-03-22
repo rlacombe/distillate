@@ -5,6 +5,7 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
+    "start:app": "electron-builder --mac --dir -c.compression=store && open dist/mac-arm64/Distillate.app",
     "postinstall": "electron-builder install-app-deps",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac --dir",

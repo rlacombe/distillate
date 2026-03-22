@@ -30,7 +30,7 @@ Autonomous research platform: experiments, paper library, desktop IDE, and 9 alc
 - **Results tab**: runs grid, research insights (key breakthrough, lessons learned, dead ends)
 - **Session tab**: embedded xterm.js terminal attached to the running Claude Code session
 - **Control Panel**: metric chart with log scale toggle, export to PNG, session timer, goal chips
-- **Three session states**: active (green triangle), ready (blue circle), stopped (grey square)
+- **Session states**: running (green triangle), ready (purple circle), paused (gray square)
 - **Keyboard shortcuts**: Cmd+R refresh data, Cmd+Shift+R hard reload, Cmd+1-4 switch tabs, Cmd+E toggle sidebar, Cmd+K toggle chat
 - **Tab refresh on project switch**: Results and Prompt tabs update immediately when clicking a different project
 

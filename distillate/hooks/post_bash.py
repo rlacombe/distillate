@@ -21,6 +21,7 @@ Usage in ``.claude/settings.json``::
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -298,6 +299,8 @@ def _check_run_elapsed(project_root: Path) -> None:
 
 def main() -> None:
     """Entry point: reads PostToolUse event from stdin."""
+    if not os.environ.get("DISTILLATE_SESSION"):
+        return
     try:
         raw = sys.stdin.read()
         if not raw.strip():
