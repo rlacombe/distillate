@@ -3,16 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Distillate — Your research assistant in the terminal</title>
-  <meta name="description" content="An AI research assistant that lives in your terminal. Manages your Zotero library, extracts highlights, and helps you think across papers.">
-  <meta property="og:title" content="Distillate — Your research assistant in the terminal">
-  <meta property="og:description" content="An AI research assistant for your paper reading workflow. Zotero to structured notes — with a research alchemist to help.">
+  <title>Distillate — Your research alchemist</title>
+  <meta name="description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
+  <meta property="og:title" content="Distillate — Your research alchemist">
+  <meta property="og:description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
+  <meta property="og:image" content="https://distillate.dev/app-screenshot.png">
   <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
-  <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Distillate — Your research assistant in the terminal">
-  <meta name="twitter:description" content="An AI research assistant for your paper reading workflow. Zotero to structured notes — with a research alchemist to help.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Distillate — Your research alchemist">
+  <meta name="twitter:description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
+  <meta name="twitter:image" content="https://distillate.dev/app-screenshot.png">
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-KX9S2725MF"></script>
   <script>
@@ -23,14 +25,21 @@
   </script>
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <style>
+    /* ── Dark-first palette ────────────────────────── */
+
     :root {
-      --bg: #fafaf9;
-      --fg: #1c1917;
-      --muted: #78716c;
-      --accent: #b45309;
-      --border: #e7e5e4;
-      --code-bg: #f5f5f4;
-      --max-w: 640px;
+      --bg: #0f0f23;
+      --fg: #e0e0e8;
+      --muted: #8888a0;
+      --border: #2a2a3e;
+      --max-w: 960px;
+      --indigo: #818cf8;
+      --indigo-light: #a5b4fc;
+      --gold: #fbbf24;
+      --gold-light: #fcd34d;
+      --gold-bg: rgba(217, 119, 6, 0.12);
+      --gold-border: #3d3010;
+      --card-bg: #1a1a2e;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -46,7 +55,108 @@
     .container {
       max-width: var(--max-w);
       margin: 0 auto;
-      padding: 80px 0 64px;
+      padding: 40px 0 64px;
+    }
+
+    /* ── Hero (two-column) ────────────────────────── */
+
+    .hero {
+      display: grid;
+      grid-template-columns: 0.95fr 1.4fr;
+      gap: 0;
+      align-items: center;
+      margin-bottom: 56px;
+      padding-top: 16px;
+    }
+
+    .hero-flask {
+      display: inline-block;
+      position: relative;
+    }
+
+    .hero-flask img {
+      width: 56px;
+      height: 56px;
+      filter: drop-shadow(0 0 20px rgba(115, 102, 241, 0.7)) drop-shadow(0 0 44px rgba(115, 102, 241, 0.35));
+      animation: flask-glow 4s ease-in-out infinite;
+    }
+
+    @keyframes flask-glow {
+      0%, 100% { filter: drop-shadow(0 0 20px rgba(115, 102, 241, 0.7)) drop-shadow(0 0 44px rgba(115, 102, 241, 0.35)); }
+      50% { filter: drop-shadow(0 0 24px rgba(251, 191, 36, 0.6)) drop-shadow(0 0 48px rgba(115, 102, 241, 0.4)); }
+    }
+
+    .hero-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .hero-title h1 {
+      margin-bottom: 0;
+    }
+
+    /* ── Bubbling cauldron ─────────────────────────── */
+
+    .bubble {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--gold-light);
+      opacity: 0;
+      animation: bubble-rise 2.5s ease-out infinite;
+      left: 24px;
+    }
+
+    .bubble:nth-child(2) {
+      left: 18px;
+      width: 4px; height: 4px;
+      background: #818cf8;
+      animation: bubble-rise 3.2s ease-out 0.7s infinite;
+    }
+
+    .bubble:nth-child(3) {
+      left: 34px;
+      width: 5px; height: 5px;
+      background: #fbbf24;
+      animation: bubble-rise 2.8s ease-out 1.4s infinite;
+    }
+
+    .bubble:nth-child(4) {
+      left: 26px;
+      width: 5px; height: 5px;
+      background: #4ade80;
+      animation: bubble-rise 3.5s ease-out 0.3s infinite;
+    }
+
+    .bubble:nth-child(5) {
+      left: 20px;
+      width: 4px; height: 4px;
+      background: #e879f9;
+      animation: bubble-rise 2.2s ease-out 1.0s infinite;
+    }
+
+    .bubble:nth-child(6) {
+      left: 38px;
+      width: 3px; height: 3px;
+      background: #34d399;
+      animation: bubble-rise 3.0s ease-out 1.8s infinite;
+    }
+
+    .bubble:nth-child(7) {
+      left: 14px;
+      width: 4px; height: 4px;
+      background: #f472b6;
+      animation: bubble-rise 2.7s ease-out 0.5s infinite;
+    }
+
+    @keyframes bubble-rise {
+      0% { bottom: 44px; opacity: 0; transform: translateX(0); }
+      10% { opacity: 0.9; }
+      40% { opacity: 0.5; transform: translateX(5px); }
+      100% { bottom: 130px; opacity: 0; transform: translateX(-3px); }
     }
 
     h1 {
@@ -54,7 +164,7 @@
       font-size: 3.4rem;
       font-weight: 700;
       letter-spacing: -0.02em;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
       line-height: 1.1;
       background: linear-gradient(135deg, #7366f1 0%, #5a72f5 50%, #3b82f6 100%);
       -webkit-background-clip: text;
@@ -63,7 +173,7 @@
     }
 
     .tagline {
-      font-size: 1.15rem;
+      font-size: 1.4rem;
       font-weight: 500;
       color: var(--fg);
       margin-bottom: 8px;
@@ -71,23 +181,214 @@
     }
 
     .subtitle {
-      font-size: 0.95rem;
+      font-size: 1rem;
       color: var(--muted);
-      margin-bottom: 40px;
+      margin-bottom: 24px;
+      line-height: 1.5;
     }
+
+    .install-cmd {
+      display: inline-block;
+      background: rgba(99, 102, 241, 0.08);
+      color: var(--fg);
+      padding: 12px 24px;
+      border-radius: 10px;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.2), 0 0 48px rgba(99, 102, 241, 0.08);
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85rem;
+      margin-bottom: 8px;
+    }
+
+    .install-cmd .os-cmd { display: none; }
+    .install-cmd .os-cmd.active { display: inline; }
+
+    .os-toggle {
+      display: inline-flex;
+      gap: 0;
+      margin-bottom: 10px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      font-size: 0.78rem;
+    }
+    .os-toggle button {
+      background: transparent;
+      color: var(--dim);
+      border: none;
+      padding: 4px 14px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.2s, color 0.2s;
+    }
+    .os-toggle button.active {
+      background: rgba(99, 102, 241, 0.2);
+      color: var(--fg);
+    }
+    .os-toggle button:hover:not(.active) {
+      background: rgba(99, 102, 241, 0.08);
+    }
+
+    .hero-cta .install-links {
+      font-size: 0.82rem;
+    }
+
+    .hero-content {
+      padding-right: 24px;
+    }
+
+    .hero-screenshot {
+      width: 110%;
+      display: block;
+      margin-left: 0;
+    }
+
+    /* ── Vision ───────────────────────────────────── */
+
+    .vision {
+      margin-bottom: 48px;
+      margin-top: -16px;
+      padding: 0 4px;
+    }
+
+    .vision p {
+      font-size: 1.05rem;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .vision strong {
+      color: var(--fg);
+    }
+
+    /* ── Shared ────────────────────────────────────── */
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      margin-top: 0;
+    }
+
+    .section-sub {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 20px;
+    }
+
+    .section {
+      margin-bottom: 56px;
+    }
+
+    .section-icon {
+      font-size: 1.3rem;
+      margin-right: 6px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .grid-3 {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .card {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card-bg);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 12px rgba(99, 102, 241, 0.1);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 0.9rem;
+    }
+
+    .card .tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 500;
+      margin-bottom: 8px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-style: italic;
+    }
+
+    .tag-lab { color: #c4b5fd; background: rgba(139, 92, 246, 0.2); }
+    .tag-library { color: var(--gold); background: var(--gold-bg); }
+
+    .card p {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .card-hero {
+      grid-column: 1 / -1;
+      border: 1px solid transparent;
+      background-image: linear-gradient(var(--card-bg), var(--card-bg)), linear-gradient(135deg, #7366f1, #d97706);
+      background-origin: border-box;
+      background-clip: padding-box, border-box;
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.12), 0 0 40px rgba(217, 119, 6, 0.06);
+    }
+
+    /* ── How It Works ──────────────────────────────── */
+
+    .flow-steps {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .flow-step {
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card-bg);
+    }
+
+    .flow-step .step-icon {
+      font-size: 1.5rem;
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.95rem;
+    }
+
+    .flow-step p {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    /* ── Terminal mock ──────────────────────────────── */
 
     .terminal {
       background: #1c1917;
       border-radius: 12px;
-      margin-bottom: 32px;
-      box-shadow:
-        0 0 60px rgba(115, 102, 241, 0.12),
-        0 8px 32px rgba(0, 0, 0, 0.12);
+      padding: 0;
+      margin-bottom: 56px;
       overflow: hidden;
+      width: 60%;
+      margin-left: auto;
+      margin-right: auto;
+      box-shadow: 0 0 40px rgba(139, 92, 246, 0.3), 0 0 80px rgba(139, 92, 246, 0.15);
     }
 
     .terminal-bar {
-      background: #2a2725;
+      background: #292524;
       padding: 10px 16px;
       display: flex;
       align-items: center;
@@ -98,304 +399,114 @@
       width: 12px;
       height: 12px;
       border-radius: 50%;
+      background: #44403c;
     }
 
-    .terminal-dot.red { background: #ff5f56; }
-    .terminal-dot.yellow { background: #ffbd2e; }
-    .terminal-dot.green { background: #27c93f; }
+    .terminal-dot:nth-child(1) { background: #ef4444; }
+    .terminal-dot:nth-child(2) { background: #f59e0b; }
+    .terminal-dot:nth-child(3) { background: #22c55e; }
 
-    .terminal-title {
-      flex: 1;
-      text-align: center;
+    .terminal-body {
+      padding: 12px 20px;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.72rem;
-      color: #78716c;
-      margin-right: 52px;
+      font-size: 0.75rem;
+      line-height: 1.5;
+      color: #d6d3d1;
     }
 
-    .flow {
-      background: #1c1917;
-      border: none;
-      border-radius: 0;
-      padding: 20px 28px 24px;
-      margin-bottom: 0;
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.82rem;
-      line-height: 1.7;
-      color: #e7e5e4;
-      white-space: pre;
-      overflow-x: auto;
-    }
+    .terminal-body .prompt { color: #a78bfa; }
+    .terminal-body .cmd { color: #fbbf24; }
+    .terminal-body .dim { color: #78716c; }
+    .terminal-body .green { color: #4ade80; }
+    .terminal-body .gold { color: #fbbf24; }
 
-    .flow .prompt { color: #a78bfa; }
-    .flow .dim { color: #78716c; }
-    .flow .green { color: #86efac; }
-    .flow .bold { color: #fafaf9; font-weight: 600; }
+    /* ── Install / CTA ─────────────────────────────── */
 
-    .integration {
-      font-size: 0.85rem;
+    .install-primary {
+      display: inline-block;
+      background: #6366f1;
+      color: white;
+      padding: 14px 32px;
+      border-radius: 10px;
       text-decoration: none;
       font-weight: 600;
-      letter-spacing: 0.02em;
-      padding: 2px 8px;
-      border-radius: 4px;
-      transition: opacity 0.15s;
+      font-size: 1rem;
+      transition: opacity 0.15s, box-shadow 0.15s;
+      box-shadow: 0 0 24px rgba(99, 102, 241, 0.4);
     }
 
-    .integration:hover {
-      opacity: 0.7;
+    .install-primary:hover {
+      opacity: 0.9;
+      box-shadow: 0 0 32px rgba(99, 102, 241, 0.55);
     }
 
-    .install {
-      margin-bottom: 48px;
+    .install-links {
+      font-size: 0.85rem;
+      color: var(--muted);
     }
 
-    .install code {
-      display: block;
-      background: var(--fg);
-      color: var(--bg);
-      padding: 14px 20px;
-      border-radius: 8px;
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.9rem;
-      white-space: pre;
+    .install-links a {
+      color: var(--indigo);
+      text-decoration: none;
+      font-weight: 500;
     }
 
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin-bottom: 16px;
-      margin-top: 0;
+    .install-links a:hover {
+      text-decoration: underline;
     }
 
-    .steps {
-      margin-bottom: 48px;
-    }
+    /* ── CLI callout ───────────────────────────────── */
 
-    .step {
-      padding: 20px;
+    .cli-callout {
+      background: #0a0a1a;
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 56px;
+      color: #e7e5e4;
+      text-align: center;
       border: 1px solid var(--border);
+      box-shadow: 0 0 24px rgba(99, 102, 241, 0.15), 0 0 48px rgba(217, 119, 6, 0.06);
+    }
+
+    .cli-callout h2 {
+      color: #fafaf9;
+      margin-bottom: 6px;
+    }
+
+    .cli-callout p {
+      color: #a8a29e;
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+
+    .cli-callout code {
+      display: inline-block;
+      background: #141428;
+      color: #e7e5e4;
+      padding: 10px 24px;
       border-radius: 8px;
-      background: white;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      box-shadow: 0 0 24px rgba(99, 102, 241, 0.2), 0 0 56px rgba(217, 119, 6, 0.1);
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85rem;
       margin-bottom: 12px;
     }
 
-    .step-number {
-      display: inline-block;
-      width: 24px;
-      height: 24px;
-      background: #7366f1;
-      color: var(--bg);
-      border-radius: 50%;
-      text-align: center;
-      font-size: 0.75rem;
-      font-weight: 700;
-      line-height: 24px;
-      margin-right: 10px;
-      vertical-align: middle;
+    .cli-callout .install-links {
+      color: #a8a29e;
     }
 
-    .step strong {
-      font-size: 0.95rem;
-      vertical-align: middle;
+    .cli-callout .install-links a {
+      color: #a78bfa;
     }
 
-    .step p {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-top: 8px;
-      padding-left: 34px;
+    .cli-callout .req {
+      font-size: 0.8rem;
+      color: #78716c;
+      margin-top: 4px;
     }
 
-    .extras {
-      margin-bottom: 48px;
-    }
-
-    .extras-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }
-
-    @media (max-width: 480px) {
-      .extras-grid { grid-template-columns: 1fr; }
-      .container { padding: 48px 0 40px; }
-      h1 { font-size: 2.4rem; }
-      .flow { font-size: 0.7rem; }
-    }
-
-    .extra {
-      padding: 16px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: white;
-    }
-
-    .extra strong {
-      display: block;
-      margin-bottom: 2px;
-      font-size: 0.9rem;
-    }
-
-    .extra .extra-subtitle {
-      display: inline-block;
-      font-size: 0.75rem;
-      color: #6d28d9;
-      background: #ede9fe;
-      font-weight: 500;
-      margin-bottom: 8px;
-      padding: 2px 8px;
-      border-radius: 4px;
-    }
-
-    .extra span {
-      display: block;
-    }
-
-    .extras-optional .extra .extra-subtitle {
-      color: #1d4ed8;
-      background: #dbeafe;
-    }
-
-    .extra .extra-subtitle.extra-free {
-      color: #15803d;
-      background: #dcfce7;
-    }
-
-    .extra span {
-      font-size: 0.85rem;
-      color: var(--muted);
-    }
-
-    .commands {
-      margin-bottom: 48px;
-    }
-
-    .command-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-    }
-
-    .command {
-      display: flex;
-      align-items: baseline;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border);
-      gap: 16px;
-    }
-
-    .command:last-child {
-      border-bottom: none;
-    }
-
-    .command code {
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.85rem;
-      white-space: nowrap;
-      min-width: 260px;
-    }
-
-    .command span {
-      font-size: 0.85rem;
-      color: var(--muted);
-    }
-
-    @media (max-width: 480px) {
-      .command { flex-direction: column; gap: 2px; }
-      .command code { min-width: auto; }
-    }
-
-    .requires {
-      margin-bottom: 48px;
-    }
-
-    .requires table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-    }
-
-    .requires th {
-      text-align: left;
-      padding: 8px 12px;
-      border-bottom: 2px solid var(--border);
-      font-weight: 600;
-    }
-
-    .requires td {
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .requires td:nth-child(2) {
-      color: var(--muted);
-    }
-
-    .links {
-      display: flex;
-      justify-content: center;
-      gap: 24px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border);
-    }
-
-    .links a {
-      color: #7366f1;
-      text-decoration: none;
-      font-weight: 500;
-      font-size: 0.95rem;
-    }
-
-    .links a:hover {
-      text-decoration: underline;
-    }
-
-    .colophon {
-      margin-top: 48px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border);
-      font-size: 0.75rem;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    .github-cta {
-      text-align: center;
-      margin-bottom: 48px;
-    }
-
-    .star-btn {
-      display: inline-block;
-      background: var(--fg);
-      color: var(--bg);
-      padding: 10px 24px;
-      border-radius: 8px;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.95rem;
-      margin-bottom: 10px;
-      transition: opacity 0.15s;
-    }
-
-    .star-btn:hover {
-      opacity: 0.85;
-    }
-
-    .github-cta span {
-      display: block;
-      font-size: 0.85rem;
-      color: var(--muted);
-    }
-
-    .github-cta span a {
-      color: #7366f1;
-      text-decoration: none;
-    }
-
-    .github-cta span a:hover {
-      text-decoration: underline;
-    }
+    /* ── Newsletter ────────────────────────────────── */
 
     .newsletter {
       text-align: center;
@@ -403,7 +514,7 @@
       padding: 32px;
       border: 1px solid var(--border);
       border-radius: 12px;
-      background: white;
+      background: var(--card-bg);
     }
 
     .newsletter h2 {
@@ -432,15 +543,17 @@
       font-family: inherit;
       outline: none;
       transition: border-color 0.15s;
+      background: var(--bg);
+      color: var(--fg);
     }
 
     .newsletter input[type="email"]:focus {
-      border-color: #7366f1;
+      border-color: var(--indigo);
     }
 
     .newsletter button {
       padding: 10px 20px;
-      background: #7366f1;
+      background: #6366f1;
       color: white;
       border: none;
       border-radius: 8px;
@@ -450,6 +563,7 @@
       cursor: pointer;
       transition: opacity 0.15s;
       white-space: nowrap;
+      box-shadow: 0 0 16px rgba(99, 102, 241, 0.3);
     }
 
     .newsletter button:hover {
@@ -466,53 +580,69 @@
       margin-top: 10px;
     }
 
-    .newsletter .msg.ok { color: #15803d; }
-    .newsletter .msg.err { color: #dc2626; }
+    .newsletter .msg.ok { color: #4ade80; }
+    .newsletter .msg.err { color: #f87171; }
 
-    @media (max-width: 480px) {
-      .newsletter form { flex-direction: column; }
-    }
+    /* ── Footer ────────────────────────────────────── */
 
-    .badges {
+    .links {
       display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 48px;
+      justify-content: center;
+      gap: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
     }
 
-    .badge {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
+    .links a {
+      color: var(--indigo);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.95rem;
+    }
+
+    .links a:hover {
+      text-decoration: underline;
+    }
+
+    .colophon {
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
       font-size: 0.75rem;
-      font-weight: 600;
-      letter-spacing: 0.02em;
+      color: var(--muted);
+      line-height: 1.6;
     }
 
-    .badge-purple {
-      background: #ede9fe;
-      color: #6d28d9;
+    .colophon a {
+      color: var(--muted) !important;
+      text-decoration: underline;
     }
 
-    .badge-green {
-      background: #dcfce7;
-      color: #15803d;
-    }
-
-    .badge-blue {
-      background: #dbeafe;
-      color: #1d4ed8;
-    }
+    /* ── Banner ────────────────────────────────────── */
 
     .banner {
-      background: #7366f1;
+      position: relative;
+      overflow: hidden;
+      background: transparent;
       color: white;
       text-align: center;
-      padding: 6px 24px;
+      padding: 8px 24px;
       font-size: 0.8rem;
       font-weight: 500;
       letter-spacing: 0.01em;
       margin: 0 -24px;
+    }
+
+    .banner canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .banner-text {
+      position: relative;
+      z-index: 1;
     }
 
     .banner a {
@@ -521,157 +651,194 @@
       text-underline-offset: 2px;
     }
 
-    .extra-hero {
-      grid-column: 1 / -1;
-      background: #faf5ff;
-      border-color: #ddd6fe;
+    /* ── Responsive ────────────────────────────────── */
+
+    @media (max-width: 640px) {
+      .hero {
+        grid-template-columns: 1fr;
+        text-align: center;
+      }
+      .hero-title { justify-content: center; }
+      .hero-screenshot { width: 100%; }
+      .hero-cta { text-align: center; }
+      .grid { grid-template-columns: 1fr; }
+      .grid-3 { grid-template-columns: 1fr; }
+      .card-hero { grid-column: auto; }
+      .flow-steps { grid-template-columns: 1fr; }
+      h1 { font-size: 2.4rem; }
+      .newsletter form { flex-direction: column; }
     }
   </style>
 </head>
 <body>
-  <div class="banner">v0.6 &mdash; Now works without a reMarkable &mdash; <a href="https://github.com/rlacombe/distillate">try it out</a></div>
+  <div class="banner" id="banner"><span class="banner-text">Research preview v0.314.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
   <div class="container">
-    <h1><img src="logo.svg" alt="" width="48" height="48" style="vertical-align: -6px; margin-right: 12px;">Distillate</h1>
-    <p class="tagline">A research alchemist in your terminal.</p>
-    <p class="subtitle">Save to Zotero. Read on your reMarkable or any device. Distillate does the rest.</p>
+
+    <!-- ── Hero ────────────────────────────────────── -->
+
+    <div class="hero">
+      <div class="hero-content">
+        <div class="hero-title">
+          <div class="hero-flask">
+            <img src="logo.svg" alt="Distillate flask">
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+            <span class="bubble"></span>
+          </div>
+          <h1>Distillate</h1>
+        </div>
+        <p class="tagline">Your research alchemist.</p>
+        <p class="subtitle">Conjure ML experiments that run themselves. Distill insights from everything you read.</p>
+        <div class="hero-cta" id="download">
+          <div class="os-toggle" id="os-toggle">
+            <button data-os="mac" class="active">macOS</button>
+            <button data-os="win">Windows</button>
+          </div>
+          <code class="install-cmd" style="margin-bottom:12px;"><span class="os-cmd active" data-os="mac">$ pip install distillate<br><span style="opacity:0.5;">$ cd desktop &amp;&amp; npm run install:mac</span></span><span class="os-cmd" data-os="win">&gt; pip install distillate<br><span style="opacity:0.5;">&gt; cd desktop; npm run install:win</span></span></code>
+          <p class="install-links"><a href="https://github.com/rlacombe/distillate">GitHub</a> &ensp;&middot;&ensp; Powered by <a href="https://claude.ai/claude-code">Claude Code</a></p>
+        </div>
+      </div>
+      <img src="app-screenshot.png" alt="Distillate desktop app showing experiment tracking, metric charts, and paper library" class="hero-screenshot">
+    </div>
+
+    <!-- ── Vision ────────────────────────────────────── -->
+
+    <div class="vision">
+      <p><strong>Research should move at the speed of your ideas, not your keyboard.</strong> Distillate turns your research questions into autonomous research agents. Describe a hypothesis, and Nicolas &mdash; your research alchemist &mdash; spawns an agent to test it. The agent runs experiments, climbs gradients, and reports what it finds. Meanwhile, your paper library stays organized, extracting highlights and distilling insights. What you read informs what you try. What you try informs what you read next.</p>
+    </div>
+
+    <!-- ── The Laboratory ──────────────────────────── -->
+
+    <div class="section">
+      <h2><span class="section-icon">🧪</span> The Laboratory</h2>
+      <p class="section-sub">Spawn research agents. Steer them. Distill results.</p>
+      <div class="grid">
+        <div class="card card-hero">
+          <strong>/conjure</strong>
+          <em class="tag tag-lab">Summon a research agent</em>
+          <p>Describe a research question. Nicolas sets up a git repo, drafts a prompt, and spawns an autonomous research agent with a time budget.</p>
+        </div>
+        <div class="card">
+          <strong>/steer</strong>
+          <em class="tag tag-lab">Steer a running agent</em>
+          <p>Adjust goals, write steering instructions, or change direction based on early results.</p>
+        </div>
+        <div class="card">
+          <strong>/assay</strong>
+          <em class="tag tag-lab">Deep analysis</em>
+          <p>Compare runs side-by-side, identify what moved the needle, and understand why certain approaches worked.</p>
+        </div>
+        <div class="card">
+          <strong>/distill</strong>
+          <em class="tag tag-lab">Extract insights</em>
+          <p>Distill an experiment's full session history into key findings. Zero API calls &mdash; works from local logs.</p>
+        </div>
+        <div class="card">
+          <strong>/survey</strong>
+          <em class="tag tag-lab">Scan all experiments</em>
+          <p>Quick overview of every experiment &mdash; new runs, breakthroughs, stuck agents, and what needs attention.</p>
+        </div>
+        <div class="card">
+          <strong>/transmute</strong>
+          <em class="tag tag-lab">Papers &rarr; experiments</em>
+          <p>Turn paper insights into experiment ideas. Replicate results, test a variation, or apply a technique to your domain.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── The Library ───────────────────────────── -->
+
+    <div class="section">
+      <h2><span class="section-icon">📚</span> The Library</h2>
+      <p class="section-sub">Read, highlight, synthesize across your collection.</p>
+      <div class="grid grid-3">
+        <div class="card">
+          <strong>/brew</strong>
+          <em class="tag tag-library">Sync library</em>
+          <p>Sync papers from Zotero, extract highlights from any reading device, generate AI summaries, and refresh your notes.</p>
+        </div>
+        <div class="card">
+          <strong>/forage</strong>
+          <em class="tag tag-library">Discover papers</em>
+          <p>Browse trending research from HuggingFace, get personalized reading suggestions, and add papers to your queue.</p>
+        </div>
+        <div class="card">
+          <strong>/tincture</strong>
+          <em class="tag tag-library">Deep extraction</em>
+          <p>Focus on a single paper &mdash; extract key methods, results, and implications from your highlights and margin notes.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── How It Works ────────────────────────────── -->
+
+    <div class="section">
+      <h2>How It Works</h2>
+      <p class="section-sub">The research loop: read, experiment, learn, repeat.</p>
+      <div class="flow-steps">
+        <div class="flow-step">
+          <span class="step-icon">📜</span>
+          <strong>Add papers</strong>
+          <p>Save papers to Zotero. Read and highlight on any device &mdash; reMarkable, iPad, desktop. Nicolas extracts everything and builds your knowledge base.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-icon">⚗️</span>
+          <strong>Conjure experiment</strong>
+          <p>Describe a hypothesis or point at a paper. Nicolas sets up a git repo, drafts the prompt, and spawns an autonomous research agent with a time budget.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-icon">🔬</span>
+          <strong>Distill insights</strong>
+          <p>Every run is tracked with metrics, diffs, and decisions. Distill the results to see what worked, what failed, and why.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-icon">✨</span>
+          <strong>Transmute findings</strong>
+          <p>Connect paper insights to experiment results. What you read informs what you try. The cycle continues, and knowledge compounds.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Open source ─────────────────────────────── -->
+
+    <div style="text-align:center; margin-bottom:32px;">
+      <h2>Open-source at the core</h2>
+      <p class="section-sub">The CLI powers everything. The desktop app is a window into it.</p>
+      <code class="install-cmd">$ pip install distillate</code>
+    </div>
+
+    <!-- ── Terminal Mock ───────────────────────────── -->
 
     <div class="terminal">
       <div class="terminal-bar">
-        <span class="terminal-dot red"></span>
-        <span class="terminal-dot yellow"></span>
-        <span class="terminal-dot green"></span>
-        <span class="terminal-title">distillate</span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
       </div>
-      <div class="flow"><span class="prompt">$</span> distillate
-
-  <span class="dim">───</span> ⚗️  <span class="bold">Nicolas</span> <span class="dim">──────────────────────────────</span>
-  <span class="dim">42 papers read · 7 in queue</span>
-  <span class="dim">Your research alchemist. Type /help or /quit.</span>
-
-<span class="prompt">&gt;</span> What should I read next?
-
-  <span class="green">🔮 Consulting the oracle</span>
-
-  Based on your recent interest in multimodal agents,
-  I'd suggest <span class="bold">ReAct</span> [3] — a complementary
-  approach to what you highlighted in <span class="bold">Toolformer</span>.
-  It's been in your queue the longest at 12 days.</div>
-    </div>
-
-    <div class="badges">
-      <span class="badge badge-purple">PyPI v0.7.0</span>
-      <span class="badge badge-blue">Python 3.10+</span>
-      <span class="badge badge-green">MIT License</span>
-    </div>
-
-    <div class="install">
-      <p style="font-size: 0.9rem; color: var(--muted); margin-bottom: 10px;">Try it out:</p>
-      <code>$ uv tool install distillate
-$ distillate --init</code>
-    </div>
-
-    <div class="github-cta">
-      <a href="https://github.com/rlacombe/distillate" class="star-btn">Star on GitHub</a>
-      <span>Questions or ideas? <a href="https://github.com/rlacombe/distillate/discussions">Start a discussion</a></span>
-    </div>
-
-    <div class="steps">
-      <h2>How it works</h2>
-      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Save. Read. Highlight. Ask.</p>
-
-      <div class="step">
-        <span class="step-number">1</span>
-        <strong>Save a paper to Zotero</strong>
-        <p>Use the Zotero browser connector, mobile app, or ask Nicolas to add a paper by arXiv ID or URL.</p>
-      </div>
-
-      <div class="step">
-        <span class="step-number">2</span>
-        <strong>Read and highlight</strong>
-        <p>On your reMarkable tablet, or on any device with the Zotero app — iPad, Android, desktop.</p>
-      </div>
-
-      <div class="step">
-        <span class="step-number">3</span>
-        <strong>Highlights become structured notes</strong>
-        <p>Just move the paper to your Read folder on reMarkable, or tag it "read" in Zotero. Distillate extracts highlights, generates a summary, and saves a markdown note.</p>
-      </div>
-
-      <div class="step">
-        <span class="step-number">4</span>
-        <strong>Ask Nicolas anything about your library</strong>
-        <p>Search papers, compare findings, get reading suggestions, check stats — all in natural language from your terminal.</p>
+      <div class="terminal-body">
+        <span class="dim">$ distillate</span><br><br>
+        <span class="dim">  ─── ⚗️  Nicolas ──────────────────────────────</span><br>
+        <span class="dim">  Your research alchemist.</span><br>
+        <span class="dim">  🧪 4 experiments · 12 runs · 1 running</span><br>
+        <span class="dim">  📚 42 papers read · 7 in queue</span><br>
+        <span class="dim">  ──────────────────────────────────────────────</span><br><br>
+        <span class="prompt">&gt;</span> <span class="cmd">/conjure tiny-matmul --duration 30m</span><br><br>
+        <span class="dim">  🧪 Spawning research agent...</span><br>
+        <span class="green">  Created distillate-xp-tiny-matmul</span><br>
+        <span class="dim">  Research agent spawned — 30 min budget, will report when done.</span><br><br>
+        <span class="prompt">&gt;</span> <span class="cmd">/distill tiny-matmul</span><br><br>
+        <span class="dim">  🔬 Distilling 8 runs...</span><br>
+        <span class="gold">  Best: run-7 (loss 0.0023, -42% from baseline)</span><br>
+        <span class="dim">  Key insight: block size 64 with gradient accumulation</span><br>
+        <span class="dim">  outperforms larger batches on this scale.</span>
       </div>
     </div>
 
-    <div class="extras">
-      <h2>Built in</h2>
-      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">An open-source CLI. No accounts, no cloud, your notes stay on your machine.</p>
-      <div class="extras-grid">
-        <div class="extra extra-hero">
-          <strong>⚗️ Meet Nicolas</strong>
-          <em class="extra-subtitle">Interactive agent</em>
-          <span>Named after Nicolas Flamel, the legendary alchemist. Ask him about your library in natural language — he searches papers, synthesizes across your highlights, suggests what to read next, and adds papers to Zotero.</span>
-        </div>
-        <div class="extra">
-          <strong>Local-first</strong>
-          <em class="extra-subtitle">Plain files you own</em>
-          <span>Markdown notes and PDFs on your machine. No accounts, no subscriptions, no lock-in. Works with Obsidian or any folder.</span>
-        </div>
-        <div class="extra">
-          <strong>Zotero Round-Trip</strong>
-          <em class="extra-subtitle">Highlights sync back</em>
-          <span>Highlights flow back to Zotero as searchable annotations, visible in the built-in PDF reader and mobile apps.</span>
-        </div>
-        <div class="extra">
-          <strong>Handwritten notes</strong>
-          <em class="extra-subtitle">reMarkable</em>
-          <span>Handwritten margin notes rendered as ink on your PDFs, with typed text extracted. Works on RM1, RM2, and Paper Pro.</span>
-        </div>
-        <div class="extra">
-          <strong>Citekey rename</strong>
-          <em class="extra-subtitle">Automatic</em>
-          <span>When metadata changes in Zotero, notes and PDFs are renamed to match. No orphaned files or broken links.</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="extras extras-optional">
-      <h2>Plug in what you need</h2>
-      <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; margin-top: -8px;">Optional features you can enable with an API key or a config flag.</p>
-      <div class="extras-grid">
-        <div class="extra">
-          <strong>AI summaries</strong>
-          <em class="extra-subtitle">Anthropic API</em>
-          <span>One-liner, key learnings, and a paragraph summary for each paper you read.</span>
-        </div>
-        <div class="extra">
-          <strong>Handwriting extraction</strong>
-          <em class="extra-subtitle">Claude Vision &middot; reMarkable</em>
-          <span>Margin notes transcribed via Claude and woven into your AI summary. Your thinking becomes part of your notes.</span>
-        </div>
-        <div class="extra">
-          <strong>Trending papers</strong>
-          <em class="extra-subtitle extra-free">HuggingFace</em>
-          <span>Browse what's trending in AI research. Included in daily emails and available via the agent.</span>
-        </div>
-        <div class="extra">
-          <strong>Smart metadata</strong>
-          <em class="extra-subtitle extra-free">Semantic Scholar</em>
-          <span>Auto-completes publication dates, venues, and citation counts from Semantic Scholar when Zotero data is incomplete.</span>
-        </div>
-        <div class="extra">
-          <strong>Collection filtering</strong>
-          <em class="extra-subtitle extra-free">Zotero collections</em>
-          <span>Scope Distillate to a specific Zotero collection instead of scanning your entire library.</span>
-        </div>
-        <div class="extra">
-          <strong>Email digest</strong>
-          <em class="extra-subtitle extra-free">Free Resend account</em>
-          <span>Daily paper suggestions and weekly reading logs, delivered to your inbox.</span>
-        </div>
-      </div>
-    </div>
+    <!-- ── Newsletter ──────────────────────────────── -->
 
     <div class="newsletter">
       <h2>Stay in the loop</h2>
@@ -683,44 +850,117 @@ $ distillate --init</code>
       <p id="nl-msg" class="msg" style="display:none;"></p>
     </div>
 
-    <div class="commands">
-      <h2>Commands</h2>
-      <div class="command-list">
-        <div class="command"><code>distillate</code><span>Launch the research assistant (default)</span></div>
-        <div class="command"><code>distillate "What's in my queue?"</code><span>Ask a one-off question</span></div>
-        <div class="command"><code>distillate --sync</code><span>Sync papers and generate notes</span></div>
-        <div class="command"><code>distillate --import</code><span>Import existing papers from Zotero</span></div>
-        <div class="command"><code>distillate --status</code><span>Show queue health and reading stats</span></div>
-        <div class="command"><code>distillate --suggest</code><span>Get paper suggestions for your queue</span></div>
-        <div class="command"><code>distillate --digest</code><span>Show your reading digest</span></div>
-        <div class="command"><code>distillate --schedule</code><span>Set up or manage automatic syncing</span></div>
-        <div class="command"><code>distillate --init</code><span>Run the setup wizard</span></div>
-      </div>
-    </div>
-
-    <div class="requires">
-      <h2>What you need</h2>
-      <table>
-        <tr><th>Component</th><th>Notes</th><th></th></tr>
-        <tr><td><a href="https://www.zotero.org/" class="integration" style="color:#cc2936;background:#fef2f2;">Zotero</a></td><td>Manages your paper library</td><td><span class="badge badge-green">Free</span></td></tr>
-        <tr><td><a href="https://remarkable.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">reMarkable</a></td><td>Read on tablet with ink &amp; handwriting (uses <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);">rmapi</a>)</td><td><span class="badge badge-blue">Optional</span></td></tr>
-        <tr><td><a href="https://www.anthropic.com/" class="integration" style="color:#c96442;background:#fff7ed;">Anthropic</a></td><td>Powers the agent, summaries, handwriting OCR, and suggestions</td><td><span class="badge badge-blue">Optional</span></td></tr>
-        <tr><td><a href="https://obsidian.md/" class="integration" style="color:#7c3aed;background:#ede9fe;">Obsidian</a></td><td>Where notes are saved locally</td><td><span class="badge badge-blue">Optional</span></td></tr>
-        <tr><td><a href="https://resend.com/" class="integration" style="color:#1a1a1a;background:#f5f5f4;">Resend</a></td><td>For weekly digest emails</td><td><span class="badge badge-blue">Optional</span></td></tr>
-      </table>
-    </div>
+    <!-- ── Footer ──────────────────────────────────── -->
 
     <div class="links">
       <a href="https://github.com/rlacombe/distillate">GitHub</a>
       <a href="https://pypi.org/project/distillate/">PyPI</a>
-      <a href="https://github.com/rlacombe/distillate#install">Install guide</a>
-      <a href="https://github.com/rlacombe/distillate#usage">Documentation</a>
+      <a href="https://github.com/rlacombe/distillate#quick-start">Install guide</a>
+      <a href="https://github.com/rlacombe/distillate#skills">Documentation</a>
       <a href="power-users.html">Power users guide</a>
     </div>
 
-    <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe" style="color:var(--muted);text-decoration:underline;">Romain Lacombe</a>. Powered by <a href="https://github.com/ddvk/rmapi" style="color:var(--muted);text-decoration:underline;">rmapi</a>, <a href="https://github.com/ricklupton/rmscene" style="color:var(--muted);text-decoration:underline;">rmscene</a>, <a href="https://pymupdf.readthedocs.io/" style="color:var(--muted);text-decoration:underline;">PyMuPDF</a>, and <a href="https://claude.ai/claude-code" style="color:var(--muted);text-decoration:underline;">Claude Code</a>.</p>
+    <p class="colophon" style="text-align:center;">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>.</p>
   </div>
   <script>
+    // ── OS detection + install command toggle ────
+    (function() {
+      const isWin = /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent);
+      const defaultOS = isWin ? "win" : "mac";
+
+      function setOS(os) {
+        document.querySelectorAll(".os-cmd").forEach(el => {
+          el.classList.toggle("active", el.dataset.os === os);
+        });
+        document.querySelectorAll(".os-toggle button").forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.os === os);
+        });
+      }
+
+      setOS(defaultOS);
+
+      const toggle = document.getElementById("os-toggle");
+      if (toggle) {
+        toggle.addEventListener("click", function(e) {
+          const btn = e.target.closest("button[data-os]");
+          if (btn) setOS(btn.dataset.os);
+        });
+      }
+    })();
+
+    // ── Banner aurora ────────────────────────────
+    (function() {
+      const banner = document.getElementById("banner");
+      const c = document.createElement("canvas");
+      const ctx = c.getContext("2d");
+      banner.insertBefore(c, banner.firstChild);
+
+      function resize() {
+        c.width = banner.offsetWidth * devicePixelRatio;
+        c.height = banner.offsetHeight * devicePixelRatio;
+        ctx.scale(devicePixelRatio, devicePixelRatio);
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      const W = () => banner.offsetWidth;
+      const H = () => banner.offsetHeight;
+      const cold = [
+        [139, 92, 246],   // vivid violet
+        [34, 211, 153],   // bright emerald
+        [99, 102, 241],   // indigo
+        [52, 211, 153],   // sea green
+        [168, 85, 247],   // electric purple
+        [56, 189, 248],   // sky blue
+        [59, 130, 246],   // royal blue
+        [96, 165, 250],   // cornflower
+      ];
+      const warm = [
+        [236, 72, 153],   // hot pink
+        [245, 158, 11],   // bright amber
+        [219, 39, 119],   // magenta
+        [251, 146, 60],   // vivid orange
+      ];
+      function shuffle(arr) {
+        const a = arr.slice();
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      }
+      function makeBlob(color) {
+        return {
+          phase: Math.random(),
+          color: color,
+          speed: (0.08 + Math.random() * 0.08) * (Math.random() < 0.5 ? 1 : -1),
+        };
+      }
+      // Always pick 2-3 cold and 2 warm, all distinct
+      const coldPicks = shuffle(cold).slice(0, 2 + Math.round(Math.random()));
+      const warmPicks = shuffle(warm).slice(0, 2);
+      const blobs = coldPicks.concat(warmPicks).map(makeBlob);
+
+      function draw(t) {
+        const w = W(), h = H();
+        ctx.clearRect(0, 0, w, h);
+        // transparent — blobs render directly on page bg
+
+        for (const b of blobs) {
+          const x = (0.5 + Math.sin(t * b.speed * 0.001 + b.phase * Math.PI * 2) * 0.5) * w;
+          const r = h * 20;
+          const g = ctx.createRadialGradient(x, h / 2, 0, x, h / 2, r);
+          g.addColorStop(0, "rgba(" + b.color.join(",") + ", 0.5)");
+          g.addColorStop(0.3, "rgba(" + b.color.join(",") + ", 0.18)");
+          g.addColorStop(1, "transparent");
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, w, h);
+        }
+        requestAnimationFrame(draw);
+      }
+      requestAnimationFrame(draw);
+    })();
+
     document.getElementById("newsletter-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const btn = e.target.querySelector("button");

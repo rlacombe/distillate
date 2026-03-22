@@ -1,8 +1,8 @@
-"""Core conversation logic for the Distillate agent.
+"""Core agent infrastructure for Distillate.
 
-Yields typed event dicts that any frontend (terminal REPL, WebSocket
-server, etc.) can consume for rendering.  No direct I/O — all output
-goes through yielded events.
+Shared constants (tool labels, verbose tools), system prompt builder,
+tool executor, and helpers used by both the CLI REPL (via ``agent_sdk``)
+and the MCP server.
 """
 
 import json
@@ -20,10 +20,6 @@ log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_STEPS = 5
-MAX_TOKENS = 2048
-CONVERSATION_TRIM_THRESHOLD = 40
-CONVERSATION_KEEP = 24
 MAX_TOOL_RESULT_CHARS = 12000
 
 VERBOSE_TOOLS = frozenset({
@@ -31,6 +27,7 @@ VERBOSE_TOOLS = frozenset({
     "add_paper_to_zotero", "refresh_metadata",
     "scan_project", "add_project", "init_experiment",
     "continue_experiment", "sweep_experiment",
+    "manage_session", "replicate_paper",
 })
 
 TOOL_LABELS = {
@@ -65,6 +62,21 @@ TOOL_LABELS = {
     "continue_experiment": "\U0001F504 Continuing experiment",
     "sweep_experiment": "\U0001F9F9 Launching sweep",
     "steer_experiment": "\U0001F9E7 Steering the experiment",
+    "compare_projects": "\u2696\ufe0f Comparing experiments",
+    "queue_sessions": "\U0001F4CB Queuing sessions",
+    "list_templates": "\U0001F4C4 Listing templates",
+    "save_template": "\U0001F4BE Saving template",
+    "create_github_repo": "\U0001F4E4 Creating GitHub repo",
+    "reading_report": "\U0001F4CA Compiling reading report",
+    "manage_session": "\U0001F3AC Managing session",
+    "replicate_paper": "\U0001F9EA Scaffolding from paper",
+    "suggest_from_literature": "\U0001F4DA Mining the literature",
+    "extract_baselines": "\U0001F4CF Extracting baselines",
+    "save_enrichment": "\U0001F4A1 Saving research insights",
+    "start_run": "\U0001F3C1 Starting run",
+    "conclude_run": "\U0001F3C1 Concluding run",
+    "purge_hook_runs": "\U0001F9F9 Purging spurious runs",
+    "discover_relevant_papers": "\U0001F517 Finding related papers",
 }
 
 
@@ -83,43 +95,6 @@ TOOL_SCHEMAS = _build_tool_schemas()
 def tool_label(name: str) -> str:
     """Human-friendly label for a tool invocation."""
     return TOOL_LABELS.get(name, name.replace("_", " ").title())
-
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
-_AGENT_MODEL = None  # resolved lazily after config is loaded
-
-
-def get_model() -> str:
-    global _AGENT_MODEL
-    if _AGENT_MODEL is None:
-        _AGENT_MODEL = config.CLAUDE_AGENT_MODEL
-    return _AGENT_MODEL
-
-
-def create_client():
-    """Create an Anthropic client based on available credentials.
-
-    Returns ``None`` when no credentials are configured.
-
-    * ``DISTILLATE_AUTH_TOKEN`` + ``DISTILLATE_API_URL`` → cloud proxy
-    * ``ANTHROPIC_API_KEY`` → direct Anthropic (CLI power users)
-    """
-    try:
-        import anthropic
-    except ImportError:
-        return None
-
-    if config.DISTILLATE_AUTH_TOKEN and config.DISTILLATE_API_URL:
-        return anthropic.Anthropic(
-            api_key=config.DISTILLATE_AUTH_TOKEN,
-            base_url=config.DISTILLATE_API_URL,
-        )
-    if config.ANTHROPIC_API_KEY:
-        return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +150,36 @@ def _experiments_section(state: State, updates: list[dict] | None = None) -> str
     lines = ["## Lab"]
     for proj in projects.values():
         runs = proj.get("runs", {})
-        completed = sum(1 for r in runs.values() if r.get("status") == "completed")
-        line = (
-            f"- {proj.get('name', '?')}: {len(runs)} runs "
-            f"({completed} completed)"
-        )
+        kept = sum(1 for r in runs.values()
+                   if (r.get("decision") or r.get("status", "")) == "keep")
+        discarded = sum(1 for r in runs.values()
+                        if (r.get("decision") or r.get("status", "")) == "discard")
+
+        # Session status
+        sessions = proj.get("sessions", {})
+        has_session = any(s.get("status") == "running" for s in sessions.values())
+        has_active_run = any(r.get("status") == "running" for r in runs.values())
+
+        parts = [f"{len(runs)} runs"]
+        if kept:
+            parts.append(f"{kept} kept")
+        if discarded:
+            parts.append(f"{discarded} discarded")
+
+        line = f"- {proj.get('name', '?')}: {', '.join(parts)}"
+
+        if has_session and has_active_run:
+            line += " — running"
+        elif has_session:
+            line += " — ready"
+        else:
+            line += " — paused"
+
+        # Linked papers
+        linked = proj.get("linked_papers", [])
+        if linked:
+            line += f" [papers: {len(linked)}]"
+
         n_new = update_map.get(proj.get("id", ""), 0)
         if n_new:
             line += f" — {n_new} new commit{'s' if n_new != 1 else ''} since last scan"
@@ -221,6 +221,32 @@ def build_system_prompt(
     recent_section = "\n".join(recent_lines) if recent_lines else "(none this week)"
     tags_section = ", ".join(top_tags) if top_tags else "(not enough data yet)"
 
+    # Queue snapshot for instant answers (no tool call needed)
+    queue_lines = []
+    if queue:
+        # Sort by upload date, newest first
+        sorted_q = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)
+        # Newest 5
+        for doc in sorted_q[:5]:
+            idx = state.index_of(doc.get("key", ""))
+            title = doc.get("title", "?")
+            days = (now - datetime.fromisoformat(doc.get("uploaded_at", now.isoformat()).replace("Z", "+00:00"))).days
+            queue_lines.append(f"- [{idx}] **{title}** ({days}d ago)")
+        # Promoted
+        promoted = [d for d in queue if d.get("promoted_at")]
+        if promoted:
+            queue_lines.append("Promoted:")
+            for doc in promoted[:3]:
+                idx = state.index_of(doc.get("key", ""))
+                queue_lines.append(f"- [{idx}] **{doc.get('title', '?')}**")
+        # Oldest
+        oldest = sorted_q[-1] if len(sorted_q) > 5 else None
+        if oldest:
+            idx = state.index_of(oldest.get("key", ""))
+            days = (now - datetime.fromisoformat(oldest.get("uploaded_at", now.isoformat()).replace("Z", "+00:00"))).days
+            queue_lines.append(f"Oldest: [{idx}] **{oldest.get('title', '?')}** ({days}d)")
+    queue_section = "\n".join(queue_lines) if queue_lines else "(empty)"
+
     experiments_identity = ""
     if config.EXPERIMENTS_ENABLED:
         experiments_identity = (
@@ -244,6 +270,30 @@ def build_system_prompt(
         "insights across papers."
     )
 
+    is_first_use = len(processed) == 0 and not state.projects
+
+    first_use_section = ""
+    if is_first_use:
+        first_use_section = (
+            "## First-Time User\n"
+            "This appears to be a fresh install \u2014 no papers and no experiments yet. "
+            "Give the user a warm welcome and help them get started. When they ask "
+            "what you can do, explain the two main features:\n"
+            "1. **Experiments**: Design and launch autonomous ML experiments that "
+            "run themselves. Click '+ New' in the sidebar or ask you to conjure one. "
+            "You'll draft a research prompt, set up tracking, and launch a Claude "
+            "Code agent that iterates on the problem autonomously.\n"
+            "2. **Paper library**: Connect a Zotero library to track reading, "
+            "extract highlights, and synthesize insights across papers. Set up "
+            "with `distillate --init` from the terminal.\n\n"
+            "Start with experiments \u2014 they work out of the box with just "
+            "Claude Code. The paper library needs Zotero credentials.\n\n"
+            "If they ask for an example, suggest a simple ML task like "
+            "\"Build a classifier for the Iris dataset\" or \"Train a small "
+            "language model on Shakespeare\" \u2014 something that runs in "
+            "minutes on a laptop.\n\n"
+        )
+
     return (
         "You are Nicolas, a research alchemist \u2014 named after Nicolas "
         "Flamel, the legendary alchemist. You are the command and control "
@@ -251,11 +301,14 @@ def build_system_prompt(
         + experiments_identity
         + papers_identity
         + "\n\n"
-        f"{_experiments_section(state, updates=experiment_updates)}"
+        + first_use_section
+        + f"{_experiments_section(state, updates=experiment_updates)}"
         "## Library\n"
         f"- {len(processed)} papers read, {len(queue)} in queue"
         f", {len(awaiting)} awaiting PDF\n"
         f"- This week: {len(recent)} papers read\n\n"
+        "## Queue Snapshot\n"
+        f"{queue_section}\n\n"
         "## Recent Reads\n"
         f"{recent_section}\n\n"
         "## Research Interests\n"
@@ -273,9 +326,8 @@ def build_system_prompt(
         + (
             "- When asked about experiments or projects, use the experiment "
             "tools (list_projects, get_project_details, compare_runs).\n"
-            "- Use launch_experiment to spawn a new auto-research session.\n"
-            "- Use experiment_status to check on running sessions.\n"
-            "- Use stop_experiment to gracefully stop a session.\n"
+            "- Use manage_session to start, stop, restart, continue, or check "
+            "status of experiment sessions.\n"
             "- Use add_project or scan_project to track a new directory.\n"
             "- Use compare_runs to show what changed between experiments.\n"
             "- Use rename_project, rename_run, update_project, update_goals, "
@@ -295,14 +347,32 @@ def build_system_prompt(
             "user-provided hypotheses take precedence over LLM enrichment.\n"
             "- Use delete_project/delete_run with confirm=false first, then "
             "confirm=true after user approval.\n"
+            "- Use replicate_paper when the user wants to reproduce a paper's "
+            "results \u2014 it reads the paper, clones its GitHub repo if "
+            "available, and scaffolds an experiment.\n"
+            "- Use suggest_from_literature to mine recent reads for steering "
+            "ideas \u2014 connects paper insights to running experiments.\n"
+            "- Use extract_baselines to pull reported metrics from papers "
+            "for setting experiment goals.\n"
+            "- When a user discusses a paper's technique in an experiment "
+            "context, use link_paper to connect them.\n"
+            "- Use suggest_from_literature when an experiment is stuck "
+            "\u2014 the user's reading may contain relevant techniques.\n"
+            "- When concluding a run that implements a paper's idea, set "
+            "inspired_by to credit the paper.\n"
+            "- Use discover_relevant_papers to find papers in the library "
+            "that may be relevant to an experiment's goals or methods.\n"
             if config.EXPERIMENTS_ENABLED else ""
         )
-        + "- Look up papers with tools before answering \u2014 don't guess "
-        "from memory. When the user asks about recent papers, their queue, "
-        "or what they added recently, call get_queue \u2014 it's sorted "
-        "newest-first with upload timestamps.\n"
+        + "- For quick queue questions (newest, oldest, promoted, count), "
+        "use the Queue Snapshot above \u2014 answer instantly, no tool call. "
+        "Only call get_queue for full listings or searches.\n"
         "- Show paper [index] numbers for easy reference.\n"
         "- **Bold paper titles** with markdown **title** for readability.\n"
+        "- NEVER use markdown tables \u2014 they render poorly. Use bullet "
+        "lists instead. Format paper lists as:\n"
+        "  - [42] **Paper Title** \u2014 brief note\n"
+        "  - [17] **Another Paper** \u2014 brief note\n"
         "- You may sprinkle one or two chemistry/alchemy emojis "
         "(\u2697\ufe0f \U0001F9EA \U0001F52C \u2728 \U0001F4DC) inline in a response "
         "\u2014 but NEVER start a message with an emoji. Keep them subtle.\n"
@@ -391,6 +461,21 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
             "continue_experiment": et.continue_experiment_tool,
             "sweep_experiment": et.sweep_experiment_tool,
             "steer_experiment": et.steer_experiment_tool,
+            "compare_projects": et.compare_projects_tool,
+            "queue_sessions": et.queue_sessions_tool,
+            "list_templates": et.list_templates_tool,
+            "save_template": et.save_template_tool,
+            "create_github_repo": et.create_github_repo_tool,
+            "reading_report": et.reading_report_tool,
+            "manage_session": et.manage_session_tool,
+            "replicate_paper": et.replicate_paper,
+            "suggest_from_literature": et.suggest_from_literature,
+            "extract_baselines": et.extract_baselines,
+            "save_enrichment": et.save_enrichment,
+            "start_run": et.start_run,
+            "conclude_run": et.conclude_run,
+            "purge_hook_runs": et.purge_hook_runs_tool,
+            "discover_relevant_papers": et.discover_relevant_papers,
         })
 
     fn = dispatch.get(name)
@@ -402,143 +487,3 @@ def execute_tool(name: str, input_data: dict, state: State) -> dict:
     except Exception as e:
         log.exception("Tool '%s' failed", name)
         return {"error": str(e)}
-
-
-def trim_conversation(conversation: list[dict]) -> None:
-    """Trim conversation to prevent context overflow.
-
-    Mutates *conversation* in place.
-    """
-    if len(conversation) <= CONVERSATION_TRIM_THRESHOLD:
-        return
-
-    trimmed = conversation[-CONVERSATION_KEEP:]
-    # Ensure conversation starts with a genuine user message — skip
-    # assistant messages AND orphaned tool_result messages.
-    while trimmed:
-        msg = trimmed[0]
-        if msg.get("role") == "assistant":
-            trimmed.pop(0)
-            continue
-        content = msg.get("content")
-        if (isinstance(content, list) and content
-                and isinstance(content[0], dict)
-                and content[0].get("type") == "tool_result"):
-            trimmed.pop(0)
-            continue
-        break
-    conversation[:] = trimmed
-
-
-# ---------------------------------------------------------------------------
-# Core conversation generator
-# ---------------------------------------------------------------------------
-
-def stream_turn(client, state, conversation, user_input, past_sessions=None,
-                experiment_updates=None):
-    """Yield event dicts for one conversation turn.
-
-    Appends messages to *conversation* in place (user message, assistant
-    responses, tool results).  Callers iterate over events to drive their
-    UI.
-
-    Events
-    ------
-    ``{"type": "text_delta", "text": str}``
-        A chunk of streamed assistant text.
-    ``{"type": "tool_start", "name": str, "input": dict,
-       "tool_use_id": str, "verbose": bool}``
-        A tool is about to execute.  The generator **pauses** here — the
-        caller can set up I/O interception before resuming.
-    ``{"type": "tool_done", "name": str, "result": dict,
-       "tool_use_id": str}``
-        A tool finished executing.
-    ``{"type": "turn_end"}``
-        The turn completed normally.
-    ``{"type": "error", "message": str, "category": str}``
-        An unrecoverable error.  Categories: ``credits_depleted``,
-        ``invalid_key``, ``overloaded``, ``rate_limited``, ``unknown``.
-    """
-    conversation.append({"role": "user", "content": user_input})
-    state.reload()
-
-    system_prompt = build_system_prompt(
-        state, past_sessions=past_sessions,
-        experiment_updates=experiment_updates,
-    )
-    tools = _build_tool_schemas()
-
-    for _step in range(MAX_TOOL_STEPS):
-        # --- API call (streaming) ---
-        try:
-            with client.messages.stream(
-                model=get_model(),
-                max_tokens=MAX_TOKENS,
-                system=system_prompt,
-                messages=conversation,
-                tools=tools,
-            ) as stream:
-                for event in stream:
-                    if (hasattr(event, "type")
-                            and event.type == "content_block_delta"
-                            and hasattr(event.delta, "text")):
-                        yield {"type": "text_delta", "text": event.delta.text}
-                response = stream.get_final_message()
-        except Exception as exc:
-            msg = str(exc)
-            if "credit balance is too low" in msg:
-                cat = "credits_depleted"
-            elif "authentication_error" in msg or "invalid x-api-key" in msg.lower():
-                cat = "invalid_key"
-            elif "overloaded" in msg:
-                cat = "overloaded"
-            elif "rate_limit" in msg:
-                cat = "rate_limited"
-            else:
-                cat = "unknown"
-            log.exception("Agent API call failed")
-            yield {"type": "error", "message": msg, "category": cat}
-            return
-
-        # --- Record assistant message ---
-        conversation.append({"role": "assistant", "content": response.content})
-
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        if not tool_uses:
-            break  # pure text response — done
-
-        # --- Execute tools ---
-        tool_results = []
-        for tool_use in tool_uses:
-            yield {
-                "type": "tool_start",
-                "name": tool_use.name,
-                "input": tool_use.input,
-                "tool_use_id": tool_use.id,
-                "verbose": tool_use.name in VERBOSE_TOOLS,
-            }
-
-            result = execute_tool(tool_use.name, tool_use.input, state)
-
-            result_json = json.dumps(result)
-            if len(result_json) > MAX_TOOL_RESULT_CHARS:
-                result = truncate_result(result, MAX_TOOL_RESULT_CHARS)
-                result_json = json.dumps(result)
-
-            yield {
-                "type": "tool_done",
-                "name": tool_use.name,
-                "result": result,
-                "tool_use_id": tool_use.id,
-            }
-
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool_use.id,
-                "content": result_json,
-            })
-
-        conversation.append({"role": "user", "content": tool_results})
-
-    trim_conversation(conversation)
-    yield {"type": "turn_end"}

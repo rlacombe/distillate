@@ -16,12 +16,12 @@
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <style>
     :root {
-      --bg: #fafaf9;
-      --fg: #1c1917;
-      --muted: #78716c;
-      --accent: #b45309;
-      --border: #e7e5e4;
-      --code-bg: #f5f5f4;
+      --bg: #0f0f23;
+      --fg: #e0e0e8;
+      --muted: #8888a0;
+      --accent: #818cf8;
+      --border: #2a2a3e;
+      --code-bg: #1a1a2e;
       --max-w: 640px;
     }
 
@@ -43,7 +43,7 @@
 
     .back {
       display: inline-block;
-      color: #7366f1;
+      color: var(--accent);
       text-decoration: none;
       font-size: 0.85rem;
       font-weight: 500;
@@ -96,10 +96,11 @@
     }
 
     pre {
-      background: var(--fg);
-      color: var(--bg);
+      background: var(--code-bg);
+      color: var(--fg);
       padding: 14px 20px;
       border-radius: 8px;
+      border: 1px solid var(--border);
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
       font-size: 0.82rem;
       line-height: 1.6;
@@ -164,8 +165,8 @@
     }
 
     .gotcha {
-      background: #fffbeb;
-      border: 1px solid #fde68a;
+      background: rgba(217, 119, 6, 0.08);
+      border: 1px solid rgba(217, 119, 6, 0.25);
       border-radius: 8px;
       padding: 14px 18px;
       margin-bottom: 16px;
@@ -175,14 +176,14 @@
     .gotcha strong {
       display: block;
       margin-bottom: 4px;
-      color: var(--accent);
+      color: #fbbf24;
       font-size: 0.8rem;
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
 
     a {
-      color: #7366f1;
+      color: var(--accent);
       text-decoration: none;
     }
 
@@ -197,6 +198,7 @@
       font-size: 0.75rem;
       color: var(--muted);
       line-height: 1.6;
+      text-align: center;
     }
 
     .colophon a {
@@ -204,11 +206,28 @@
       text-decoration: underline;
     }
 
+    .skill-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 16px;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+    }
+
+    .skill-grid code {
+      font-weight: 600;
+    }
+
+    .skill-grid span {
+      color: var(--muted);
+    }
+
     @media (max-width: 480px) {
       .container { padding: 32px 0 40px; }
       h1 { font-size: 1.8rem; }
       h2 { font-size: 1.2rem; }
       pre { font-size: 0.75rem; padding: 12px 14px; }
+      .skill-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -217,7 +236,79 @@
     <a href="https://distillate.dev" class="back">&larr; Back to distillate.dev</a>
 
     <h1>Power Users Guide</h1>
-    <p class="subtitle">Advanced configuration, automation, and troubleshooting.</p>
+    <p class="subtitle">CLI reference, skills, experiments, and advanced configuration.</p>
+
+    <!-- 0. Nicolas REPL -->
+    <h2>Nicolas &mdash; The CLI Agent</h2>
+
+    <p>Run <code>distillate</code> with no arguments to enter the Nicolas REPL &mdash; an interactive research agent powered by Claude Code. Nicolas can search your paper library, launch experiments, and synthesize insights across your work.</p>
+
+<pre><code>$ distillate
+─── ⚗️  Nicolas ──────────────────────────────
+Your research alchemist.
+🧪 4 experiments · 12 runs · 1 running
+📚 42 papers read · 7 in queue</code></pre>
+
+    <p>Single-turn mode: pass a query as an argument.</p>
+<pre><code>$ distillate "what papers discuss attention mechanisms?"</code></pre>
+
+    <h3>Skills</h3>
+
+    <p>Type a skill name in the REPL to invoke it. Skills are organized into two areas:</p>
+
+    <p><strong>Laboratory</strong> (experiments)</p>
+    <div class="skill-grid">
+      <code>/conjure</code> <span>Launch a new autonomous experiment</span>
+      <code>/steer</code> <span>Guide a running agent &mdash; adjust goals or direction</span>
+      <code>/assay</code> <span>Deep analysis of experiment results</span>
+      <code>/distill</code> <span>Extract insights from session histories</span>
+      <code>/survey</code> <span>Scan all experiments for new runs and breakthroughs</span>
+      <code>/transmute</code> <span>Turn paper insights into experiment ideas</span>
+    </div>
+
+    <p><strong>Library</strong> (papers)</p>
+    <div class="skill-grid">
+      <code>/brew</code> <span>Sync papers from Zotero, extract highlights, generate summaries</span>
+      <code>/forage</code> <span>Browse trending research, get reading suggestions</span>
+      <code>/tincture</code> <span>Deep extraction from a single paper</span>
+    </div>
+
+    <!-- 0b. Experiments -->
+    <h2>Experiments</h2>
+
+    <p>Distillate experiments are git repos where autonomous Claude Code agents run ML training loops. Each commit is one run. Results are tracked in <code>.distillate/runs.jsonl</code>.</p>
+
+    <h3>Launching an experiment</h3>
+
+<pre><code># In the Nicolas REPL:
+> /conjure tiny-matmul --duration 30m
+
+# Or via the CLI:
+$ distillate "conjure an experiment to classify sigma factors"</code></pre>
+
+    <p>This creates a git repo, writes <code>PROMPT.md</code> (what to optimize), installs <code>CLAUDE.md</code> (the agent protocol), and spawns a Claude Code session in tmux.</p>
+
+    <h3>Experiment structure</h3>
+
+    <ul>
+      <li><code>PROMPT.md</code> &mdash; describes the research question, target metric, and constraints</li>
+      <li><code>CLAUDE.md</code> &mdash; the autonomous agent protocol (run tracking, commit discipline, insight saving)</li>
+      <li><code>.distillate/runs.jsonl</code> &mdash; structured log of every run with metrics, hyperparameters, and reasoning</li>
+      <li><code>.distillate/llm_enrichment.json</code> &mdash; research insights (key breakthrough, lessons learned, dead ends)</li>
+      <li><code>RESULTS.md</code> &mdash; human-readable summary updated after each run</li>
+    </ul>
+
+    <h3>MCP tools</h3>
+
+    <p>Each experiment repo has a <code>.mcp.json</code> that connects the agent to Distillate's tool server. The agent uses these tools to track runs and save insights:</p>
+
+    <div class="skill-grid">
+      <code>start_run</code> <span>Announce a new run with description and hypothesis</span>
+      <code>conclude_run</code> <span>Record results with duration tracking</span>
+      <code>save_enrichment</code> <span>Save structured research insights</span>
+      <code>scan_project</code> <span>Sync run state with the desktop app</span>
+      <code>annotate_run</code> <span>Add notes or hypotheses to a specific run</span>
+    </div>
 
     <!-- 1. GitHub Actions Automation -->
     <h2>GitHub Actions Automation</h2>
@@ -253,7 +344,7 @@ $ gh gist list</code></pre>
       <tr><th>Secret</th><th>Description</th></tr>
       <tr><td><code>ZOTERO_API_KEY</code></td><td>Your Zotero API key</td></tr>
       <tr><td><code>ZOTERO_USER_ID</code></td><td>Your Zotero user ID</td></tr>
-      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>For AI-powered suggestions</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Optional &mdash; for AI-powered summaries in the sync pipeline</td></tr>
       <tr><td><code>RESEND_API_KEY</code></td><td>For sending emails</td></tr>
       <tr><td><code>DIGEST_TO</code></td><td>Your email address (recipient)</td></tr>
       <tr><td><code>DIGEST_FROM</code></td><td>Sender address (configured in Resend)</td></tr>
@@ -302,9 +393,9 @@ $ gh workflow run emails.yml -f command=--send-digest</code></pre>
 
     <p>Three components, weighted:</p>
     <ul>
-      <li><strong>Highlight density (30%)</strong> -- highlights per page, saturates at 1 highlight per page</li>
-      <li><strong>Page coverage (40%)</strong> -- fraction of pages that have at least one highlight</li>
-      <li><strong>Highlight volume (30%)</strong> -- absolute number of highlights, saturates at 20</li>
+      <li><strong>Highlight density (30%)</strong> &mdash; highlights per page, saturates at 1 highlight per page</li>
+      <li><strong>Page coverage (40%)</strong> &mdash; fraction of pages that have at least one highlight</li>
+      <li><strong>Highlight volume (30%)</strong> &mdash; absolute number of highlights, saturates at 20</li>
     </ul>
 
     <p>Each component is normalized to 0.0&ndash;1.0, then the weighted sum is scaled to 0&ndash;100:</p>
@@ -318,9 +409,9 @@ $ gh workflow run emails.yml -f command=--send-digest</code></pre>
     <p>Use <code>--reprocess</code> to re-extract highlights and regenerate notes for a paper that's already been processed. Common reasons:</p>
 
     <ul>
-      <li><strong>After enabling text recognition on reMarkable</strong> -- highlights made before text recognition was enabled won't have extractable text. Enable it, then reprocess.</li>
-      <li><strong>After upgrading distillate</strong> -- newer versions may have improved highlight extraction or note formatting.</li>
-      <li><strong>To regenerate AI summaries</strong> -- if you changed the model (see Custom AI Models below) or want fresh summaries.</li>
+      <li><strong>After enabling text recognition on reMarkable</strong> &mdash; highlights made before text recognition was enabled won't have extractable text. Enable it, then reprocess.</li>
+      <li><strong>After upgrading distillate</strong> &mdash; newer versions may have improved highlight extraction or note formatting.</li>
+      <li><strong>To regenerate AI summaries</strong> &mdash; if you changed the model (see Custom AI Models below) or want fresh summaries.</li>
     </ul>
 
 <pre><code># Substring match on the paper title
@@ -334,15 +425,15 @@ $ distillate --reprocess "Attention Is All"</code></pre>
     <p>Distillate uses two model tiers, configurable via environment variables in your <code>.env</code>:</p>
 
     <ul>
-      <li><strong><code>CLAUDE_SMART_MODEL</code></strong> (default: <code>claude-sonnet-4-5-20250929</code>) -- used for paper summaries and one-liner descriptions</li>
-      <li><strong><code>CLAUDE_FAST_MODEL</code></strong> (default: <code>claude-haiku-4-5-20251001</code>) -- used for paper suggestions and key learnings</li>
+      <li><strong><code>CLAUDE_SMART_MODEL</code></strong> (default: <code>claude-sonnet-4-5-20250929</code>) &mdash; used for paper summaries and one-liner descriptions</li>
+      <li><strong><code>CLAUDE_FAST_MODEL</code></strong> (default: <code>claude-haiku-4-5-20251001</code>) &mdash; used for paper suggestions and key learnings</li>
     </ul>
 
 <pre><code># In your .env file:
 CLAUDE_SMART_MODEL=claude-opus-4-6
 CLAUDE_FAST_MODEL=claude-sonnet-4-5-20250929</code></pre>
 
-    <p>Without <code>ANTHROPIC_API_KEY</code> set, AI features are skipped entirely and papers use their abstract as a fallback summary.</p>
+    <p>Without <code>ANTHROPIC_API_KEY</code> set, sync pipeline AI features (summaries, suggestions) use abstracts as fallback. The Nicolas agent uses Claude Code instead &mdash; no API key needed.</p>
 
     <!-- 5. Storage Management -->
     <h2>Storage Management</h2>
@@ -350,8 +441,8 @@ CLAUDE_FAST_MODEL=claude-sonnet-4-5-20250929</code></pre>
     <p>The <code>KEEP_ZOTERO_PDF</code> setting controls whether the original PDF stays in Zotero cloud after being uploaded to your reMarkable.</p>
 
     <ul>
-      <li><strong><code>true</code> (default)</strong> -- PDF remains in your Zotero library</li>
-      <li><strong><code>false</code></strong> -- PDF is deleted from Zotero cloud after it's confirmed saved locally and uploaded to reMarkable</li>
+      <li><strong><code>true</code> (default)</strong> &mdash; PDF remains in your Zotero library</li>
+      <li><strong><code>false</code></strong> &mdash; PDF is deleted from Zotero cloud after it's confirmed saved locally and uploaded to reMarkable</li>
     </ul>
 
 <pre><code># In your .env file:
@@ -372,8 +463,8 @@ LOG_LEVEL=DEBUG</code></pre>
 
     <p>Behavior depends on how distillate is running:</p>
     <ul>
-      <li><strong>Interactive terminal (TTY)</strong> -- debug output goes directly to the console</li>
-      <li><strong>Scheduled / non-TTY</strong> -- logs go to <code>~/.config/distillate/distillate.log</code></li>
+      <li><strong>Interactive terminal (TTY)</strong> &mdash; debug output goes directly to the console</li>
+      <li><strong>Scheduled / non-TTY</strong> &mdash; logs go to <code>~/.config/distillate/distillate.log</code></li>
     </ul>
 
     <p>Debug output includes: rmapi commands and responses, API call details, file read/write operations, and state changes. Useful for diagnosing issues like "why didn't my paper sync?" or "why are highlights missing?"</p>
@@ -381,11 +472,11 @@ LOG_LEVEL=DEBUG</code></pre>
     <!-- 7. State Sync and Backup -->
     <h2>State Sync and Backup</h2>
 
-    <p>Distillate tracks all your papers in a local <code>state.json</code> file. The <code>--sync-state</code> command uploads it to a private GitHub Gist, which enables two things:</p>
+    <p>Distillate tracks all your papers and experiments in a local <code>state.json</code> file. The <code>--sync-state</code> command uploads it to a private GitHub Gist, which enables two things:</p>
 
     <ul>
-      <li><strong>Cross-machine sync</strong> -- keep the same reading state on your laptop and desktop</li>
-      <li><strong>GitHub Actions automation</strong> -- the workflow reads state from the Gist (see first section)</li>
+      <li><strong>Cross-machine sync</strong> &mdash; keep the same reading state on your laptop and desktop</li>
+      <li><strong>GitHub Actions automation</strong> &mdash; the workflow reads state from the Gist (see first section)</li>
     </ul>
 
 <pre><code># Upload state to your Gist
@@ -394,7 +485,7 @@ $ distillate --sync-state</code></pre>
     <p>Requires <code>STATE_GIST_ID</code> and <code>GH_GIST_TOKEN</code> in your <code>.env</code>.</p>
 
     <h3>Corrupt state recovery</h3>
-    <p>If <code>state.json</code> becomes corrupted (malformed JSON), distillate automatically backs it up as <code>state.json.bak</code> and starts with a fresh state. No data is silently lost -- the backup file preserves whatever was there.</p>
+    <p>If <code>state.json</code> becomes corrupted (malformed JSON), distillate automatically backs it up as <code>state.json.bak</code> and starts with a fresh state. No data is silently lost &mdash; the backup file preserves whatever was there.</p>
 
     <h3>Manual inspection</h3>
     <p><code>state.json</code> is plain JSON. You can read it directly, pipe it through <code>jq</code>, or edit it if you know what you're doing:</p>
@@ -452,9 +543,9 @@ $ distillate --backfill-highlights 5</code></pre>
     <h3>What gets enriched</h3>
 
     <ul>
-      <li><strong>Publication date</strong> -- filled from S2 when Zotero has no date (fixes incomplete citekeys like <code>liu_embeddings</code> → <code>liu_embeddings_2024</code>)</li>
-      <li><strong>Venue</strong> -- journal or conference name, filled when Zotero's publication field is empty</li>
-      <li><strong>Citation counts</strong> -- total and influential citations, always updated from S2</li>
+      <li><strong>Publication date</strong> &mdash; filled from S2 when Zotero has no date (fixes incomplete citekeys like <code>liu_embeddings</code> &rarr; <code>liu_embeddings_2024</code>)</li>
+      <li><strong>Venue</strong> &mdash; journal or conference name, filled when Zotero's publication field is empty</li>
+      <li><strong>Citation counts</strong> &mdash; total and influential citations, always updated from S2</li>
     </ul>
 
     <p>Zotero is always the source of truth: S2 only fills empty fields, never overwrites existing data.</p>
@@ -470,7 +561,7 @@ $ distillate --backfill-highlights 5</code></pre>
     <!-- 10. Citekey Naming -->
     <h2>Citekey Naming</h2>
 
-    <p>Notes and annotated PDFs are named using citekeys -- short identifiers like <code>einstein_relativity_1905</code> instead of full paper titles. This makes filenames predictable and compatible with Obsidian plugins that use citekeys.</p>
+    <p>Notes and annotated PDFs are named using citekeys &mdash; short identifiers like <code>einstein_relativity_1905</code> instead of full paper titles. This makes filenames predictable and compatible with Obsidian plugins that use citekeys.</p>
 
     <h3>Better BibTeX integration</h3>
 
@@ -478,17 +569,17 @@ $ distillate --backfill-highlights 5</code></pre>
 
     <h3>Automatic fallback</h3>
 
-    <p>Without Better BibTeX, Distillate generates a citekey from the first author's surname, the first meaningful word of the title, and the year. Accented characters are normalized (e.g. Lála → Lala, Müller → Muller):</p>
+    <p>Without Better BibTeX, Distillate generates a citekey from the first author's surname, the first meaningful word of the title, and the year. Accented characters are normalized (e.g. L&aacute;la &rarr; Lala, M&uuml;ller &rarr; Muller):</p>
 
 <pre><code># "Attention Is All You Need" by Vaswani et al., 2017
-→ vaswani_attention_2017
+&rarr; vaswani_attention_2017
 
 # "Biology needs to become prospective" by Avasthi, 2026
-→ avasthi_biology_2026</code></pre>
+&rarr; avasthi_biology_2026</code></pre>
 
     <h3>Automatic rename</h3>
 
-    <p>When a paper's citekey changes -- because you edited the date in Zotero, or Semantic Scholar filled a missing year -- Distillate renames everything automatically:</p>
+    <p>When a paper's citekey changes &mdash; because you edited the date in Zotero, or Semantic Scholar filled a missing year &mdash; Distillate renames everything automatically:</p>
 
     <ul>
       <li>Note and PDF files in <code>Distillate/Saved/</code> and <code>Distillate/Inbox/</code></li>
@@ -497,19 +588,10 @@ $ distillate --backfill-highlights 5</code></pre>
       <li>Frontmatter fields (<code>citekey</code>, <code>pdf</code>)</li>
     </ul>
 
-    <h3>What changes</h3>
-
-    <ul>
-      <li>Notes are saved as <code>Distillate/Saved/vaswani_attention_2017.md</code></li>
-      <li>Annotated PDFs as <code>Distillate/Saved/vaswani_attention_2017.pdf</code></li>
-      <li>Frontmatter includes <code>citekey</code>, <code>year</code>, and <code>aliases</code> (the full title, so search still works)</li>
-      <li>Reading Log uses <code>[[citekey|title]]</code> wikilinks for stable references</li>
-    </ul>
-
     <!-- 11. Obsidian Plugin Compatibility -->
     <h2>Obsidian Plugin Compatibility</h2>
 
-    <p>Distillate is designed to complement -- not replace -- existing Obsidian plugins for academic workflows.</p>
+    <p>Distillate is designed to complement &mdash; not replace &mdash; existing Obsidian plugins for academic workflows.</p>
 
     <h3>Zotero Integration plugin</h3>
 
@@ -531,7 +613,7 @@ $ distillate --backfill-highlights 5</code></pre>
 
     <p>Distillate generates a <code>Papers.base</code> file for <a href="https://obsidian.md/blog/introducing-bases/">Obsidian Bases</a> (available in Obsidian 1.9+), providing a native table view of all your papers with columns for title, dates, engagement score, and highlight counts. The existing Dataview template is also still generated for users on older Obsidian versions.</p>
 
-    <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>. Powered by <a href="https://github.com/ddvk/rmapi">rmapi</a>, <a href="https://github.com/ricklupton/rmscene">rmscene</a>, <a href="https://pymupdf.readthedocs.io/">PyMuPDF</a>, and <a href="https://claude.ai/claude-code">Claude Code</a>.</p>
+    <p class="colophon">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>.</p>
   </div>
 </body>
 </html>

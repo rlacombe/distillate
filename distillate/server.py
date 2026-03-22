@@ -1,7 +1,7 @@
 """Local WebSocket server for the Nicolas desktop app.
 
-Bridges the synchronous ``agent_core.stream_turn`` generator to an
-async WebSocket so the Electron renderer can consume events.
+Bridges ``agent_sdk.NicolasClient`` to an async WebSocket so the
+Electron renderer can consume events.
 
 Not included in PyPI dependencies — ``fastapi`` and ``uvicorn`` are
 only installed in the bundled Electron venv.
@@ -70,7 +70,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from distillate.agent_core import stream_turn
+from distillate.agent_sdk import NicolasClient, _classify_error
+from distillate.server_helpers import (
+    _summarize_tool_result,
+    _parse_stream_json,
+)
 from distillate.state import State, acquire_lock, release_lock
 
 log = logging.getLogger(__name__)
@@ -79,159 +83,57 @@ _DEFAULT_PORT = 8742
 _executor = ThreadPoolExecutor(max_workers=2)
 
 
-def _summarize_tool_result(raw_result, is_err: bool) -> str:
-    """Turn a tool result into a compact one-line summary."""
-    import json as _json
+def _find_ui_dir():
+    """Resolve the renderer files directory.
 
-    prefix = "ERR" if is_err else "OK"
-    if not raw_result:
-        return ""
-
-    # raw_result may be a dict (already parsed) or a string
-    obj = raw_result
-    if isinstance(obj, str):
-        try:
-            obj = _json.loads(obj)
-        except (_json.JSONDecodeError, TypeError):
-            pass
-
-    if isinstance(obj, dict):
-        # Glob results
-        if "filenames" in obj:
-            n = obj.get("numFiles", len(obj["filenames"]))
-            return f"  [{prefix}] {n} files found"
-        # File read
-        if "filePath" in obj:
-            fp = obj["filePath"].rsplit("/", 1)[-1]  # just filename
-            lines = obj.get("numLines", "?")
-            return f"  [{prefix}] {fp} ({lines} lines)"
-        # Bash stdout
-        if "stdout" in obj:
-            stdout = obj["stdout"].strip()
-            if len(stdout) > 150:
-                stdout = stdout[:150] + "..."
-            return f"  [{prefix}] {stdout}" if stdout else ""
-        # File content (from Read)
-        if "file" in obj and isinstance(obj["file"], dict):
-            fp = obj["file"].get("filePath", "?").rsplit("/", 1)[-1]
-            lines = obj["file"].get("numLines", "?")
-            return f"  [{prefix}] {fp} ({lines} lines)"
-
-    # Plain text fallback
-    text = str(raw_result)
-    if len(text) > 150:
-        text = text[:150] + "..."
-    return f"  [{prefix}] {text}"
-
-
-def _parse_stream_json(raw: str) -> str:
-    """Parse Claude Code stream-json output into human-readable text.
-
-    The log file has one JSON object per line.  Falls back to a
-    brace-depth scanner for tmux capture-pane where lines are wrapped.
+    Production (installed from wheel): distillate/ui/ next to this file.
+    Development (monorepo): desktop/renderer/ at the repo root.
+    Returns ``None`` if neither exists.
     """
-    import json as _json
+    from pathlib import Path
 
-    # --- Extract JSON objects ---
-    events: list[dict] = []
+    # Production: installed wheel puts files in distillate/ui/
+    prod = Path(__file__).parent / "ui"
+    if prod.is_dir() and (prod / "index.html").exists():
+        return prod
 
-    # Try line-by-line (works for log files)
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = _json.loads(line)
-            if isinstance(obj, dict):
-                events.append(obj)
-        except _json.JSONDecodeError:
-            pass
+    # Development: monorepo layout
+    dev = Path(__file__).parent.parent / "desktop" / "renderer"
+    if dev.is_dir() and (dev / "index.html").exists():
+        return dev
 
-    # If line-by-line yielded few results, try brace-depth scan
-    if len(events) < 3:
-        flat = raw.replace("\n", "").replace("\r", "")
-        decoder = _json.JSONDecoder()
-        i = 0
-        while i < len(flat):
-            pos = flat.find("{", i)
-            if pos == -1:
-                break
-            try:
-                obj, end = decoder.raw_decode(flat, pos)
-                if isinstance(obj, dict) and "type" in obj:
-                    events.append(obj)
-                i = end
-            except _json.JSONDecodeError:
-                i = pos + 1
-
-    # --- Format events ---
-    output: list[str] = []
-    for evt in events:
-        evt_type = evt.get("type", "")
-
-        if evt_type == "thinking":
-            thought = evt.get("thinking", "")
-            if thought:
-                first = thought.split("\n")[0][:120]
-                output.append(f"[thinking] {first}")
-
-        elif evt_type == "assistant":
-            for block in evt.get("message", {}).get("content", []):
-                btype = block.get("type", "")
-                if btype == "text":
-                    output.append(block.get("text", ""))
-                elif btype == "tool_use":
-                    name = block.get("name", "?")
-                    inp = block.get("input", {})
-                    if name in ("Read", "Write", "Edit"):
-                        detail = inp.get("file_path", "").rsplit("/", 1)[-1]
-                    elif name == "Bash":
-                        cmd = inp.get("command", "")
-                        detail = cmd[:120] + ("..." if len(cmd) > 120 else "")
-                    elif name in ("Grep", "Glob"):
-                        detail = inp.get("pattern", "")
-                    else:
-                        detail = str(inp)[:80]
-                    output.append(f">>> {name}: {detail}")
-
-        elif evt_type == "user":
-            for block in evt.get("message", {}).get("content", []):
-                if block.get("type") == "tool_result":
-                    raw_result = evt.get("tool_use_result", "")
-                    if not raw_result:
-                        raw_result = block.get("content", "")
-                    is_err = block.get("is_error", False)
-                    summary = _summarize_tool_result(raw_result, is_err)
-                    if summary:
-                        output.append(summary)
-
-        elif evt_type == "text":
-            f = evt.get("file", {})
-            if isinstance(f, dict) and f.get("filePath"):
-                name = f["filePath"].rsplit("/", 1)[-1]
-                lines = f.get("numLines", "?")
-                output.append(f"  [OK] {name} ({lines} lines)")
-
-        elif evt_type == "result":
-            result_text = evt.get("result", "")
-            if result_text:
-                output.append(f"\n--- Result ---\n{result_text}")
-
-    return "\n".join(output) if output else "Session is running... waiting for output."
+    return None
 
 
 def _create_app():
     """Build the FastAPI application (lazy import so PyPI installs don't need fastapi)."""
-    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import JSONResponse
 
     from distillate import config
-    config.ensure_loaded()
+    config.ensure_loaded(required=False)
 
     app = FastAPI(title="Nicolas", docs_url=None, redoc_url=None)
 
+    # Allow cross-origin requests from the Electron renderer
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # Shared state
     _state = State()
+
+    def _get_project_or_404(project_id: str):
+        """Reload state and look up a project, raising 404 if not found."""
+        _state.reload()
+        proj = _state.find_project(project_id)
+        if not proj:
+            raise HTTPException(404, detail="not_found")
+        return proj
 
     @app.get("/status")
     async def status():
@@ -287,6 +189,8 @@ def _create_app():
             "version": ver,
             "papers_read": len(processed),
             "papers_queued": len(queue),
+            "library_configured": bool(config.ZOTERO_API_KEY and config.ZOTERO_USER_ID),
+            "reading_source": config.READING_SOURCE,
         }
         if experiment_stats:
             resp["experiments"] = experiment_stats
@@ -303,6 +207,71 @@ def _create_app():
         loop = asyncio.get_event_loop()
         ok = await loop.run_in_executor(_executor, sync_state, _state)
         return JSONResponse({"ok": ok})
+
+    @app.post("/library/setup")
+    async def library_setup(body: dict):
+        """Validate Zotero credentials, save config, and optionally set reading surface."""
+        from distillate.config import save_to_env
+
+        api_key = body.get("zotero_api_key", "").strip()
+        user_id = body.get("zotero_user_id", "").strip()
+        reading_source = body.get("reading_source", "").strip().lower()
+
+        if not api_key or not user_id:
+            return JSONResponse(
+                {"ok": False, "reason": "Both zotero_api_key and zotero_user_id are required"},
+                status_code=400,
+            )
+
+        # Validate credentials against Zotero API
+        import urllib.request
+        import urllib.error
+        try:
+            req = urllib.request.Request(
+                f"https://api.zotero.org/users/{user_id}/items?limit=1",
+                headers={
+                    "Zotero-API-Version": "3",
+                    "Zotero-API-Key": api_key,
+                },
+            )
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(
+                _executor,
+                lambda: urllib.request.urlopen(req, timeout=10),
+            )
+            if resp.status != 200:
+                return JSONResponse(
+                    {"ok": False, "reason": f"Zotero API returned {resp.status}"},
+                    status_code=422,
+                )
+        except urllib.error.HTTPError as e:
+            reason = "Invalid API key" if e.code == 403 else f"Zotero API error ({e.code})"
+            return JSONResponse({"ok": False, "reason": reason}, status_code=422)
+        except Exception as e:
+            return JSONResponse(
+                {"ok": False, "reason": f"Could not reach Zotero: {e}"},
+                status_code=502,
+            )
+
+        # Save to .env
+        save_to_env("ZOTERO_API_KEY", api_key)
+        save_to_env("ZOTERO_USER_ID", user_id)
+
+        # Update in-memory config
+        config.ZOTERO_API_KEY = api_key
+        config.ZOTERO_USER_ID = user_id
+
+        if reading_source in ("remarkable", "zotero"):
+            save_to_env("READING_SOURCE", reading_source)
+            config.READING_SOURCE = reading_source
+            if reading_source == "zotero":
+                save_to_env("SYNC_HIGHLIGHTS", "false")
+                config.SYNC_HIGHLIGHTS = False
+            else:
+                save_to_env("SYNC_HIGHLIGHTS", "true")
+                config.SYNC_HIGHLIGHTS = True
+
+        return JSONResponse({"ok": True, "message": "Library configured successfully"})
 
     @app.get("/experiments/templates")
     async def list_experiment_templates():
@@ -473,6 +442,55 @@ def _create_app():
 
         return StreamingResponse(generate(), media_type="application/x-ndjson")
 
+    @app.post("/experiments/scaffold")
+    async def scaffold_from_template(body: dict):
+        """Scaffold an experiment from a built-in template (no Claude API call)."""
+        from pathlib import Path
+
+        from distillate import config
+        from distillate.experiments import slugify
+        from distillate.launcher import scaffold_experiment
+
+        template = body.get("template", "").strip()
+        name = body.get("name", "").strip() or template.replace("-", " ").title()
+        if not template:
+            return JSONResponse({"ok": False, "reason": "template required"}, status_code=400)
+
+        project_id = slugify(name)
+        root = config.EXPERIMENTS_ROOT or str(Path.home() / "experiments")
+        target = Path(root) / project_id
+
+        # If already scaffolded and registered, just return the existing project
+        existing = _state.projects.get(project_id)
+        if existing:
+            return JSONResponse({"ok": True, "project_id": project_id, "path": existing.get("path", str(target)), "already_exists": True})
+
+        try:
+            loop = asyncio.get_event_loop()
+            result_path = await loop.run_in_executor(
+                _executor, lambda: scaffold_experiment(template, target, name=name)
+            )
+        except FileNotFoundError as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=404)
+        except FileExistsError as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=409)
+        except Exception as e:
+            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
+
+        # Register in state with appropriate metadata
+        _state.add_project(project_id, name, str(result_path))
+        _state.update_project(project_id,
+            key_metric_name="param_count",
+            duration_minutes=5,
+            goals=[
+                {"metric": "test_accuracy", "threshold": 0.99, "direction": "maximize"},
+                {"metric": "param_count", "threshold": 100000, "direction": "minimize"},
+            ],
+        )
+        _state.save()
+
+        return JSONResponse({"ok": True, "project_id": project_id, "path": str(result_path)})
+
     @app.post("/experiments/{project_id}/github")
     async def create_github_repo_endpoint(project_id: str, body: dict = None):
         """Create a GitHub repo for the experiment and push initial commit."""
@@ -480,15 +498,12 @@ def _create_app():
 
         from distillate.launcher import create_github_repo
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         body = body or {}
-        repo_name = body.get("name", project_id)
-        private = body.get("private", True)
+        repo_name = body.get("name", f"distillate-xp-{project_id}")
+        private = body.get("private", False)
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
@@ -507,10 +522,7 @@ def _create_app():
         """Get the PROMPT.md content for a project."""
         from pathlib import Path
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         prompt_path = Path(proj.get("path", "")) / "PROMPT.md"
         if not prompt_path.exists():
@@ -524,10 +536,7 @@ def _create_app():
         """Update the PROMPT.md content for a project."""
         from pathlib import Path
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         content = body.get("content", "")
         project_path = Path(proj.get("path", ""))
@@ -551,6 +560,46 @@ def _create_app():
 
         return JSONResponse({"ok": True, "detected_metric": detected_metric})
 
+    @app.get("/experiments/{project_id}/results")
+    async def get_experiment_results(project_id: str):
+        """Get the RESULTS.md content for a project."""
+        from pathlib import Path
+
+        proj = _get_project_or_404(project_id)
+
+        results_path = Path(proj.get("path", "")) / "RESULTS.md"
+        if not results_path.exists():
+            return JSONResponse({"ok": False, "reason": "no_results"})
+
+        content = results_path.read_text(encoding="utf-8")
+        return JSONResponse({"ok": True, "content": content, "path": str(results_path)})
+
+    @app.get("/experiments/{project_id}/claude-md")
+    async def get_experiment_claude_md(project_id: str):
+        """Get the CLAUDE.md (agent protocol) for a project."""
+        from pathlib import Path
+
+        proj = _get_project_or_404(project_id)
+
+        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
+        if not claude_path.exists():
+            return JSONResponse({"ok": False, "reason": "no_claude_md"})
+
+        content = claude_path.read_text(encoding="utf-8")
+        return JSONResponse({"ok": True, "content": content, "path": str(claude_path)})
+
+    @app.put("/experiments/{project_id}/claude-md")
+    async def update_experiment_claude_md(project_id: str, body: dict):
+        """Update the CLAUDE.md content for a project."""
+        from pathlib import Path
+
+        proj = _get_project_or_404(project_id)
+
+        content = body.get("content", "")
+        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
+        claude_path.write_text(content, encoding="utf-8")
+        return JSONResponse({"ok": True})
+
     @app.get("/experiments/{project_id}/session")
     async def get_session_output(project_id: str):
         """Get parsed session output for the project.
@@ -563,10 +612,7 @@ def _create_app():
         from distillate.launcher import _ensure_path, capture_pane
 
         _ensure_path()
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         sessions = proj.get("sessions", {})
         # Find the most recent running session
@@ -622,10 +668,7 @@ def _create_app():
         if not project_query:
             return JSONResponse({"ok": False, "reason": "missing_project"}, status_code=400)
 
-        _state.reload()
-        proj = _state.find_project(project_query)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_query)
 
         sessions = proj.get("sessions", {})
         running = [s for s in sessions.values() if s.get("status") == "running"]
@@ -651,16 +694,14 @@ def _create_app():
         from distillate.launcher import launch_experiment
 
         body = body or {}
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         if not proj_path.exists():
             return JSONResponse({"ok": False, "reason": "path_not_found"}, status_code=404)
 
         model = body.get("model", "claude-sonnet-4-6")
+        prompt_override = body.get("prompt_override")
 
         try:
             loop = asyncio.get_event_loop()
@@ -668,6 +709,7 @@ def _create_app():
                 _executor,
                 lambda: launch_experiment(
                     proj_path, model=model, project=proj,
+                    prompt_override=prompt_override,
                 ),
             )
             # Persist session to state
@@ -693,10 +735,7 @@ def _create_app():
         from distillate.launcher import _ensure_path, stop_session
 
         _ensure_path()
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         sessions = proj.get("sessions", {})
         running = [s for s in sessions.values() if s.get("status") == "running"]
@@ -729,11 +768,20 @@ def _create_app():
         """Rescan a project, update state, return summary or None."""
         from pathlib import Path
 
-        from distillate.experiments import scan_project, slugify
+        from distillate.experiments import (
+            backfill_runs_from_events,
+            scan_project,
+            slugify,
+        )
 
         proj_path = Path(proj.get("path", ""))
         if not proj_path.is_dir():
             return None
+
+        # Backfill runs.jsonl from events.jsonl before scanning
+        backfilled = backfill_runs_from_events(proj_path)
+        if backfilled:
+            log.info("Backfilled %d run(s) for %s", backfilled, proj_id)
 
         result = scan_project(proj_path)
         if "error" in result:
@@ -747,20 +795,39 @@ def _create_app():
                 return None
             old_runs = existing.get("runs", {})
             old_count = len(old_runs)
+            scan_names = {r["name"] for r in result.get("runs", {}).values()}
             existing_names = {r["name"] for r in old_runs.values()}
+
+            # Remove stale runs no longer in scan results (e.g. artifact-
+            # scanned duplicates superseded by structured runs)
+            stale_keys = [
+                eid for eid, erun in old_runs.items()
+                if erun["name"] not in scan_names
+            ]
+            for k in stale_keys:
+                del old_runs[k]
+
             new_runs = 0
             for run_id, run_data in result.get("runs", {}).items():
                 if run_data["name"] not in existing_names:
                     _state.add_run(proj_id, run_id, run_data)
                     new_runs += 1
                 else:
-                    # Update existing run if newer timestamp
+                    # Merge scan data into existing run (preserves state,
+                    # picks up new fields like backfilled descriptions)
                     for eid, erun in old_runs.items():
                         if erun["name"] == run_data["name"]:
-                            new_ts = run_data.get("started_at", "")
-                            old_ts = erun.get("started_at", "")
-                            if new_ts > old_ts:
-                                _state.update_run(proj_id, eid, **run_data)
+                            for k, v in run_data.items():
+                                if k == "id":
+                                    continue
+                                if k in ("decision", "status", "results",
+                                         "agent_reasoning", "description",
+                                         "hypothesis", "reasoning"):
+                                    # Always take latest value for mutable fields
+                                    if v:
+                                        erun[k] = v
+                                elif v and not erun.get(k):
+                                    erun[k] = v
                             break
             _state.update_project(
                 proj_id,
@@ -780,22 +847,29 @@ def _create_app():
                     continue
                 for k, v in run.get("results", {}).items():
                     if isinstance(v, (int, float)):
-                        if best_metric is None or v > best_metric.get(list(best_metric.keys())[0], 0):
+                        if best_metric is None or v > next(iter(best_metric.values())):
                             best_metric = {k: v}
 
         return {
             "new_runs": new_runs,
             "total_runs": old_count + new_runs,
             "best_metric": best_metric,
+            "backfilled": backfilled,
         }
 
     @app.post("/experiments/{project_id}/scan")
-    async def scan_experiment(project_id: str):
+    async def scan_experiment(project_id: str, full: str = ""):
         """Manually trigger a rescan for a project."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
+
+        # Full rescan: clear watch state + scan state to force re-read
+        if full:
+            from pathlib import Path
+            proj_path = Path(proj.get("path", ""))
+            for state_file in ("watch_state.json", "scan_state.json"):
+                sf = proj_path / ".distillate" / state_file
+                if sf.exists():
+                    sf.unlink()
 
         loop = asyncio.get_event_loop()
         summary = await loop.run_in_executor(
@@ -881,10 +955,7 @@ def _create_app():
         model = body.get("model", "claude-sonnet-4-5-20250929")
         max_turns = body.get("max_turns", 100)
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         _state.update_project(project_id, continuation_queue={
             "count": count,
@@ -921,10 +992,7 @@ def _create_app():
                 status_code=400,
             )
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         if not proj_path.is_dir():
@@ -1012,12 +1080,7 @@ def _create_app():
         """Start an autonomous campaign loop for a project."""
         body = await request.json()
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
 
         # Validate goals exist
         if not proj.get("goals"):
@@ -1067,12 +1130,7 @@ def _create_app():
     @app.post("/experiments/{project_id}/campaign/pause")
     async def pause_campaign(project_id: str):
         """Pause a running campaign (finishes current session, stops launching)."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
         if campaign.get("status") != "running":
             return JSONResponse(
@@ -1088,12 +1146,7 @@ def _create_app():
     @app.post("/experiments/{project_id}/campaign/resume")
     async def resume_campaign(project_id: str):
         """Resume a paused campaign."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
         if campaign.get("status") != "paused":
             return JSONResponse(
@@ -1112,14 +1165,9 @@ def _create_app():
     @app.post("/experiments/{project_id}/campaign/stop")
     async def stop_campaign(project_id: str):
         """Stop a campaign permanently."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
-        campaign["status"] = "stopped"
+        campaign["status"] = "paused"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
         _state.update_project(project_id, campaign=campaign)
@@ -1130,20 +1178,21 @@ def _create_app():
             task.cancel()
         return JSONResponse({"ok": True})
 
-    @app.patch("/experiments/{project_id}")
+    @app.patch("/experiments/{project_id:path}")
     async def patch_experiment(project_id: str, request: Request):
         """Update experiment fields (key_metric_name, description, etc.)."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
         actual_id = proj.get("id", project_id)
         body = await request.json()
         updates = {}
+        if "name" in body:
+            updates["name"] = body["name"]
         if "key_metric_name" in body:
             updates["key_metric_name"] = body["key_metric_name"]
         if "description" in body:
             updates["description"] = body["description"]
+        if "goals" in body:
+            updates["goals"] = body["goals"]
         if updates:
             _state.update_project(actual_id, **updates)
             _state.save()
@@ -1154,10 +1203,7 @@ def _create_app():
         """Delete experiment from tracking. Does NOT delete files or remote repo."""
         from distillate.launcher import _tmux_session_exists
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "Project not found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         # Use the actual state key, not the URL param
         actual_id = proj.get("id", project_id)
@@ -1193,12 +1239,7 @@ def _create_app():
                 status_code=400,
             )
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         write_steering(proj_path, text)
@@ -1267,12 +1308,7 @@ def _create_app():
         from distillate.launcher import import_template
 
         body = await request.json()
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse(
-                {"ok": False, "reason": "not_found"}, status_code=404,
-            )
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         if not proj_path.is_dir():
@@ -1564,141 +1600,21 @@ def _create_app():
     # Data endpoints for desktop app tabs
     # -------------------------------------------------------------------
 
-    def _run_summary(run: dict) -> dict:
-        """Build a concise run summary dict."""
-        results = run.get("results", {})
-        key_metric = ""
-        for k in ("accuracy", "exact_match", "test_accuracy", "val_accuracy",
-                  "best_val_acc", "f1", "loss"):
-            if k in results:
-                key_metric = f"{k}={results[k]}"
-                break
-        if not key_metric and results:
-            k, v = next(iter(results.items()))
-            if isinstance(v, (int, float)):
-                key_metric = f"{k}={v}"
-        return {
-            "id": run.get("id", ""),
-            "name": run.get("name", ""),
-            "status": run.get("status", ""),
-            "decision": run.get("decision", ""),
-            "key_metric": key_metric,
-            "results": {k: v for k, v in results.items() if isinstance(v, (int, float))},
-            "hyperparameters": run.get("hyperparameters", {}),
-            "hypothesis": run.get("hypothesis", ""),
-            "reasoning": run.get("reasoning", ""),
-            "baseline_comparison": run.get("baseline_comparison"),
-            "started_at": run.get("started_at", ""),
-            "duration_minutes": run.get("duration_minutes", 0),
-            "tags": run.get("tags", []),
-        }
+    def _extract_run_number(name: str) -> tuple:
+        """Extract sortable (number, suffix) from run name like 'run_122' or 'run_004a'.
 
-    def _detect_primary_metric(content: str) -> str:
-        """Extract primary metric name from PROMPT.md content.
-
-        Looks for patterns like:
-          Primary metric: param_count (minimize)
-          Primary metric: `test_accuracy` (maximize)
+        Returns (number, suffix) for run_NNN patterns, or (0, "") for others
+        so non-numeric IDs sort first by timestamp fallback.
         """
         import re
-        # Match "Primary metric: <name> (direction)" pattern
-        m = re.search(
-            r'[Pp]rimary\s+[Mm]etric\s*:\s*`?(\w+)`?\s*\(',
-            content,
-        )
+        m = re.match(r"(?:run_?)(\d+)([a-z]?)", name)
         if m:
-            return m.group(1)
-        # Fallback: look for "key metric" or "north star" mentions
-        m = re.search(
-            r'(?:[Kk]ey|[Nn]orth\s*[Ss]tar)\s+[Mm]etric\s*:\s*`?(\w+)`?',
-            content,
-        )
-        return m.group(1) if m else ""
+            return (int(m.group(1)), m.group(2))
+        return (0, "")
 
-    def _infer_key_metric_name(proj: dict) -> str:
-        """Pick the best metric to chart by default.
-
-        Priority order:
-        1. Explicit goal metric (user told us what matters)
-        2. Test-set performance metric present in most runs
-        3. Validation-set performance metric
-        4. Any performance metric (accuracy, f1, auc, etc.)
-        5. Most common numeric metric across runs
-
-        We prefer metrics that have data in ALL (or most) runs so the
-        chart is meaningful, and favour "test > val > train" and
-        "accuracy/f1/auc > loss/error" for relevance.
-        """
-        # --- 1. Goal metric ---
-        goals = proj.get("goals", [])
-        if goals:
-            for g in goals:
-                if isinstance(g, dict) and g.get("metric") and not g.get("is_constraint"):
-                    return g["metric"]
-            if isinstance(goals[0], dict) and goals[0].get("metric"):
-                return goals[0]["metric"]
-
-        # --- 2-5. Score-based ranking ---
-        from collections import Counter
-        runs = list(proj.get("runs", {}).values())
-        if not runs:
-            return ""
-
-        # Count how many runs have each numeric metric
-        metric_counts: Counter = Counter()
-        for run in runs:
-            for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)):
-                    metric_counts[k] += 1
-
-        if not metric_counts:
-            return ""
-
-        total_runs = len(runs)
-
-        # Score each metric: coverage * relevance
-        # Coverage: fraction of runs that have this metric (0-1)
-        # Relevance: heuristic based on name patterns
-        _RELEVANCE = {
-            # Test-set performance (highest priority)
-            "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
-            "test_auc": 90, "test_precision": 85, "test_recall": 85,
-            "test_score": 80, "test_r2": 80, "test_rmse": 75,
-            "test_loss": 70, "test_error": 70, "test_mae": 70,
-            # Validation-set
-            "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
-            "val_auc": 50, "val_loss": 45, "val_error": 45,
-            "val_score": 50, "val_r2": 50, "val_rmse": 45,
-            # Generic performance
-            "accuracy": 40, "f1": 38, "f1_score": 38,
-            "auc": 35, "precision": 30, "recall": 30,
-            "rmse": 25, "mae": 25, "r2": 25, "r2_score": 25,
-            "loss": 20, "error": 20,
-            # Meta (low priority — usually not what you want to chart)
-            "param_count": 5, "train_time_sec": 3, "epochs": 2,
-        }
-
-        def _score(metric_name: str) -> float:
-            coverage = metric_counts[metric_name] / total_runs
-            name_lower = metric_name.lower().replace("-", "_")
-            # Exact match first
-            relevance = _RELEVANCE.get(name_lower, 0)
-            if relevance == 0:
-                # Fuzzy: check if name contains key patterns
-                for pattern, score in [
-                    ("test", 30), ("accuracy", 25), ("acc", 25),
-                    ("f1", 20), ("auc", 20), ("score", 15),
-                    ("val", 12), ("loss", 10), ("error", 10),
-                    ("rmse", 10), ("mae", 10),
-                ]:
-                    if pattern in name_lower:
-                        relevance = max(relevance, score)
-                if relevance == 0:
-                    relevance = 8  # unknown metric baseline
-            return coverage * relevance
-
-        best = max(metric_counts.keys(), key=_score)
-        return best
+    from distillate.experiment_tools import _run_summary_full
+    from distillate.experiments import detect_primary_metric as _detect_primary_metric
+    from distillate.experiments import infer_key_metric_name as _infer_key_metric_name
 
     @app.get("/experiments/list")
     async def list_experiments():
@@ -1745,30 +1661,197 @@ def _create_app():
                 "run_count": len(runs),
                 "active_sessions": active,
                 "sessions": {
-                    sid: {"tmux_session": s.get("tmux_session", "")}
+                    sid: {
+                        "tmux_session": s.get("tmux_session", ""),
+                        "started_at": s.get("started_at", ""),
+                    }
                     for sid, s in active_sessions.items()
                     if s.get("tmux_session")
                 },
                 "key_metric_name": _infer_key_metric_name(proj),
+                "duration_minutes": proj.get("duration_minutes", 5),
                 "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
-                "runs": [_run_summary(r) for r in sorted(
-                    runs.values(), key=lambda r: r.get("started_at", ""),
+                "runs": [_run_summary_full(r, *_extract_run_number(r.get("name", ""))) for r in sorted(
+                    runs.values(),
+                    key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
                 )],
             }
+            linked_papers = proj.get("linked_papers", [])
+            if linked_papers:
+                entry["linked_papers"] = linked_papers
+            github_url = proj.get("github_url", "")
+            if github_url:
+                entry["github_url"] = github_url
             campaign = proj.get("campaign")
             if campaign:
                 entry["campaign"] = campaign
-            # Include research insights from LLM enrichment
+            # Include research insights from LLM enrichment or RESULTS.md fallback
             proj_path_str = proj.get("path", "")
             if proj_path_str:
                 from pathlib import Path as _P
                 from distillate.experiments import load_enrichment_cache
-                cache = load_enrichment_cache(_P(proj_path_str))
+                proj_p = _P(proj_path_str)
+                cache = load_enrichment_cache(proj_p)
                 enr = cache.get("enrichment", cache)
                 project_insights = enr.get("project", {})
                 if project_insights:
                     entry["insights"] = project_insights
+                elif (proj_p / "RESULTS.md").exists():
+                    # Fallback: use RESULTS.md as key_breakthrough
+                    try:
+                        results_text = (proj_p / "RESULTS.md").read_text(
+                            encoding="utf-8"
+                        ).strip()
+                        if results_text:
+                            entry["insights"] = {
+                                "key_breakthrough": results_text[:2000],
+                            }
+                    except Exception:
+                        pass
+
+                # Latest learning + current run from runs.jsonl
+                runs_jsonl = proj_p / ".distillate" / "runs.jsonl"
+                if runs_jsonl.exists():
+                    try:
+                        all_lines = runs_jsonl.read_text(
+                            encoding="utf-8"
+                        ).splitlines()
+                        found_learning = False
+                        found_current = False
+                        resolved_ids: set[str] = set()
+                        for line in reversed(all_lines):
+                            if found_learning and found_current:
+                                break
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                rr = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            rid = rr.get("id", "")
+                            status = rr.get("status", "")
+                            # Track completed runs so we skip stale
+                            # "running" announcements
+                            if status in ("keep", "discard", "crash"):
+                                resolved_ids.add(rid)
+                            # Surface what the agent is currently attempting
+                            if (not found_current
+                                    and status == "running"
+                                    and rid not in resolved_ids
+                                    and rr.get("description")):
+                                entry["current_run"] = rr["description"]
+                                entry["current_run_started"] = rr.get(
+                                    "timestamp", "")
+                                found_current = True
+                            if (not found_learning
+                                    and status == "keep"
+                                    and rr.get("reasoning")):
+                                entry["latest_learning"] = rr["reasoning"]
+                                found_learning = True
+
+                        # Total experiment time: pair-matching for
+                        # running→completed, gap-based for remainder
+                        MAX_GAP = 1800  # 30 min = session break
+                        run_starts: dict[str, datetime] = {}
+                        pair_secs = 0.0
+                        unpaired_dts: list[datetime] = []
+                        active_run_start = ""
+
+                        for fwd_line in all_lines:
+                            fwd_line = fwd_line.strip()
+                            if not fwd_line:
+                                continue
+                            try:
+                                rr = json.loads(fwd_line)
+                            except json.JSONDecodeError:
+                                continue
+                            ts = rr.get("timestamp", "")
+                            st = rr.get("status", "")
+                            rid = rr.get("id", "")
+                            if not ts:
+                                continue
+                            try:
+                                dt = datetime.fromisoformat(
+                                    ts.replace("Z", "+00:00"))
+                                if dt.tzinfo is not None:
+                                    dt = dt.replace(tzinfo=None)
+                            except (ValueError, TypeError):
+                                continue
+
+                            if st == "running":
+                                active_run_start = ts
+                                run_starts[rid] = dt
+                            elif st in ("keep", "discard", "crash"):
+                                active_run_start = ""
+                                if rid in run_starts:
+                                    pair_secs += (
+                                        dt - run_starts[rid]
+                                    ).total_seconds()
+                                    del run_starts[rid]
+                                else:
+                                    unpaired_dts.append(dt)
+                            else:
+                                unpaired_dts.append(dt)
+
+                        # Gap-based for unpaired entries
+                        gap_secs = 0.0
+                        prev_dt = None
+                        for udt in sorted(unpaired_dts):
+                            if prev_dt is not None:
+                                gap = (udt - prev_dt).total_seconds()
+                                if 0 < gap <= MAX_GAP:
+                                    gap_secs += gap
+                            prev_dt = udt
+
+                        entry["experiment_total_secs"] = (
+                            pair_secs + gap_secs
+                        )
+                        if active_run_start:
+                            # Only send if the announcement is recent
+                            # (stale = agent logged "running" but never
+                            # completed — don't show a ticking timer)
+                            try:
+                                ar_dt = datetime.fromisoformat(
+                                    active_run_start.replace("Z", "+00:00"))
+                                if ar_dt.tzinfo is not None:
+                                    ar_dt = ar_dt.replace(tzinfo=None)
+                                budget = (proj.get("duration_minutes") or 5) * 60
+                                age = (datetime.utcnow() - ar_dt).total_seconds()
+                                if age < budget * 3:
+                                    entry["active_run_start"] = active_run_start
+                            except (ValueError, TypeError):
+                                pass
+                    except OSError:
+                        pass
+
+                # Only report current_run/active_run_start for active sessions
+                if active == 0:
+                    entry.pop("current_run", None)
+                    entry.pop("current_run_started", None)
+                    entry["active_run_start"] = ""
+                elif active > 0 and not entry.get("current_run"):
+                    # Active session but no unresolved running entry
+                    sess = next(iter(active_sessions.values()), {})
+                    entry["current_run"] = "Session active"
+                    entry["current_run_started"] = sess.get("started_at", "")
+
+                # Experiment summary from PROMPT.md first meaningful line
+                prompt_md = proj_p / "PROMPT.md"
+                if prompt_md.exists():
+                    try:
+                        for pline in prompt_md.read_text(
+                            encoding="utf-8"
+                        ).splitlines():
+                            pline = pline.strip()
+                            if (pline and not pline.startswith("#")
+                                    and not pline.startswith("```")):
+                                entry["experiment_summary"] = pline[:500]
+                                break
+                    except OSError:
+                        pass
+
             result.append(entry)
         return JSONResponse({"ok": True, "projects": result})
 
@@ -1778,12 +1861,12 @@ def _create_app():
 
         from starlette.responses import HTMLResponse
 
-        from distillate.experiments import generate_html_notebook, load_enrichment_cache
+        from distillate.experiments import (
+            generate_html_notebook,
+            load_enrichment_cache,
+        )
 
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         proj_path = Path(proj.get("path", ""))
         enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
@@ -1792,12 +1875,10 @@ def _create_app():
         return HTMLResponse(html)
 
     @app.get("/experiments/{project_id}/chart/export")
-    async def export_chart(project_id: str, metric: str = "", format: str = "png"):
+    async def export_chart(project_id: str, metric: str = "", format: str = "png",
+                           log_scale: str = ""):
         """Generate a Karpathy-style clean chart PNG for sharing."""
-        _state.reload()
-        proj = _state.find_project(project_id)
-        if not proj:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        proj = _get_project_or_404(project_id)
 
         from distillate.experiments import generate_export_chart
         runs = list(proj.get("runs", {}).values())
@@ -1807,7 +1888,28 @@ def _create_app():
             return JSONResponse({"ok": False, "reason": "no_metric"}, status_code=400)
 
         try:
-            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id))
+            use_log = log_scale in ("1", "true", "yes")
+            # Get experiment summary for chart subtitle
+            subtitle = ""
+            proj_path_str = proj.get("path", "")
+            if proj_path_str:
+                from pathlib import Path as _PP
+                prompt_md = _PP(proj_path_str) / "PROMPT.md"
+                if prompt_md.exists():
+                    try:
+                        for line in prompt_md.read_text(encoding="utf-8").splitlines():
+                            line = line.strip()
+                            if line and not line.startswith("#") and not line.startswith("```"):
+                                # Strip markdown bold
+                                import re
+                                subtitle = re.sub(r'\*\*([^*]+)\*\*', r'\1', line)
+                                if len(subtitle) > 80:
+                                    subtitle = subtitle[:78] + "\u2026"
+                                break
+                    except OSError:
+                        pass
+            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id),
+                                              log_scale=use_log, subtitle=subtitle)
             from starlette.responses import Response
             return Response(content=png_bytes, media_type="image/png")
         except Exception as e:
@@ -1896,15 +1998,30 @@ def _create_app():
         meta = doc.get("metadata", {})
         idx = _state.index_of(paper_key)
 
-        # Read highlights from Obsidian note if available
+        # Read highlights from Obsidian note if available (no truncation for desktop)
         highlights = ""
         try:
-            from distillate.tools import _read_note_content, _extract_highlights_from_note
+            from distillate.tools import _read_note_content
             note = _read_note_content(meta.get("citekey", ""), doc.get("title", ""))
             if note:
-                highlights = _extract_highlights_from_note(note)
+                start = note.find("## Highlights")
+                if start >= 0:
+                    end = note.find("\n## ", start + 1)
+                    highlights = note[start:end] if end > 0 else note[start:]
         except Exception:
             pass
+
+        # Resolve linked projects to names
+        linked_projects = []
+        for pid in doc.get("linked_projects", []):
+            p = _state.find_project(pid)
+            if p:
+                linked_projects.append({
+                    "id": p.get("id", pid),
+                    "name": p.get("name", pid),
+                })
+            else:
+                linked_projects.append({"id": pid, "name": pid})
 
         return JSONResponse({"ok": True, "paper": {
             "index": idx,
@@ -1927,6 +2044,7 @@ def _create_app():
             "processed_at": doc.get("processed_at", ""),
             "promoted_at": doc.get("promoted_at", ""),
             "highlights": highlights,
+            "linked_projects": linked_projects,
         }})
 
     # -------------------------------------------------------------------
@@ -2080,23 +2198,9 @@ def _create_app():
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):
         await websocket.accept()
-        loop = asyncio.get_event_loop()
 
-        from distillate.agent_core import create_client
-
-        client = create_client()
-        if client is None:
-            await websocket.send_json({
-                "type": "error",
-                "message": "No API credentials configured",
-                "category": "invalid_key",
-            })
-            await websocket.close()
-            return
-
-        # Per-connection conversation state
-        conversation: list[dict] = []
-        all_sessions: list[dict] = _load_sessions()
+        nicolas = NicolasClient(_state)
+        _cancel_flag = asyncio.Event()
 
         try:
             while True:
@@ -2106,116 +2210,60 @@ def _create_app():
                 except json.JSONDecodeError:
                     msg = {"text": raw}
 
-                # Handle new conversation request
                 if msg.get("type") == "new_conversation":
-                    if conversation:
-                        _save_session(all_sessions, conversation)
-                    conversation = []
+                    await nicolas.new_conversation()
                     continue
 
-                # Handle model change — update the module-level default
                 if msg.get("type") == "set_model":
                     new_model = msg.get("model")
                     if new_model:
-                        from distillate import agent_core
-                        agent_core._AGENT_MODEL = new_model
+                        await nicolas.set_model(new_model)
                         log.info("Model changed to %s", new_model)
+                    continue
+
+                if msg.get("type") == "cancel":
+                    _cancel_flag.set()
+                    try:
+                        await nicolas.interrupt()
+                    except Exception:
+                        log.debug("Interrupt failed (non-critical)", exc_info=True)
                     continue
 
                 user_input = msg.get("text", "").strip()
                 if not user_input:
                     continue
 
-                # Run the synchronous generator in a thread, relay events
-                queue: asyncio.Queue = asyncio.Queue()
+                _cancel_flag.clear()
 
-                def _run_turn():
-                    try:
-                        for event in stream_turn(
-                            client, _state, conversation, user_input,
-                            past_sessions=all_sessions,
-                        ):
-                            loop.call_soon_threadsafe(queue.put_nowait, event)
-                    except Exception as exc:
-                        log.exception("stream_turn crashed")
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            {"type": "error", "message": str(exc), "category": "unknown"},
-                        )
-                    finally:
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait, None,  # sentinel
-                        )
-
-                _executor.submit(_run_turn)
-
-                # Relay events to WebSocket
-                while True:
-                    event = await queue.get()
-                    if event is None:
-                        break
-                    await websocket.send_json(event)
+                try:
+                    async for event in nicolas.send(user_input):
+                        if _cancel_flag.is_set():
+                            await websocket.send_json({"type": "cancelled"})
+                            break
+                        await websocket.send_json(event)
+                except Exception as exc:
+                    log.exception("Nicolas query failed")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(exc),
+                        "category": _classify_error(str(exc)),
+                    })
 
         except WebSocketDisconnect:
             log.info("WebSocket client disconnected")
-            if conversation:
-                _save_session(all_sessions, conversation)
         except Exception:
             log.exception("WebSocket error")
-            if conversation:
-                _save_session(all_sessions, conversation)
+        finally:
+            await nicolas.disconnect()
+
+    # Mount desktop UI static files at /ui (served from wheel or dev monorepo)
+    ui_dir = _find_ui_dir()
+    if ui_dir:
+        from starlette.staticfiles import StaticFiles
+        app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+        log.info("Serving UI from %s", ui_dir)
 
     return app
-
-
-# ---------------------------------------------------------------------------
-# Conversation persistence — reuses the CLI's conversations.json format
-# ---------------------------------------------------------------------------
-
-_MAX_SESSIONS = 50
-
-
-def _conversations_path():
-    """Return the path to the shared conversations log."""
-    from distillate import config
-    return config.CONFIG_DIR / "conversations.json"
-
-
-def _load_sessions() -> list[dict]:
-    """Load past sessions from the shared conversation log."""
-    try:
-        return json.loads(_conversations_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-
-def _save_session(all_sessions: list[dict], conversation: list[dict]) -> None:
-    """Append a session to the conversation log."""
-    # Build a summary from the first user message
-    first_user = ""
-    for msg in conversation:
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                first_user = content[:120]
-            break
-
-    session = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": first_user,
-        "turns": len(conversation),
-    }
-    all_sessions.append(session)
-
-    # Trim and save
-    trimmed = all_sessions[-_MAX_SESSIONS:]
-    try:
-        _conversations_path().write_text(
-            json.dumps(trimmed, ensure_ascii=False, indent=None),
-            encoding="utf-8",
-        )
-    except OSError:
-        log.warning("Could not save conversation log")
 
 
 def main():

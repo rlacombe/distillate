@@ -1,10 +1,16 @@
 .env
+.DS_Store
 state.json
 state.lock
 *.pdf
 *.rmdoc
 *.zip
-.claude/
+# Claude Code — track CLAUDE.md and skills, ignore memory/settings
+.claude/*
+!.claude/CLAUDE.md
+!.claude/skills/
+!.claude/skills/*/
+!.claude/skills/*/SKILL.md
 uv.lock
 
 # Python
@@ -17,3 +23,9 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv-desktop/
+.wrangler/
+workers/.wrangler/
+
+# Desktop (Electron)
+desktop/node_modules/
+desktop/dist/

@@ -37,20 +37,21 @@ def _prompt_with_default(prompt: str, env_key: str, sensitive: bool = False) -> 
 
 
 def _init_step5_claude(save_to_env) -> None:
-    """Step 5: Claude API key."""
+    """Step 5: Claude API key (optional — for sync pipeline only)."""
     print("  " + "-" * 48)
-    print("  Step 5 of 6: Claude API")
+    print("  Step 5 of 6: Claude API (optional)")
     print("  " + "-" * 48)
     print()
-    print("  An Anthropic API key powers several features:")
+    print("  An Anthropic API key enables AI-powered features")
+    print("  in the sync pipeline:")
     print()
     print("    - AI summaries & key learnings for each paper")
-    print("    - The Nicolas agent REPL (interactive assistant)")
     print("    - Daily reading suggestions")
     print("    - Experiment enrichment (hypothesis generation)")
     print()
-    print("  Without a key, papers use their abstract as fallback")
-    print("  and the agent REPL is unavailable.")
+    print("  The Nicolas agent uses Claude Code instead — no API")
+    print("  key needed. Without a key here, papers use their")
+    print("  abstract as a fallback summary.")
     print()
     print("  Note: your highlights and abstracts are sent to the Claude API")
     print("  for processing. No data is stored by Anthropic.")
@@ -60,9 +61,9 @@ def _init_step5_claude(save_to_env) -> None:
     )
     if anthropic_key:
         save_to_env("ANTHROPIC_API_KEY", anthropic_key)
-        print("  Claude API enabled.")
+        print("  Claude API enabled for sync pipeline.")
     else:
-        print("  Skipped.")
+        print("  Skipped — Nicolas will still work via Claude Code.")
     print()
 
 

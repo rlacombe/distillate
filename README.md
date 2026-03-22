@@ -1,111 +1,124 @@
 # Distillate
 
-*A research alchemist in your terminal.* &nbsp; [distillate.dev](https://distillate.dev)
-
-Syncs your papers. Extracts your highlights. You do the thinking.
+**Your research alchemist.** Conjure ML experiments that run themselves. Distill insights from everything you read.
 
 [![PyPI](https://img.shields.io/pypi/v/distillate)](https://pypi.org/project/distillate/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+&nbsp; [distillate.dev](https://distillate.dev)
+
+<img src="docs/app-screenshot.png" alt="Distillate desktop app" width="800">
+
+## What is Distillate?
+
+Distillate is an open-source research platform that orchestrates autonomous research agents. It turns your research questions into agents that run ML experiments, track results, and report what they find — while keeping your paper library organized with highlights and AI summaries.
+
+At the center is **Nicolas**, your research alchemist. He spawns **research agents** that live in tmux sessions, iteratively improving your models and reporting results. He also tends **the library** — your paper collection, flowing from Zotero through any reading surface (reMarkable, iPad, desktop) into structured notes.
+
+The core loop: **read papers, run experiments, see them improve on the chart, distill what you learned, repeat.** What you read informs what you try. What you try informs what you read next.
 
 ```
 $ distillate
 
   ─── ⚗️  Nicolas ──────────────────────────────
-  42 papers read · 7 in queue
-  Your research alchemist. Type /help or /quit.
+  Your research alchemist.
+  🧪 4 experiments · 12 runs · 1 running
+  📚 42 papers read · 7 in queue
 
-> What should I read next?
+> /conjure tiny-matmul --duration 30m
+  🧪 Spawning research agent...
+  Created distillate-xp-tiny-matmul
+  Research agent spawned — 30 min budget, will report when done.
 
-  🔮 Consulting the oracle
-
-  Based on your recent interest in multimodal agents,
-  I'd suggest ReAct [3] — a complementary approach to
-  what you highlighted in Toolformer.
+> /distill tiny-matmul
+  🔬 Distilling 8 runs...
+  Best: run-7 (loss 0.0023, -42% from baseline)
+  Key insight: block size 64 with gradient accumulation
+  outperforms larger batches on this scale.
 ```
+
+## Skills
+
+Nicolas responds to 9 skills organized across three roles:
+
+### The Laboratory 🧪
+
+| Skill | Description |
+|-------|-------------|
+| `/conjure` | Summon a research agent — launch an experiment from a research question |
+| `/steer` | Guide a running agent — adjust goals or change direction |
+| `/assay` | Deep analysis of experiment results with cross-run comparison |
+| `/distill` | Extract insights from an experiment's session histories |
+| `/survey` | Scan all experiments for new runs and breakthroughs |
+| `/transmute` | Turn paper insights into experiment ideas |
+
+### The Library 📚
+
+| Skill | Description |
+|-------|-------------|
+| `/brew` | Sync papers, process highlights, refresh the library |
+| `/forage` | Discover trending papers and reading suggestions |
+| `/tincture` | Deep extraction from a single paper's highlights and notes |
 
 ## Quick Start
 
-```bash
-uv tool install distillate
-distillate --init
-```
-
-The setup wizard walks you through connecting Zotero, reMarkable, and choosing where your notes go.
-
-## What You Need
-
-| Component | Required? | What it does |
-|-----------|-----------|-------------|
-| [Zotero](https://www.zotero.org/) | Yes | Paper library + browser connector for saving papers |
-| [reMarkable](https://remarkable.com/) tablet | Yes | Read & highlight papers with the built-in highlighter |
-| [rmapi](https://github.com/ddvk/rmapi) | Yes | CLI bridge to reMarkable Cloud |
-| Text recognition (on reMarkable) | Yes | Enable in Settings for highlight extraction |
-| [Better BibTeX](https://retorque.re/zotero-better-bibtex/) | No | Citekey-based file naming for Obsidian Zotero Integration compatibility |
-| [Obsidian](https://obsidian.md/) vault | No | Rich note integration (Dataview, Bases, reading stats, deep links) |
-| Plain folder | No | Alternative to Obsidian — just markdown notes + PDFs |
-| [Anthropic API key](https://console.anthropic.com/) | No | Powers the agent, AI summaries, handwriting OCR, and suggestions |
-| [Resend API key](https://resend.com) | No | Email digests and paper suggestions |
-
-## Install
-
-### 1. Install rmapi
-
-Distillate uses [rmapi](https://github.com/ddvk/rmapi) to talk to the reMarkable Cloud.
-
-**macOS:**
-```bash
-brew install rmapi
-```
-
-**Linux:**
-```bash
-curl -L -o /usr/local/bin/rmapi \
-  https://github.com/ddvk/rmapi/releases/latest/download/rmapi-linuxx86-64
-chmod +x /usr/local/bin/rmapi
-```
-
-### 2. Install Distillate
+### Install
 
 ```bash
-uv tool install distillate
+pip install distillate
+# or
+uv pip install distillate
 ```
 
-Or with pip: `pip install distillate`
+### Requirements
 
-### 3. Run the setup wizard
+- **Claude Code** (`claude` CLI) — Distillate runs through your Claude Code subscription. No separate API key needed.
+- **Zotero** — for paper management (optional if you only run experiments)
+
+### Launch
 
 ```bash
-distillate --init
+distillate          # Start the Nicolas REPL
+distillate --init   # Run the setup wizard (first time)
+distillate --sync   # Classic sync-only workflow
 ```
 
-This walks you through:
-1. Connecting your Zotero account
-2. Registering your reMarkable device
-3. Choosing where notes go (Obsidian vault or plain folder)
-4. Configuring optional features (AI summaries, email digests)
+Or use the [desktop app](#desktop-app) for a full IDE experience.
 
-<details>
-<summary>Manual setup (without the wizard)</summary>
+## Desktop App
 
-Create `~/.config/distillate/.env` (or copy [.env.example](https://github.com/rlacombe/distillate/blob/main/.env.example)):
+The Distillate desktop app provides an IDE-style layout with four tabs:
 
-```
-ZOTERO_API_KEY=your_key
-ZOTERO_USER_ID=your_id
-OBSIDIAN_VAULT_PATH=/path/to/vault   # or OUTPUT_PATH=/path/to/folder
-ANTHROPIC_API_KEY=your_key            # optional
-```
+- **Control Panel** — metric chart, session timer, goal tracking, experiment overview
+- **Session** — live terminal attached to the running Claude Code agent
+- **Results** — runs grid with research insights (key breakthrough, lessons learned, dead ends)
+- **Prompt** — view and edit PROMPT.md with markdown rendering
 
-Register your reMarkable:
-```bash
-distillate --register
-```
+The desktop app connects to the same backend as the CLI — everything stays in sync. [Download for macOS](https://github.com/rlacombe/distillate/releases/latest).
 
-</details>
+## How It Works
 
-<details>
-<summary>Development install</summary>
+The core research loop:
+
+1. **📜 Add papers** — Save papers to Zotero, read and highlight on any device. Nicolas extracts highlights, generates summaries, and builds your knowledge base.
+
+2. **⚗️ Conjure experiments** — Describe a research question or point at a paper. Nicolas drafts the prompt, sets up a git repo, and spawns an autonomous research agent to run it.
+
+3. **🔬 Distill insights** — As experiments run, Nicolas tracks every iteration with metrics, diffs, and decisions. Distill the results to see what worked, what didn't, and why.
+
+4. **✨ Transmute findings** — Connect paper insights to experiment results. What you read informs what you try next. The cycle continues.
+
+Every experiment lives in a git repo. Every paper lives in your Zotero library. Notes are plain markdown. There's no lock-in — Distillate enhances your existing tools.
+
+## Configuration
+
+All settings live in `~/.config/distillate/.env`. See [.env.example](.env.example) for the full list.
+
+The setup wizard (`distillate --init`) walks you through connecting Zotero, choosing a reading surface, and configuring optional features.
+
+For advanced configuration, engagement scores, scheduling, and GitHub Actions automation — see the [Power users guide](https://distillate.dev/power-users.html).
+
+## Development
 
 ```bash
 git clone https://github.com/rlacombe/distillate.git
@@ -115,190 +128,6 @@ source .venv/bin/activate
 uv pip install -e .
 pytest tests/
 ```
-
-</details>
-
-## Usage
-
-### Interactive agent (default)
-
-```bash
-distillate
-```
-
-Launches Nicolas, an AI research assistant that lives in your terminal. Ask him about your library in natural language — search papers, compare findings across highlights, get reading suggestions, add papers to Zotero by arXiv ID, check stats, or run a sync.
-
-Requires an Anthropic API key. Without one, use `distillate --sync` for the classic sync-only workflow.
-
-### Sync workflow
-
-```bash
-distillate --sync
-```
-
-What happens each run:
-
-1. Polls Zotero for new papers added since last run
-2. Downloads PDFs and uploads to reMarkable `Distillate/Inbox`
-3. Tags papers `inbox` in Zotero, enriches with Semantic Scholar data (citations, publication date, venue)
-4. Checks reMarkable `Distillate/Read` for papers you've finished reading
-5. Extracts highlighted text from the reMarkable document
-6. Renders an annotated PDF with highlights overlaid on the original
-7. Writes highlights back to Zotero as searchable annotations (visible in Zotero's PDF reader)
-8. Creates a note with metadata, highlights, and AI summary (if configured)
-9. Updates the Reading Log and tags the paper `read` in Zotero
-10. Moves processed documents to `Distillate/Saved` on reMarkable
-
-On first run, the script sets a watermark at your current Zotero library version. Only papers added *after* this point will be synced. To import existing papers, use `distillate --import`.
-
-### Commands
-
-```bash
-distillate                          # Launch the research assistant (default)
-distillate "What's in my queue?"    # Ask a one-off question
-distillate --sync                   # Sync Zotero -> reMarkable -> notes
-distillate --import                 # Import existing papers from Zotero
-distillate --status                 # Show queue health and reading stats
-distillate --list                   # List all tracked papers
-distillate --suggest                # Pick papers and promote to tablet home
-distillate --digest                 # Show your reading digest
-distillate --schedule               # Set up or manage automatic syncing
-distillate --init                   # Run the setup wizard
-```
-
-<details>
-<summary>Advanced commands</summary>
-
-```bash
-distillate --remove "Title"         # Remove a paper from tracking
-distillate --reprocess "Title"      # Re-extract highlights and regenerate note
-distillate --backfill-highlights     # Back-propagate highlights to Zotero (last 10)
-distillate --refresh-metadata       # Re-fetch metadata from Zotero + Semantic Scholar
-distillate --backfill-s2            # Refresh Semantic Scholar data for all papers
-distillate --sync-state             # Push state.json to a GitHub Gist
-distillate --register               # Register a reMarkable device
-```
-
-</details>
-
-### How highlights work
-
-When you highlight text on the reMarkable using the built-in highlighter (with text recognition enabled), the text is embedded in the document's `.rm` files.
-
-Distillate:
-1. Downloads the raw document bundle via rmapi
-2. Parses `.rm` files using [rmscene](https://github.com/ricklupton/rmscene) to extract highlighted text
-3. Searches for that text in the original PDF using [PyMuPDF](https://pymupdf.readthedocs.io/) and adds highlight annotations
-4. Saves the annotated PDF and writes highlights to the note
-
-### AI summaries
-
-With an Anthropic API key, each processed paper gets:
-
-- A **one-liner** explaining why the paper matters (shown in the Reading Log)
-- A **paragraph summary** of methods and findings
-- **Key learnings** — 4-6 bullet points distilling the most important insights
-
-If you wrote margin notes on the reMarkable, they're transcribed via Claude Vision and woven into the summary — your thinking becomes part of your notes.
-
-Without an API key, papers use their abstract as a fallback.
-
-## Scheduling
-
-```bash
-distillate --schedule
-```
-
-Sets up automatic syncing every 15 minutes. On macOS, creates a launchd agent. On Linux, shows crontab instructions.
-
-### Manual setup
-
-<details>
-<summary>macOS (launchd)</summary>
-
-```bash
-./scripts/install-launchd.sh
-
-# Useful commands
-launchctl start com.distillate.sync        # Run sync now
-tail -f ~/Library/Logs/distillate.log      # Watch logs
-./scripts/uninstall-launchd.sh             # Remove schedule
-```
-
-</details>
-
-<details>
-<summary>Linux (cron)</summary>
-
-```
-*/15 * * * * /path/to/.venv/bin/distillate --sync >> /var/log/distillate.log 2>&1
-```
-
-</details>
-
-## Configuration
-
-All settings live in `.env` (either `~/.config/distillate/.env` or your working directory). See [.env.example](.env.example) for the full list.
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `ZOTERO_API_KEY` | *(required)* | Zotero API key |
-| `ZOTERO_USER_ID` | *(required)* | Zotero numeric user ID |
-| `RM_FOLDER_PAPERS` | `Distillate` | Parent folder on reMarkable |
-| `RM_FOLDER_INBOX` | `Distillate/Inbox` | Folder for unread papers |
-| `RM_FOLDER_READ` | `Distillate/Read` | Move papers here when done reading |
-| `RM_FOLDER_SAVED` | `Distillate/Saved` | Archive folder for processed papers |
-| `OBSIDIAN_VAULT_PATH` | *(empty)* | Path to Obsidian vault |
-| `OBSIDIAN_PAPERS_FOLDER` | `Distillate` | Subfolder within the vault |
-| `OBSIDIAN_VAULT_NAME` | *(empty)* | Vault name for `obsidian://` deep links in emails |
-| `OUTPUT_PATH` | *(empty)* | Plain folder for notes (alternative to Obsidian) |
-| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key for the agent, summaries, and OCR |
-| `CLAUDE_SMART_MODEL` | `claude-sonnet-4-5-20250929` | Model for summaries |
-| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for suggestions and key learnings |
-| `CLAUDE_AGENT_MODEL` | `claude-haiku-4-5-20251001` | Model for the interactive agent |
-| `RESEND_API_KEY` | *(empty)* | Resend API key for email features |
-| `DIGEST_TO` | *(empty)* | Email address for digests |
-| `DIGEST_FROM` | `onboarding@resend.dev` | Sender email (Resend free tier includes 1 custom domain) |
-| `SYNC_HIGHLIGHTS` | `true` | Write highlights back to Zotero as annotations |
-| `KEEP_ZOTERO_PDF` | `true` | Keep PDF in Zotero after upload (`false` frees storage) |
-| `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose console output |
-| `STATE_GIST_ID` | *(empty)* | GitHub Gist ID for cross-machine state sync |
-
-For GitHub Actions automation, engagement scores, reprocessing, custom AI models, and more — see the [Power users guide](https://distillate.dev/power-users.html).
-
-## Works with your tools
-
-Distillate is designed to complement your existing workflow:
-
-- **[Better BibTeX](https://retorque.re/zotero-better-bibtex/)** — notes and PDFs are named by citekey (e.g. `einstein_relativity_1905.md`). If Better BibTeX isn't installed, citekeys are generated automatically.
-- **[Obsidian Zotero Integration](https://github.com/mgmeyers/obsidian-zotero-desktop-connector)** — Distillate appends its sections to existing notes (between `<!-- distillate:start/end -->` markers) instead of overwriting them.
-- **[PDF++](https://github.com/RyotaUshio/obsidian-pdf-plus)** — annotated PDFs are stored alongside notes in `Distillate/Saved/` with citekey filenames.
-- **Zotero's built-in PDF reader** — highlights sync back as native Zotero annotations, visible on desktop and mobile.
-
-## Troubleshooting
-
-**`rmapi: command not found`**
-Install rmapi ([macOS](https://github.com/ddvk/rmapi#macos): `brew install rmapi`). If using `--schedule`, launchd has a minimal PATH — use the full path to rmapi or add it to your shell profile.
-
-**No highlights found**
-Enable "Text recognition" in your reMarkable settings (Settings > General > Text recognition). Highlights made before enabling this won't have extractable text.
-
-**Zotero API errors (403 / 400)**
-Your API key needs read/write permissions. Generate a new key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) with "Allow library access" and "Allow write access" checked.
-
-**Paper not uploading**
-Zotero must have the actual PDF stored (not just a link). Check that the paper has an "Imported" attachment, not a "Linked" one. Web-only attachments can't be synced.
-
-**Paper stuck in inbox**
-On your reMarkable, move the document from `Distillate/Inbox` to `Distillate/Read`, then run `distillate --sync` again. The next sync picks up papers from the Read folder.
-
-## Your workflow
-
-1. Save a paper to Zotero using the browser connector
-2. Wait for Distillate to sync (or run it manually)
-3. Read and highlight on your reMarkable
-4. Move the document from `Distillate/Inbox` to `Distillate/Read`
-5. The next sync picks it up and creates your note
 
 ## License
 

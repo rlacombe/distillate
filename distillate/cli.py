@@ -71,30 +71,67 @@ except Exception:
 _HELP = """\
 Usage: distillate [question]
 
-  distillate              Open the interactive agent (requires API key)
+  distillate              Open the interactive agent (requires Claude Code)
   distillate "question"   Ask a single question, then exit
 
 Experiments:
+
+  Setup:
   --new-experiment [tmpl] Scaffold a new experiment from a template
+  --create-experiment <name> [--goal "..."] [--target /path] [--metric M]
+                          Create experiment from scratch (non-interactive)
+  --install-hooks <path>  Install Claude Code hooks for experiment capture
+  --scan-projects         Scan tracked projects for new experiments
+
+  Run:
   --launch <name>         Launch an auto-research session (tmux)
-  --campaign start|status|stop <project>
-                          Run an autonomous campaign loop
-  --steer <project> "text"  Write steering instructions for next session
-  --experiments           List all tracked experiments with status
+  --continue <project>    Launch continuation session (checks goals first)
+  --sweep <project> --config <sweep.json>
+                          Launch parallel sweep from config file
   --attach <name>         Attach to a running experiment session
   --stop <name>           Stop a running experiment session
-  --scan-projects         Scan tracked projects for new experiments
-  --install-hooks <path>  Install Claude Code hooks for experiment capture
+  --edit-prompt <project> Edit PROMPT.md in $EDITOR
+  --steer <project> "text"  Write steering instructions for next session
+
+  Campaign:
+  --campaign start|status|stop <project>
+                          Run an autonomous campaign loop
+  --parallel-campaign <proj1> <proj2> [...] [--budget N] [--model M]
+                          Launch campaigns across multiple projects
+  --goals <project> ["metric>0.95" ...]
+                          View or set metric goals for a project
+  --queue-sessions <project> [--count N] [--model M] [--turns T]
+                          Queue N continuation sessions
+
+  Inspect:
+  --experiments           List all tracked experiments with status
+  --show <project>        Detailed experiment dashboard
+  --runs <project>        Full run history with metrics
+  --notebook <project>    Generate and open HTML notebook
+  --chart <project>       Export metric chart as PNG and open it
+  --compare <proj1> <proj2> [proj3...]
+                          Side-by-side experiment comparison
   --watch <path>          Watch an experiment repo and regenerate notebooks
+  --update <project> [--key-metric M] [--description "..."]
+                          Update project metadata
+  --templates             List available experiment templates
+  --save-template <project> [--name N]
+                          Save a project config as a reusable template
+  --github <project> [--name repo] [--private]
+                          Create GitHub repo for a project
+  --delete-experiment <project>
+                          Remove experiment from tracking (keeps files)
 
 Papers:
   --sync                  Sync papers: Zotero -> reMarkable -> notes
   --import                Import existing papers from Zotero
   --status                Show experiment and reading status
-  --list                  List all tracked papers
-  --queue                 Browse all papers (paged, press space to scroll)
-  --suggest               Pick papers for your queue and promote to tablet
+  --list                  List all tracked papers (summary table)
+  --queue                 Browse all papers interactively (paged, press space)
+  --suggest               Pick papers for your reading queue (interactive)
+  --suggest-email         Email today's suggestions (non-interactive)
   --digest                Show your reading digest
+  --report                Show reading insights dashboard
   --schedule              Set up automatic syncing (launchd/cron)
   --init                  Run the setup wizard
   --remove "Title"        Remove a paper from tracking
@@ -107,7 +144,6 @@ Advanced:
   --sync-state            Push state.json to a GitHub Gist
   --export-state <path>   Export state.json to a file
   --import-state <path>   Import state.json from a file (backs up existing)
-  --report                Show reading insights dashboard
 
 Options:
   -v, --verbose           Show INFO-level logs on console
@@ -124,8 +160,14 @@ _KNOWN_FLAGS = {
     "--export-state", "--import-state", "--report",
     "--scan-projects", "--install-hooks", "--watch",
     "--new-experiment", "--launch", "--experiments", "--attach", "--stop",
-    "--campaign", "--steer",
+    "--campaign", "--steer", "--show", "--runs", "--notebook",
+    "--continue", "--sweep", "--goals", "--config",
     "--host", "--model", "--turns", "--target", "--name",
+    "--update", "--queue-sessions", "--templates", "--save-template",
+    "--compare", "--github", "--create-experiment", "--parallel-campaign",
+    "--key-metric", "--description", "--count", "--private",
+    "--direction", "--metric", "--budget", "--goal",
+    "--chart", "--delete-experiment", "--edit-prompt", "--yes", "--log-scale",
 }
 
 
@@ -275,9 +317,54 @@ def main():
         commands._stop_experiment(sys.argv[idx + 1:])
         return
 
+    if "--goals" in sys.argv:
+        idx = sys.argv.index("--goals")
+        commands._goals(sys.argv[idx + 1:])
+        return
+
+    if "--show" in sys.argv:
+        idx = sys.argv.index("--show")
+        commands._show_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--runs" in sys.argv:
+        idx = sys.argv.index("--runs")
+        commands._show_runs(sys.argv[idx + 1:])
+        return
+
+    if "--notebook" in sys.argv:
+        idx = sys.argv.index("--notebook")
+        commands._open_notebook(sys.argv[idx + 1:])
+        return
+
+    if "--continue" in sys.argv:
+        idx = sys.argv.index("--continue")
+        commands._continue_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--sweep" in sys.argv:
+        idx = sys.argv.index("--sweep")
+        commands._sweep_experiment(sys.argv[idx + 1:])
+        return
+
     if "--campaign" in sys.argv:
         idx = sys.argv.index("--campaign")
         commands._campaign(sys.argv[idx + 1:])
+        return
+
+    if "--chart" in sys.argv:
+        idx = sys.argv.index("--chart")
+        commands._chart_export(sys.argv[idx + 1:])
+        return
+
+    if "--delete-experiment" in sys.argv:
+        idx = sys.argv.index("--delete-experiment")
+        commands._delete_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--edit-prompt" in sys.argv:
+        idx = sys.argv.index("--edit-prompt")
+        commands._edit_prompt(sys.argv[idx + 1:])
         return
 
     if "--steer" in sys.argv:
@@ -297,6 +384,45 @@ def main():
     if "--watch" in sys.argv:
         idx = sys.argv.index("--watch")
         commands._watch(sys.argv[idx + 1:])
+        return
+
+    if "--update" in sys.argv:
+        idx = sys.argv.index("--update")
+        commands._update_project(sys.argv[idx + 1:])
+        return
+
+    if "--queue-sessions" in sys.argv:
+        idx = sys.argv.index("--queue-sessions")
+        commands._queue_sessions(sys.argv[idx + 1:])
+        return
+
+    if "--templates" in sys.argv:
+        commands._list_templates()
+        return
+
+    if "--save-template" in sys.argv:
+        idx = sys.argv.index("--save-template")
+        commands._save_template(sys.argv[idx + 1:])
+        return
+
+    if "--compare" in sys.argv:
+        idx = sys.argv.index("--compare")
+        commands._compare_projects(sys.argv[idx + 1:])
+        return
+
+    if "--github" in sys.argv:
+        idx = sys.argv.index("--github")
+        commands._github(sys.argv[idx + 1:])
+        return
+
+    if "--create-experiment" in sys.argv:
+        idx = sys.argv.index("--create-experiment")
+        commands._create_experiment(sys.argv[idx + 1:])
+        return
+
+    if "--parallel-campaign" in sys.argv:
+        idx = sys.argv.index("--parallel-campaign")
+        commands._parallel_campaign(sys.argv[idx + 1:])
         return
 
     # Catch unknown flags before falling through

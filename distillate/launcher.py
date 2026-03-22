@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,8 +190,29 @@ def scaffold_experiment(
     if reporting_src.exists():
         shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
 
+    # Install CLAUDE.md (consolidated protocol — auto-loaded by Claude Code)
+    claude_md_src = Path(__file__).parent / "autoresearch" / "CLAUDE.md"
+    if claude_md_src.exists():
+        shutil.copy2(claude_md_src, target / "CLAUDE.md")
+
     # Install hooks via the shared function
     _install_hooks_into(target)
+
+    # Install .mcp.json so the agent can call distillate tools (save_enrichment etc.)
+    mcp_json = target / ".mcp.json"
+    if not mcp_json.exists():
+        mcp_config = {
+            "mcpServers": {
+                "distillate": {
+                    "command": sys.executable,
+                    "args": ["-m", "distillate.mcp_server"],
+                },
+            },
+        }
+        mcp_json.write_text(
+            json.dumps(mcp_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     # Create .claude/settings.local.json with safe Bash permissions
     claude_dir = target / ".claude"
@@ -213,6 +235,13 @@ def scaffold_experiment(
                     "Edit",
                     "Glob",
                     "Grep",
+                    "WebFetch",
+                    "WebSearch",
+                    "mcp__distillate__start_run",
+                    "mcp__distillate__conclude_run",
+                    "mcp__distillate__save_enrichment",
+                    "mcp__distillate__scan_project",
+                    "mcp__distillate__annotate_run",
                 ],
             },
         }
@@ -230,7 +259,12 @@ def _install_hooks_into(project_path: Path) -> None:
     if not hooks_src.exists():
         return
 
-    hook_config = json.loads(hooks_src.read_text(encoding="utf-8"))
+    raw = hooks_src.read_text(encoding="utf-8")
+    # Replace bare "python3" with the absolute path to the Python that has
+    # distillate installed, so hooks work regardless of the experiment's PATH.
+    python_bin = sys.executable
+    raw = raw.replace("python3 -m distillate.", f"{python_bin} -m distillate.")
+    hook_config = json.loads(raw)
 
     claude_dir = project_path / ".claude"
     claude_dir.mkdir(exist_ok=True)
@@ -285,7 +319,7 @@ def _slugify(name: str) -> str:
     return slug.strip("-")
 
 
-def create_github_repo(project_path: Path, name: str, private: bool = True) -> dict:
+def create_github_repo(project_path: Path, name: str, private: bool = False) -> dict:
     """Create a GitHub repo and push initial commit.
 
     Uses `gh` CLI (must be installed and authenticated).
@@ -304,6 +338,33 @@ def create_github_repo(project_path: Path, name: str, private: bool = True) -> d
     if auth_check.returncode != 0:
         return {"ok": False, "reason": "gh not authenticated. Run: gh auth login"}
 
+    # Generate README.md if missing (public repos become Distillate ads)
+    readme_path = project_path / "README.md"
+    if not readme_path.exists():
+        experiment_name = name.removeprefix("distillate-xp-") if name.startswith("distillate-xp-") else name
+        readme_path.write_text(
+            f"# {experiment_name}\n\n"
+            "An autonomous ML experiment powered by "
+            "[Distillate](https://github.com/rlacombe/distillate).\n\n"
+            "## What is Distillate?\n\n"
+            "Distillate is an open-source tool that helps scientists design, launch, "
+            "and track autonomous ML experiments — with a paper library built in. "
+            "Nicolas, the research alchemist, orchestrates Claude Code agents that "
+            "iteratively improve your models.\n\n"
+            "## Reproducing this experiment\n\n"
+            "```bash\n"
+            "# Install Distillate\n"
+            "pip install distillate\n\n"
+            "# Clone and run\n"
+            f"git clone https://github.com/$(gh api user -q .login)/{name}.git\n"
+            f"cd {name}\n"
+            "distillate launch  # Resume the experiment\n"
+            "```\n\n"
+            "## Results\n\n"
+            "See `.distillate/runs.jsonl` for the full experiment history.\n",
+            encoding="utf-8",
+        )
+
     # Initial commit if needed
     subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True)
     subprocess.run(
@@ -321,8 +382,8 @@ def create_github_repo(project_path: Path, name: str, private: bool = True) -> d
     if result.returncode != 0:
         return {"ok": False, "reason": result.stderr.strip() or "Failed to create repo"}
 
-    # Extract URL from output
-    url = result.stdout.strip()
+    # Extract URL from output (first line only — gh also prints git push messages)
+    url = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
     if not url:
         # Try to get it from git remote
         remote = subprocess.run(
@@ -372,6 +433,39 @@ def _generate_run_context(project_path: Path) -> Path | None:
 
     if not runs:
         return None
+
+    # Auto-close orphaned "running" entries — these are announcements
+    # whose run never completed (agent crashed, restarted, or moved on).
+    resolved_ids = {r["id"] for r in runs
+                    if r.get("status") in ("keep", "discard", "crash")
+                    and "id" in r}
+    orphans = [r for r in runs
+               if r.get("status") == "running" and r.get("id") not in resolved_ids]
+    if orphans:
+        now = datetime.now(timezone.utc).isoformat()
+        with open(runs_file, "a", encoding="utf-8") as f:
+            for orph in orphans:
+                # Use original timestamp so it doesn't inflate
+                # experiment time calculations
+                crash_entry = {
+                    "$schema": "distillate/run/v1",
+                    "id": orph.get("id", "unknown"),
+                    "timestamp": orph.get("timestamp", now),
+                    "status": "crash",
+                    "description": orph.get("description", ""),
+                    "reasoning": "Auto-closed: run was announced but never completed.",
+                }
+                f.write(json.dumps(crash_entry, ensure_ascii=False) + "\n")
+                resolved_ids.add(orph.get("id", ""))
+        # Re-read after cleanup
+        runs = []
+        for line in runs_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    runs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
 
     # Cap at last 20 runs
     recent = runs[-20:]
@@ -424,6 +518,31 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         best_metric_name = k
                         best_run_id = run_id
 
+    # --- Key learnings from kept runs ---
+    learnings: list[str] = []
+    for run in recent:
+        if run.get("status") != "keep":
+            continue
+        reasoning = run.get("reasoning", "")
+        if reasoning:
+            learnings.append(reasoning)
+        for lr in run.get("learnings", []):
+            if isinstance(lr, str) and lr:
+                learnings.append(lr)
+
+    if learnings:
+        lines.append("## Key Learnings So Far")
+        lines.append("")
+        # Deduplicate while preserving order, cap at 10
+        seen_lr: set[str] = set()
+        for lr in learnings:
+            if lr not in seen_lr:
+                seen_lr.add(lr)
+                lines.append(f"- {lr}")
+            if len(seen_lr) >= 10:
+                break
+        lines.append("")
+
     # --- Infer key metric and optimization direction ---
     key_metric, key_direction = _infer_key_metric(runs)
     if key_metric:
@@ -456,6 +575,14 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         f"(from {best_run_id})")
         lines.insert(8, "")
 
+    results_path = project_path / "RESULTS.md"
+    if results_path.exists():
+        lines.append("## RESULTS.md")
+        lines.append("")
+        lines.append("A RESULTS.md file exists in the repo root. "
+                      "Update it after each run with your current findings summary.")
+        lines.append("")
+
     context_path = project_path / ".distillate" / "context.md"
     context_path.parent.mkdir(exist_ok=True)
     context_path.write_text("\n".join(lines), encoding="utf-8")
@@ -468,13 +595,16 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
     Returns (metric_name, direction) where direction is "higher" or "lower".
     Returns ("", "") if no metric can be inferred.
 
-    Uses scoring: test > val > train, accuracy/f1 > loss/error,
-    and prefers metrics present in most runs.
+    Uses ``classify_metric()`` from experiments.py for category-aware scoring:
+    ratio > loss > generic, and prefers metrics present in most runs.
     """
     if not runs:
         return ("", "")
 
     from collections import Counter
+
+    from distillate.experiments import classify_metric
+
     metric_counts: Counter = Counter()
     for run in runs:
         for k, v in run.get("results", {}).items():
@@ -485,36 +615,28 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
 
     total = len(runs)
 
-    # Lower-is-better keywords
-    _LOWER_KW = {"loss", "error", "mae", "rmse", "mse", "perplexity",
-                  "time", "latency", "param", "count", "size", "flops", "cost"}
-
-    _RELEVANCE = {
-        "test_accuracy": 100, "test_acc": 100, "test_f1": 95,
-        "test_auc": 90, "test_loss": 70, "test_error": 70,
-        "val_accuracy": 60, "val_acc": 60, "val_f1": 55,
-        "val_loss": 45, "accuracy": 40, "f1": 38,
-        "loss": 20, "error": 20, "param_count": 15,
-        "total_params": 15, "params": 15,
+    # Category-based relevance scores
+    _CATEGORY_RELEVANCE = {
+        "ratio": 50, "loss": 30, "count": 10,
+        "time": 5, "cost": 5, "hyperparameter": 1, "generic": 15,
     }
+    # Prefix boosts (test > val > train)
+    _PREFIX_BOOST = {"test_": 40, "val_": 20, "train_": 5}
 
     def _score(name: str) -> float:
         coverage = metric_counts[name] / total
-        lower_name = name.lower().replace("-", "_")
-        rel = _RELEVANCE.get(lower_name, 0)
-        if rel == 0:
-            for pat, sc in [("test", 30), ("accuracy", 25), ("acc", 25),
-                            ("f1", 20), ("auc", 20), ("val", 12),
-                            ("loss", 10), ("error", 10), ("param", 10)]:
-                if pat in lower_name:
-                    rel = max(rel, sc)
-            if rel == 0:
-                rel = 5
+        cat = classify_metric(name)
+        rel = _CATEGORY_RELEVANCE.get(cat, 15)
+        lower_name = name.lower()
+        for prefix, boost in _PREFIX_BOOST.items():
+            if lower_name.startswith(prefix):
+                rel += boost
+                break
         return coverage * rel
 
     best = max(metric_counts.keys(), key=_score)
-    lower_best = best.lower().replace("-", "_")
-    direction = "lower" if any(kw in lower_best for kw in _LOWER_KW) else "higher"
+    cat = classify_metric(best)
+    direction = "lower" if cat in ("loss", "count", "time", "cost") else "higher"
     return (best, direction)
 
 
@@ -524,21 +646,24 @@ def _build_claude_command(
     model: str = "claude-sonnet-4-5-20250929",
     effort: str = "high",
     has_context: bool = False,
+    prompt_override: str | None = None,
 ) -> str:
     """Build the claude CLI invocation string.
 
     Runs claude interactively (no -p) so the full TUI is visible in
     the tmux session / xterm.js. The prompt just tells claude to read
     PROMPT.md — all experiment logic lives in that file.
+
+    If *prompt_override* is given, it replaces the default prompt text.
     """
-    prompt = (
-        "Read PROMPT.md and follow it precisely. "
-        "You are fully autonomous. Do NOT pause to ask the human anything. "
-        "The human may be asleep. Work indefinitely until manually stopped. "
-        "CRITICAL: After EVERY experiment run (success, failure, or crash), "
-        "commit ALL code changes and results with `git add -A && git commit -m '<run_description>'` "
-        "then `git push`. Never leave uncommitted work."
-    )
+    if prompt_override:
+        prompt = prompt_override
+    else:
+        prompt = (
+            "Read CLAUDE.md (the experiment protocol) and PROMPT.md (the experiment spec). "
+            "Follow both precisely. You are fully autonomous — do NOT pause to ask the human. "
+            "Work indefinitely until manually stopped."
+        )
     parts = [
         "claude",
         "--permission-mode", "auto",
@@ -554,6 +679,7 @@ def launch_experiment(
     model: str = "claude-sonnet-4-5-20250929",
     effort: str = "high",
     project: dict | None = None,
+    prompt_override: str | None = None,
 ) -> dict:
     """Launch a Claude Code session for the experiment.
 
@@ -562,6 +688,9 @@ def launch_experiment(
     3. Build claude command
     4. Spawn tmux session (local or via SSH)
     5. Return session dict for state tracking
+
+    If *prompt_override* is given, it replaces the default prompt
+    (e.g. for backfill tasks).
     """
     project_path = project_path.resolve()
     ensure_tmux()
@@ -590,6 +719,7 @@ def launch_experiment(
     cmd = _build_claude_command(
         prompt, model=model, effort=effort,
         has_context=context_path is not None,
+        prompt_override=prompt_override,
     )
 
     # Determine session name
@@ -638,7 +768,7 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Source bash login profile for SSO auth, then run the command
     bash_profile = Path.home() / ".bash_profile"
     source_line = f"source {shlex.quote(str(bash_profile))} >/dev/null 2>&1; " if bash_profile.exists() else ""
-    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; export DISTILLATE_SESSION=1; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
 
     print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
     print(f"[launch] command: {full_command}")
@@ -690,7 +820,7 @@ def _spawn_ssh(
     session_name: str, host: str, remote_dir: str, command: str,
 ) -> None:
     """Spawn a remote tmux session via SSH."""
-    ssh_cmd = f"cd {shlex.quote(remote_dir)} && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
@@ -1072,7 +1202,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
             return None
         old_runs = existing.get("runs", {})
         old_count = len(old_runs)
-        existing_names = {r["name"] for r in old_runs.values()}
+        existing_names = {str(r.get("name", "")) for r in old_runs.values()}
         new_runs = 0
         for run_id, run_data in result.get("runs", {}).items():
             if run_data["name"] not in existing_names:
@@ -1096,7 +1226,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
                 continue
             for k, v in run.get("results", {}).items():
                 if isinstance(v, (int, float)):
-                    if best_metric is None or v > best_metric.get(list(best_metric.keys())[0], 0):
+                    if best_metric is None or v > next(iter(best_metric.values())):
                         best_metric = {k: v}
 
     return {
@@ -1155,7 +1285,7 @@ def run_campaign(
 
         campaign = proj.get("campaign", {})
         if campaign.get("status") not in ("running", None):
-            # Externally paused/stopped
+            # Externally paused
             return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
 
         # Budget check

@@ -36,6 +36,12 @@ class MockState:
             key=lambda d: d.get("processed_at", ""),
         )
 
+    def index_of(self, zotero_item_key):
+        for i, key in enumerate(self._documents, 1):
+            if key == zotero_item_key:
+                return i
+        return 0
+
     def reload(self):
         pass
 
@@ -163,84 +169,15 @@ class TestStreamFormatter:
         assert result.endswith(_RESET)
 
 
-class TestConversationTrimming:
-    def test_trims_when_too_long(self):
-        from distillate.agent import (
-            _CONVERSATION_KEEP,
-            _CONVERSATION_TRIM_THRESHOLD,
-        )
-        # Verify the constants are sensible
-        assert _CONVERSATION_TRIM_THRESHOLD > _CONVERSATION_KEEP
-        assert _CONVERSATION_KEEP >= 10
-
-    def test_skips_orphaned_tool_result_at_start(self):
-        """After trimming, orphaned tool_result messages must be dropped.
-
-        tool_result messages have role="user" but reference a tool_use_id
-        from a preceding assistant message. If that assistant message was
-        trimmed away, Claude's API rejects the orphaned tool_result.
-        """
-        from distillate.agent import (
-            _CONVERSATION_KEEP,
-            _CONVERSATION_TRIM_THRESHOLD,
-        )
-
-        # Build a conversation that triggers trimming, where the kept
-        # slice starts with an orphaned tool_result.
-        conversation = []
-        # Pad with enough messages to exceed the threshold
-        for i in range(_CONVERSATION_TRIM_THRESHOLD + 2):
-            conversation.append({"role": "user", "content": f"msg {i}"})
-            conversation.append({"role": "assistant", "content": f"reply {i}"})
-
-        # Place a tool_result message right where trimming will keep it
-        tool_result_msg = {
-            "role": "user",
-            "content": [
-                {"type": "tool_result", "tool_use_id": "orphaned_id", "content": "{}"},
-            ],
-        }
-        conversation[-_CONVERSATION_KEEP] = tool_result_msg
-
-        # Simulate the trimming logic from _handle_turn
-        trimmed = conversation[-_CONVERSATION_KEEP:]
-        while trimmed:
-            msg = trimmed[0]
-            if msg.get("role") == "assistant":
-                trimmed.pop(0)
-                continue
-            content = msg.get("content")
-            if (isinstance(content, list) and content
-                    and isinstance(content[0], dict)
-                    and content[0].get("type") == "tool_result"):
-                trimmed.pop(0)
-                continue
-            break
-
-        # First message should be a genuine user message, not a tool_result
-        assert trimmed
-        first = trimmed[0]
-        assert first["role"] == "user"
-        content = first.get("content")
-        assert isinstance(content, str), f"Expected plain text, got {type(content)}"
-
-
 class TestRunChat:
-    def test_exits_without_api_key(self, monkeypatch):
-        monkeypatch.setattr("distillate.agent.config.ANTHROPIC_API_KEY", "")
-        from distillate.agent import run_chat
-        with pytest.raises(SystemExit):
-            run_chat()
-
-    def test_exits_without_anthropic_package(self, monkeypatch):
-        monkeypatch.setattr("distillate.agent.config.ANTHROPIC_API_KEY", "sk-test")
-
+    def test_exits_without_claude_code(self, monkeypatch):
+        """run_chat exits if claude_agent_sdk is not importable."""
         import builtins
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "anthropic":
-                raise ImportError("No module named 'anthropic'")
+            if name == "claude_agent_sdk":
+                raise ImportError("No module named 'claude_agent_sdk'")
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", mock_import)

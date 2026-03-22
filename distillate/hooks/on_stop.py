@@ -19,6 +19,7 @@ Usage in ``.claude/settings.json``::
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,8 @@ def _append_event(project_root: Path, event: dict) -> None:
 
 def main() -> None:
     """Entry point: reads Stop event from stdin."""
+    if not os.environ.get("DISTILLATE_SESSION"):
+        return
     try:
         raw = sys.stdin.read()
         if not raw.strip():

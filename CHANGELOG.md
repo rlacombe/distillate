@@ -1,48 +1,58 @@
 # Changelog
 
-## 0.7.0 — 2026-03-09
+## 0.314.0 — 2026-03-20
 
-Auto-research control plane: live experiment capture, desktop lab dashboard, and Claude Code hooks.
+Autonomous research platform: experiments, paper library, desktop IDE, and 9 alchemy skills.
+
+### Highlights
+
+- **Autonomous experiments**: describe a hypothesis, Nicolas spawns an agent to test it. Time-budgeted sessions, live metric tracking, and automatic insight extraction.
+- **Alchemy skill system**: 9 slash commands across 3 roles — The Laboratory (`/survey`, `/conjure`, `/steer`, `/assay`, `/distill`), The Apothecary (`/brew`, `/forage`, `/tincture`), and The Bridge (`/transmute`)
+- **Desktop IDE**: four-tab Electron app — Control Panel, Session, Results, Prompt. Available as a macOS download alongside the CLI.
+- **No API key needed**: runs entirely through your Claude Code subscription (Max or Pro)
 
 ### New Features
 
-- **Live experiment capture**: three data sources feed into a unified experiment timeline — structured reports (`.distillate/runs.jsonl`), Claude Code hooks (passive capture), and artifact scanning (existing)
-- **Structured reporting standard**: agents append one JSON line per iteration with hypothesis, results, decision (keep/discard/crash), and reasoning
-- **Claude Code hooks**: `post_bash.py` captures training runs from Bash stdout, `on_stop.py` logs session boundaries — zero-effort passive tracking
-- **`--install-hooks <path>`**: one-command setup copies hook config into `.claude/settings.json` and creates `.distillate/` directory
-- **`--watch <path>`**: watches an experiment repo, regenerates notebooks on changes, opens in browser
-- **Decision-aware notebooks**: keep/discard/crash column in timeline, agent reasoning blocks, SVG metric progression chart
-- **Desktop lab tab**: live experiment timeline via SSE, sparkline chart, decision badges, banner stats
-- **Desktop notifications**: new baseline alerts, stuck agent detection (5+ consecutive discards), crash alerts
-- **SSE endpoint**: `GET /experiments/stream` for real-time experiment event streaming
-- **Expanded `/status`**: experiment stats (total runs, kept, discarded, active sessions)
-- **Autoresearch kit**: `REPORTING.md` prompt addendum, `hooks.json` config template, `/experiment` skill
-- **Desktop app**: Electron shell for Nicolas — native macOS app with syntax highlighting and tool indicators
-- **BYOK mode**: bring your own Anthropic API key via Settings (Cmd+,)
+- **Monorepo**: desktop app, MCP server, and Agent SDK in a single repository
+- **Live experiment capture**: structured reports (`.distillate/runs.jsonl`), Claude Code hooks (passive), and artifact scanning
+- **Claude Code hooks**: `post_bash.py` captures training runs from Bash stdout, `on_stop.py` logs session boundaries
+- **Time budgets**: `duration_minutes` parameter in `init_experiment` and `manage_session` — agents respect limits and report when done
+- **Desktop app**: Electron shell with syntax highlighting, tool indicators, and keyboard shortcuts (Cmd+K/E/R/1-4)
+- **47 MCP tools**: paper library, experiments, and bridge tools all accessible via the Distillate MCP server
+- **`--install-hooks <path>`**: one-command Claude Code hook setup for any experiment repo
+- **`--watch <path>`**: watch an experiment repo, regenerate notebooks on changes
+- **Desktop notifications**: new baseline alerts, stuck agent detection, crash alerts
+- **GitHub integration**: public repos by default (`distillate-xp-` prefix), GitHub flare in control panel links to repo
+
+### Desktop IDE
+
+- **Prompt tab**: view and edit PROMPT.md with markdown rendering and syntax highlighting
+- **Results tab**: runs grid, research insights (key breakthrough, lessons learned, dead ends)
+- **Session tab**: embedded xterm.js terminal attached to the running Claude Code session
+- **Control Panel**: metric chart with log scale toggle, export to PNG, session timer, goal chips
+- **Session states**: running (green triangle), ready (purple circle), paused (gray square)
+- **Keyboard shortcuts**: Cmd+R refresh data, Cmd+Shift+R hard reload, Cmd+1-4 switch tabs, Cmd+E toggle sidebar, Cmd+K toggle chat
+- **Tab refresh on project switch**: Results and Prompt tabs update immediately when clicking a different project
 
 ### CLI & Internals
 
-- **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown, engagement distribution, most-cited papers, top authors
+- **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown
 - **`--export-state` / `--import-state`**: backup and restore tracked papers and reading history
-- **`--verbose` / `-v`**: show INFO-level logs on the console without full DEBUG output
-- **State schema versioning**: migration framework for future state.json changes (currently v1)
-- **S2 TLDR fallback**: papers without AI summaries now fall back to Semantic Scholar's one-sentence TLDR before using the abstract
-- **Progress bar for `--refresh-metadata`**: shows `[i/N]` progress and a summary of changes
-- **Init safety**: `--init` warns when existing tracked papers are found, offers backup before re-setup
-- Internal: extracted `_parse_page_ids()` (renderer, 4 call sites) and `_fetch_pdf_bytes()` (pipeline, 5 call sites) to reduce code duplication
+- **Agent SDK migration**: NicolasClient wraps ClaudeSDKClient — same engine for CLI and desktop
+- **State schema versioning**: migration framework for future state.json changes
 
-### Improvements
+### Bug Fixes
 
-- Dual-source ingestion with fingerprint-based correlation and deduplication
-- Desktop tab bar (Lab / Notebook / Chat) — Lab tab auto-activates when experiments are running
-- Tool indicator subtitles in the desktop UI
-- `[desktop]` optional dependency group in pyproject.toml
+- **Prompt tab showed "No PROMPT.md yet" for valid prompts**: `hljs.highlightElement` threw inside the try block; catch handler replaced rendered content with error placeholder
+- **Results/Prompt tabs stale on project switch**: tab refresh only covered the sidebar-click path; background refreshes (poll, SSE) left tabs showing previous project's data
+- **Bullet point misalignment in insights**: `<p>` tags from markdown rendering pushed text below `::before` bullet pseudo-elements
+- **Cmd+R not in menu**: only Cmd+Shift+R was available; added Cmd+R for soft data refresh
 
 ### Migration from 0.6.x
 
-- **No breaking changes** — all new features are additive
+- **No breaking changes** — existing paper libraries carry over unchanged
+- **`distillate` now requires Claude Code** — install from docs.anthropic.com/en/docs/claude-code
 - **Desktop app is optional** — the CLI works exactly the same as before
-- **Hooks are opt-in** — run `distillate --install-hooks <path>` to enable passive experiment capture in any repo
 
 ## 0.6.0 — 2026-02-25
 

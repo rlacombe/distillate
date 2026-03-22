@@ -1,13 +1,15 @@
 """Interactive agent REPL for Distillate.
 
 Provides a conversational interface to the paper library using Claude
-with tool use. Launched via ``distillate`` (in a TTY) or
+Code via the Agent SDK. Launched via ``distillate`` (in a TTY) or
 ``distillate "question"`` for single-turn mode.
 
-Terminal rendering (spinners, ANSI) lives here.  Core conversation logic
-lives in :mod:`distillate.agent_core`.
+Terminal rendering (spinners, ANSI) lives here.  The Agent SDK
+(``agent_sdk.NicolasClient``) manages the Claude Code subprocess
+and MCP tool connections.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -25,13 +27,9 @@ from rich.table import Table
 
 from distillate import config
 from distillate.agent_core import (
-    CONVERSATION_KEEP,
-    CONVERSATION_TRIM_THRESHOLD,
     VERBOSE_TOOLS,
     build_system_prompt as _build_system_prompt,  # noqa: F401 (re-export for tests)
-    create_client,
     execute_tool as _execute_tool,  # noqa: F401 (re-export for tests)
-    stream_turn,
     tool_label as _tool_label,
 )
 from distillate.state import State
@@ -46,10 +44,6 @@ _CONVERSATION_LOG_PATH = config.CONFIG_DIR / "conversations.json"
 _MAX_SESSIONS = 50
 
 _console = Console(highlight=False)
-
-# Re-export constants so existing tests that import from agent still work
-_CONVERSATION_TRIM_THRESHOLD = CONVERSATION_TRIM_THRESHOLD
-_CONVERSATION_KEEP = CONVERSATION_KEEP
 
 
 def _load_conversation_log() -> list[dict]:
@@ -218,19 +212,26 @@ class _ThinkingSpinner:
 # ---------------------------------------------------------------------------
 
 def run_chat(initial_args: Optional[List[str]] = None) -> None:
-    """Entry point for interactive chat mode."""
-    client = create_client()
-    if client is None:
+    """Entry point for interactive chat mode — bridges sync to async."""
+    try:
+        from claude_agent_sdk import ClaudeSDKClient  # noqa: F401
+    except ImportError:
         print(
-            "\n  Agent mode requires an Anthropic API key.\n"
-            "  Set ANTHROPIC_API_KEY in your .env file or run "
-            "'distillate --init'.\n"
-            "  To sync papers without AI, use: distillate --sync\n"
+            "\n  Nicolas requires Claude Code.\n"
+            "  Install it from: https://docs.anthropic.com/en/docs/claude-code\n"
+            "  Then: pip install claude-agent-sdk\n"
         )
         sys.exit(1)
 
+    asyncio.run(_async_run_chat(initial_args))
+
+
+async def _async_run_chat(initial_args: Optional[List[str]] = None) -> None:
+    """Async REPL loop driven by NicolasClient (Agent SDK)."""
+    from distillate.agent_sdk import NicolasClient
+
     state = State()
-    conversation: list[dict] = []
+    nicolas = NicolasClient(state)
 
     # Load conversation history for cross-session memory
     all_sessions = _load_conversation_log()
@@ -242,21 +243,25 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
     # Single-turn mode: answer one question and exit
     if initial_args:
         query = " ".join(initial_args)
-        _render_turn(
-            client, state, conversation, query,
-            past_sessions=all_sessions, stream=False,
-        )
+        await _render_turn_sdk(nicolas, query, stream=False)
+        await nicolas.disconnect()
         return
 
     # Interactive REPL — clear screen for full-screen feel
     if _is_tty():
         print("\033[2J\033[H", end="", flush=True)
-    experiment_updates = _print_welcome(state)
+    _print_welcome(state)
+
+    loop = asyncio.get_event_loop()
 
     while True:
         try:
-            user_input = input("\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
+            user_input = await loop.run_in_executor(None, _prompt_input)
+            if user_input is None:
+                # EOFError or KeyboardInterrupt
+                print()
+                break
+        except KeyboardInterrupt:
             print()
             break
 
@@ -266,7 +271,7 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             print("\n  \u2697\ufe0f  See you next time!\n")
             break
         if user_input.lower() in ("/clear",):
-            conversation.clear()
+            await nicolas.new_conversation()
             print("  Conversation cleared.")
             continue
         if user_input.lower() in ("/help",):
@@ -292,36 +297,129 @@ def run_chat(initial_args: Optional[List[str]] = None) -> None:
             _show_report(state)
             continue
 
-        _render_turn(
-            client, state, conversation, user_input,
-            past_sessions=all_sessions, stream=True,
-            experiment_updates=experiment_updates,
-        )
+        assistant_text = await _render_turn_sdk(nicolas, user_input, stream=True)
 
         # Log this exchange
         current_session["messages"].append({"role": "user", "content": user_input})
-        # Extract assistant text from the last assistant message
-        for msg in reversed(conversation):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", [])
-                texts = [b.text for b in content if hasattr(b, "text")]
-                if texts:
-                    current_session["messages"].append(
-                        {"role": "assistant", "content": " ".join(texts)[:200]}
-                    )
-                break
+        if assistant_text:
+            current_session["messages"].append(
+                {"role": "assistant", "content": assistant_text[:200]}
+            )
 
     # Save session on exit (only if there were messages)
     if current_session["messages"]:
         all_sessions.append(current_session)
         _save_conversation_log(all_sessions)
 
+    await nicolas.disconnect()
 
-def _print_welcome(state: State) -> list[dict]:
-    """Print a compact welcome banner using rich.
 
-    Returns experiment update dicts (for later use in the system prompt).
+def _prompt_input() -> str | None:
+    """Blocking input() call — run in executor for async compat."""
+    try:
+        return input("\n> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Turn rendering — consumes events from NicolasClient.send()
+# ---------------------------------------------------------------------------
+
+async def _render_turn_sdk(nicolas, user_input: str, stream: bool = True) -> str:
+    """Handle one user turn by consuming Agent SDK events.
+
+    Returns the accumulated assistant text for conversation logging.
     """
+    fmt = _StreamFormatter()
+    spinner = _ThinkingSpinner()
+    first_token = True
+    has_text = False
+    assistant_text_parts: list[str] = []
+
+    # Blank line before response
+    if stream:
+        print()
+
+    spinner.start()
+
+    try:
+        async for event in nicolas.send(user_input):
+            etype = event["type"]
+
+            if etype == "text_delta":
+                if first_token:
+                    spinner.stop()
+                    first_token = False
+                    has_text = True
+                text = event["text"]
+                assistant_text_parts.append(text)
+                if stream:
+                    print(fmt.feed(text), end="", flush=True)
+                else:
+                    print(fmt.feed(text), end="")
+
+            elif etype == "tool_start":
+                # Stop the thinking spinner before tool execution
+                spinner.stop()
+                first_token = False
+
+                # If text was streamed before this tool, add spacing
+                if has_text:
+                    print(fmt.flush(), end="")
+                    print()  # newline after streamed text
+                    print()  # blank line before tool spinner
+
+                # Start a tool-specific spinner
+                label = event.get("label") or _tool_label(event["name"])
+                spinner = _ThinkingSpinner(label)
+
+                if event.get("verbose"):
+                    # Verbose tools print their own progress —
+                    # show the label, then let stdout pass through
+                    spinner.start()
+                    spinner.stop(keep_label=True)
+                    if _is_tty():
+                        _orig_write = sys.stdout.write
+                        sys.stdout.write = lambda s, _w=_orig_write: (
+                            _w(f"\033[2;35m{s}{_RESET}") if s.strip() else _w(s)
+                        )
+                else:
+                    spinner.start()
+
+            elif etype == "tool_done":
+                # Detect verbose tool from name if present
+                tool_name = event.get("name", "")
+                if tool_name in VERBOSE_TOOLS and _is_tty():
+                    sys.stdout.write = sys.__stdout__.write
+                    print()  # blank line after verbose output
+                spinner.stop()
+                has_text = False
+
+                # Start a new thinking spinner for the next response
+                spinner = _ThinkingSpinner()
+                spinner.start()
+                first_token = True
+
+            elif etype == "turn_end":
+                spinner.stop()
+                if has_text:
+                    print(fmt.flush(), end="")
+                    print()  # final newline
+
+            elif etype == "session_init":
+                # Session ID received — logged for diagnostics
+                log.debug("SDK session: %s", event.get("session_id"))
+
+    except KeyboardInterrupt:
+        spinner.stop()
+        print("\n  (interrupted)")
+
+    return "".join(assistant_text_parts)
+
+
+def _print_welcome(state: State) -> None:
+    """Print a compact welcome banner using rich."""
     processed = state.documents_with_status("processed")
     _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
     queue = state.documents_with_status(_q_status)
@@ -329,9 +427,7 @@ def _print_welcome(state: State) -> list[dict]:
     n_queue = len(queue)
 
     lines = []
-    lines.append("[dim]Your research command center.[/dim]")
-
-    experiment_updates: list[dict] = []
+    lines.append("[dim]Your research alchemist.[/dim]")
 
     # Experiments first
     if config.EXPERIMENTS_ENABLED and state.projects:
@@ -390,8 +486,6 @@ def _print_welcome(state: State) -> list[dict]:
     hints.append("What's trending in AI?")
     sep = " \u00b7 "
     print(f"\n  {_dim('Or just ask:')} {_dim(sep.join(hints))}")
-
-    return experiment_updates
 
 
 def _run_init() -> None:
@@ -849,153 +943,3 @@ def _show_report(state: State) -> None:
         padding=(1, 2),
     ))
     print()
-
-
-# ---------------------------------------------------------------------------
-# Turn rendering — consumes events from agent_core.stream_turn
-# ---------------------------------------------------------------------------
-
-def _repair_conversation(conversation: list[dict]) -> None:
-    """Ensure every tool_use in the last assistant message has a tool_result.
-
-    If the generator was interrupted mid-tool, the assistant message with
-    tool_use blocks was appended but the user message with tool_result blocks
-    was not.  The API requires them to be paired, so we add stub results
-    for any orphaned tool_use ids.
-    """
-    if len(conversation) < 1:
-        return
-    last = conversation[-1]
-    if last.get("role") != "assistant":
-        return
-    content = last.get("content", [])
-    tool_use_ids = [
-        b.id for b in content
-        if hasattr(b, "type") and b.type == "tool_use"
-    ]
-    if not tool_use_ids:
-        return
-    # Check if the next message already has the results
-    # (it won't exist if we were interrupted)
-    # Since last message IS the last in the list, results are missing.
-    stub_results = [
-        {
-            "type": "tool_result",
-            "tool_use_id": tid,
-            "content": '{"error": "interrupted by user"}',
-        }
-        for tid in tool_use_ids
-    ]
-    conversation.append({"role": "user", "content": stub_results})
-
-
-def _render_turn(
-    client,
-    state: State,
-    conversation: list[dict],
-    user_input: str,
-    past_sessions: list[dict] | None = None,
-    stream: bool = True,
-    experiment_updates: list[dict] | None = None,
-) -> None:
-    """Handle one user turn by consuming agent_core events."""
-    fmt = _StreamFormatter()
-    spinner = _ThinkingSpinner()
-    first_token = True
-    has_text = False
-
-    # Blank line before response
-    if stream:
-        print()
-
-    spinner.start()
-
-    try:
-        for event in stream_turn(
-            client, state, conversation, user_input,
-            past_sessions=past_sessions,
-            experiment_updates=experiment_updates,
-        ):
-            etype = event["type"]
-
-            if etype == "text_delta":
-                if first_token:
-                    spinner.stop()
-                    first_token = False
-                    has_text = True
-                if stream:
-                    print(fmt.feed(event["text"]), end="", flush=True)
-                else:
-                    print(fmt.feed(event["text"]), end="")
-
-            elif etype == "tool_start":
-                # Stop the thinking spinner before tool execution
-                if first_token:
-                    spinner.stop()
-                    first_token = False
-                else:
-                    spinner.stop()
-
-                # If text was streamed before this tool, add spacing
-                if has_text:
-                    print(fmt.flush(), end="")
-                    print()  # newline after streamed text
-                    print()  # blank line before tool spinner
-
-                # Start a tool-specific spinner
-                spinner = _ThinkingSpinner(_tool_label(event["name"]))
-
-                if event.get("verbose"):
-                    # Verbose tools print their own progress —
-                    # show the label, then let stdout pass through
-                    spinner.start()
-                    spinner.stop(keep_label=True)
-                    if _is_tty():
-                        _orig_write = sys.stdout.write
-                        sys.stdout.write = lambda s, _w=_orig_write: (
-                            _w(f"\033[2;35m{s}{_RESET}") if s.strip() else _w(s)
-                        )
-                else:
-                    spinner.start()
-
-            elif etype == "tool_done":
-                if event.get("name") in VERBOSE_TOOLS and _is_tty():
-                    # Restore stdout after verbose tool
-                    sys.stdout.write = sys.__stdout__.write
-                    print()  # blank line after verbose output
-                spinner.stop()
-                has_text = False
-
-                # Start a new thinking spinner for the next API call
-                spinner = _ThinkingSpinner()
-                spinner.start()
-                first_token = True
-
-            elif etype == "turn_end":
-                spinner.stop()
-                if has_text:
-                    print(fmt.flush(), end="")
-                    print()  # final newline
-
-            elif etype == "error":
-                spinner.stop()
-                cat = event.get("category", "unknown")
-                if cat == "credits_depleted":
-                    print("\n  Anthropic API credits depleted.")
-                    print("  Add credits at https://console.anthropic.com/settings/billing")
-                elif cat == "invalid_key":
-                    print("\n  Invalid Anthropic API key. Run /init to update it.")
-                elif cat == "overloaded":
-                    print("\n  Anthropic API is overloaded. Try again in a moment.")
-                elif cat == "rate_limited":
-                    print("\n  Rate limited. Wait a moment and try again.")
-                else:
-                    print("\n  Something went wrong. Try again.")
-
-    except KeyboardInterrupt:
-        spinner.stop()
-        print("\n  (interrupted)")
-
-    # Repair conversation if interrupted mid-tool: ensure every tool_use
-    # has a matching tool_result, otherwise the next API call will 400.
-    _repair_conversation(conversation)

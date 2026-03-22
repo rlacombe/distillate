@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.7.0"
+version = "0.314.0"
 description = "Design, launch, and track autonomous research experiments — with a paper library built in"
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,8 @@ dependencies = [
     "anthropic>=0.40.0",
     "resend>=2.0.0",
     "rich>=13.0",
+    "claude-agent-sdk>=0.1.49",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +46,7 @@ Changelog = "https://github.com/rlacombe/distillate/blob/main/CHANGELOG.md"
 
 [project.scripts]
 distillate = "distillate.main:_main_wrapper"
+distillate-mcp = "distillate.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["distillate"]
@@ -52,6 +55,9 @@ packages = ["distillate"]
 "distillate/autoresearch/REPORTING.md" = "distillate/autoresearch/REPORTING.md"
 "distillate/autoresearch/hooks.json" = "distillate/autoresearch/hooks.json"
 "distillate/autoresearch/skills/experiment/SKILL.md" = "distillate/autoresearch/skills/experiment/SKILL.md"
+"desktop/renderer/index.html" = "distillate/ui/index.html"
+"desktop/renderer/app.js" = "distillate/ui/app.js"
+"desktop/renderer/styles.css" = "distillate/ui/styles.css"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

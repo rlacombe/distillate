@@ -1,4 +1,6 @@
-const { app, Menu, shell } = require("electron");
+const { app, Menu, shell, dialog } = require("electron");
+const fs = require("fs");
+const path = require("path");
 
 /**
  * Build the application menu.
@@ -9,6 +11,17 @@ const { app, Menu, shell } = require("electron");
  */
 function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
   const isMac = process.platform === "darwin";
+
+  // Read current settings for menu checkbox state
+  let privateRepos = false;
+  try {
+    const envPath = path.join(
+      process.env.HOME || process.env.USERPROFILE,
+      ".config", "distillate", ".env",
+    );
+    const text = fs.readFileSync(envPath, "utf-8");
+    privateRepos = /PRIVATE_REPOS\s*=\s*true/i.test(text);
+  } catch {}
 
   const template = [
     // macOS app menu
@@ -47,17 +60,47 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
           click: () => onNewConversation(),
         },
         { type: "separator" },
-        // On Windows/Linux, put Settings in File menu
-        ...(!isMac
-          ? [
-              {
-                label: "Settings\u2026",
-                accelerator: "Ctrl+,",
-                click: () => onOpenSettings(),
-              },
-              { type: "separator" },
-            ]
-          : []),
+        {
+          label: "Export State\u2026",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.send("menu-export-state");
+          },
+        },
+        {
+          label: "Import State\u2026",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.send("menu-import-state");
+          },
+        },
+        { type: "separator" },
+        {
+          label: "Private GitHub Repos",
+          type: "checkbox",
+          checked: privateRepos,
+          click: (menuItem) => {
+            const val = menuItem.checked;
+            const envPath = path.join(
+              process.env.HOME || process.env.USERPROFILE,
+              ".config", "distillate", ".env",
+            );
+            let vars = {};
+            try {
+              const text = fs.readFileSync(envPath, "utf-8");
+              for (const line of text.split("\n")) {
+                const eq = line.indexOf("=");
+                if (eq > 0) vars[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+              }
+            } catch {
+              fs.mkdirSync(path.dirname(envPath), { recursive: true });
+            }
+            vars.PRIVATE_REPOS = val ? "true" : "false";
+            const out = Object.entries(vars).map(([k, v]) => `${k}=${v}`).join("\n") + "\n";
+            fs.writeFileSync(envPath, out, "utf-8");
+          },
+        },
+        { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
       ],
     },
@@ -86,8 +129,24 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        {
+          label: "Refresh Data",
+          accelerator: "CmdOrCtrl+R",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.executeJavaScript(
+              "if(typeof reloadCurrentProject==='function'){reloadCurrentProject();fetchPapersData();}"
+            ).catch(() => {});
+          },
+        },
+        {
+          label: "Hard Reload",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.reloadIgnoringCache();
+          },
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
         { role: "resetZoom" },
@@ -129,6 +188,29 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
             shell.openExternal(
               "https://github.com/rlacombe/distillate/issues"
             ),
+        },
+        { type: "separator" },
+        {
+          label: "Reset Python Environment",
+          click: async () => {
+            const { response } = await dialog.showMessageBox({
+              type: "warning",
+              buttons: ["Cancel", "Reset"],
+              defaultId: 0,
+              cancelId: 0,
+              title: "Reset Python Environment",
+              message: "This will delete the bundled Python environment and restart the app. Use this if the app is not working correctly.",
+            });
+            if (response === 1) {
+              const userData = app.getPath("userData");
+              const venvDir = path.join(userData, "python-env");
+              const versionFile = path.join(userData, "distillate-version.txt");
+              try { fs.rmSync(venvDir, { recursive: true, force: true }); } catch (_) {}
+              try { fs.unlinkSync(versionFile); } catch (_) {}
+              app.relaunch();
+              app.exit(0);
+            }
+          },
         },
         { type: "separator" },
         {

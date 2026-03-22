@@ -449,6 +449,18 @@ def get_paper_details(*, state, identifier: str) -> dict:
             if len(notes_text) > 1000:
                 notes_text = notes_text[:1000] + "\n... (truncated)"
 
+    # Linked projects (reverse link from experiments)
+    linked_projects = doc.get("linked_projects", [])
+    if linked_projects:
+        project_names = []
+        for pid in linked_projects:
+            proj = state.get_project(pid)
+            if proj:
+                project_names.append(proj.get("name", pid))
+            else:
+                project_names.append(pid)
+        paper["linked_projects"] = project_names
+
     return {
         "found": True,
         "paper": paper,

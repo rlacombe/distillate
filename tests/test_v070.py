@@ -314,7 +314,7 @@ class TestRefreshMetadataProgress:
         }
         STATE_PATH.write_text(json.dumps(state_data))
 
-        monkeypatch.setattr(commands_mod.sys.stdout, "isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
 
         mock_meta = {
             "title": "Test Paper", "authors": ["Author"],

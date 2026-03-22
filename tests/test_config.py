@@ -158,7 +158,8 @@ class TestValidateOptional:
             config._validate_optional()
         assert "OUTPUT_PATH does not exist" in caplog.text
 
-    def test_warns_on_bad_anthropic_key(self, monkeypatch, caplog):
+    def test_no_warn_on_anthropic_key(self, monkeypatch, caplog):
+        """ANTHROPIC_API_KEY is optional — no prefix validation warning."""
         import logging
         from distillate import config
 
@@ -169,7 +170,7 @@ class TestValidateOptional:
 
         with caplog.at_level(logging.WARNING):
             config._validate_optional()
-        assert "ANTHROPIC_API_KEY" in caplog.text
+        assert "ANTHROPIC_API_KEY" not in caplog.text
 
     def test_warns_on_bad_resend_key(self, monkeypatch, caplog):
         import logging

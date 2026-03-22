@@ -128,14 +128,31 @@ CLAUDE_AGENT_MODEL: str = os.environ.get("CLAUDE_AGENT_MODEL", "claude-haiku-4-5
 _loaded = False
 
 
-def ensure_loaded() -> None:
-    """Validate required config vars. Call at the start of main()."""
+def ensure_loaded(*, required: bool = True) -> None:
+    """Validate config vars. Call at the start of main().
+
+    When ``required=False`` (used by the desktop server), missing Zotero
+    credentials are logged as warnings instead of calling ``sys.exit(1)``.
+    This lets the app start without a paper library configured.
+    """
     global _loaded, ZOTERO_API_KEY, ZOTERO_USER_ID
     if _loaded:
         return
     _loaded = True
-    ZOTERO_API_KEY = _require("ZOTERO_API_KEY")
-    ZOTERO_USER_ID = _require("ZOTERO_USER_ID")
+
+    if required:
+        ZOTERO_API_KEY = _require("ZOTERO_API_KEY")
+        ZOTERO_USER_ID = _require("ZOTERO_USER_ID")
+    else:
+        log = logging.getLogger(__name__)
+        ZOTERO_API_KEY = os.environ.get("ZOTERO_API_KEY", "").strip()
+        ZOTERO_USER_ID = os.environ.get("ZOTERO_USER_ID", "").strip()
+        if not ZOTERO_API_KEY or not ZOTERO_USER_ID:
+            log.warning(
+                "Zotero credentials not configured — paper library disabled. "
+                "Run 'distillate --init' or set ZOTERO_API_KEY and ZOTERO_USER_ID."
+            )
+
     _validate_optional()
 
 
@@ -149,10 +166,8 @@ def _validate_optional() -> None:
     if OUTPUT_PATH and not Path(OUTPUT_PATH).is_dir():
         log.warning("OUTPUT_PATH does not exist: %s", OUTPUT_PATH)
 
-    if ANTHROPIC_API_KEY and not ANTHROPIC_API_KEY.startswith("sk-"):
-        log.warning(
-            "ANTHROPIC_API_KEY doesn't look like a valid key (expected 'sk-' prefix)"
-        )
+    # ANTHROPIC_API_KEY is optional — used only by the sync pipeline
+    # (summaries, renderer, experiment enrichment). No prefix validation.
 
     if RESEND_API_KEY and not RESEND_API_KEY.startswith("re_"):
         log.warning(

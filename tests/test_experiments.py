@@ -774,7 +774,7 @@ class TestGitHook:
 class TestMetricFormatting:
     def test_percentage_metric(self):
         from distillate.experiments import _fmt_metric
-        assert _fmt_metric("accuracy", 0.95) == "95.0%"
+        assert _fmt_metric("accuracy", 0.95) == "95.00%"
         assert _fmt_metric("accuracy", 0.9999) == "99.99%"
 
     def test_loss_metric(self):
@@ -789,7 +789,8 @@ class TestMetricFormatting:
 
     def test_pick_key_metric(self):
         from distillate.experiments import _pick_key_metric
-        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "accuracy=95.0%"
+        # loss is prioritized over accuracy (category priority: loss=0, ratio=1)
+        assert _pick_key_metric({"accuracy": 0.95, "loss": 0.1}) == "loss=0.1000"
         assert _pick_key_metric({"loss": 0.1}) == "loss=0.1000"
         assert _pick_key_metric({}) == "-"
 
@@ -802,7 +803,7 @@ class TestMetricFormatting:
 class TestExperimentToolSchemas:
     def test_all_schemas_valid(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 21
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 37
         for schema in EXPERIMENT_TOOL_SCHEMAS:
             assert "name" in schema
             assert "description" in schema
@@ -817,10 +818,16 @@ class TestExperimentToolSchemas:
             "scan_project", "get_experiment_notebook",
             "add_project", "rename_project", "rename_run",
             "delete_project", "delete_run", "update_project",
-            "link_paper", "update_goals", "annotate_run",
+            "get_run_details", "link_paper", "update_goals", "annotate_run",
             "launch_experiment", "experiment_status", "stop_experiment",
             "init_experiment", "continue_experiment", "sweep_experiment",
             "steer_experiment",
+            "compare_projects", "queue_sessions", "list_templates",
+            "save_template", "create_github_repo", "reading_report",
+            "manage_session",
+            "replicate_paper", "suggest_from_literature", "extract_baselines",
+            "save_enrichment", "start_run", "conclude_run",
+            "purge_hook_runs", "discover_relevant_papers",
         }
 
 
@@ -1411,6 +1418,7 @@ class TestLLMEnrichment:
 
         class FakeResponse:
             content = [FakeContent()]
+            stop_reason = "end_turn"
 
         class FakeMessages:
             def create(self, **kwargs):
@@ -1426,6 +1434,8 @@ class TestLLMEnrichment:
         import types
         fake_anthropic = types.ModuleType("anthropic")
         fake_anthropic.Anthropic = FakeClient
+        fake_anthropic.APIError = type("APIError", (Exception,), {})
+        fake_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
         monkeypatch.setitem(__import__("sys").modules, "anthropic", fake_anthropic)
 
         result = enrich_runs_with_llm(_SAMPLE_RUNS, "Test Project", tmp_path)
@@ -2890,7 +2900,7 @@ class TestMetricChart:
         assert "<svg" in svg
         assert "polyline" in svg
         assert "#3fb950" in svg  # green for keep
-        assert "#f85149" in svg  # red for discard
+        assert "#555555" in svg  # gray for discard
 
     def test_no_chart_with_single_run(self):
         from distillate.experiments import _render_metric_chart
@@ -3008,3 +3018,86 @@ class TestScanProjectWithIngestion:
         runs = result["runs"]
         hook_runs = [r for r in runs.values() if r.get("source") == "hooks"]
         assert len(hook_runs) == 1
+
+    def test_structured_run_deduplicates_artifact_scanned(self, tmp_path):
+        """Structured runs from runs.jsonl should replace artifact-scanned
+        duplicates that share the same hyperparameters (double-curve bug).
+
+        Without dedup, scan_project() returns two runs for the same experiment
+        — one from artifact scanning (hash-based ID) and one from runs.jsonl
+        (sr- prefixed ID) — causing a double curve on the chart.
+        """
+        # Create an artifact that scan_project will discover
+        results_dir = tmp_path / "experiment"
+        results_dir.mkdir()
+        (results_dir / "train_v1.json").write_text(json.dumps({
+            "config": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "total_time": 3600,
+            "best_val_acc": 0.85,
+            "epochs": [
+                {"epoch": 1, "loss": 1.0, "val_acc": 0.5},
+                {"epoch": 10, "loss": 0.2, "val_acc": 0.85},
+            ],
+        }))
+
+        # Create a structured run with the SAME hyperparameters
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        entry = json.dumps({
+            "$schema": "distillate/run/v1",
+            "id": "run_001",
+            "timestamp": "2026-03-09T04:00:00Z",
+            "status": "keep",
+            "hypothesis": "Test dedup",
+            "hyperparameters": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+            "results": {"val_acc": 0.85},
+        })
+        (distillate_dir / "runs.jsonl").write_text(entry + "\n", encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+
+        runs = result["runs"]
+        # Should have exactly ONE run, not two
+        runs_with_hp = [
+            r for r in runs.values()
+            if r.get("hyperparameters", {}).get("d_model") == 64
+        ]
+        assert len(runs_with_hp) == 1, (
+            f"Expected 1 run with d_model=64 but got {len(runs_with_hp)}: "
+            f"{[r['id'] for r in runs_with_hp]}"
+        )
+        # The surviving run should be the structured one
+        assert runs_with_hp[0]["source"] == "structured"
+        assert runs_with_hp[0]["name"] == "run_001"
+
+    def test_structured_runs_with_same_hyperparameters_all_kept(self, tmp_path):
+        """Multiple structured runs sharing identical hyperparameters must all
+        survive — the dedup should only remove artifact-scanned duplicates,
+        never other structured runs."""
+        distillate_dir = tmp_path / ".distillate"
+        distillate_dir.mkdir()
+        lines = []
+        for i in range(1, 4):
+            lines.append(json.dumps({
+                "$schema": "distillate/run/v1",
+                "id": f"run_{i:03d}",
+                "timestamp": f"2026-03-09T0{i}:00:00Z",
+                "status": "keep" if i % 2 else "discard",
+                "hyperparameters": {"d_model": 64, "n_heads": 2, "lr": 0.001},
+                "results": {"accuracy": 0.5 + i * 0.1},
+            }))
+        (distillate_dir / "runs.jsonl").write_text("\n".join(lines) + "\n",
+                                                   encoding="utf-8")
+
+        from distillate.experiments import scan_project
+        result = scan_project(tmp_path)
+        assert "error" not in result
+
+        structured = [r for r in result["runs"].values()
+                      if r.get("source") == "structured"]
+        assert len(structured) == 3, (
+            f"Expected 3 structured runs but got {len(structured)}: "
+            f"{[r['name'] for r in structured]}"
+        )
