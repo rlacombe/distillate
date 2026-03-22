@@ -94,7 +94,9 @@ The Distillate desktop app provides an IDE-style layout with four tabs:
 - **Results** — runs grid with research insights (key breakthrough, lessons learned, dead ends)
 - **Prompt** — view and edit PROMPT.md with markdown rendering
 
-The desktop app connects to the same backend as the CLI — everything stays in sync. [Download for macOS](https://github.com/rlacombe/distillate/releases/latest).
+New users get one-click onboarding: launch a demo experiment from the sidebar, or connect your Zotero library from the papers panel. Context-aware suggestions in the chat adapt to what you're looking at — experiment-specific actions when viewing an experiment, paper-specific actions when viewing a paper.
+
+The desktop app connects to the same backend as the CLI — everything stays in sync.
 
 ## How It Works
 
@@ -106,7 +108,7 @@ The core research loop:
 
 3. **🔬 Distill insights** — As experiments run, Nicolas tracks every iteration with metrics, diffs, and decisions. Distill the results to see what worked, what didn't, and why.
 
-4. **✨ Transmute findings** — Connect paper insights to experiment results. What you read informs what you try next. The cycle continues.
+4. **🔗 Connect the dots** — Link papers to experiments. When a run implements a technique from a paper, credit it with `inspired_by`. Use `/transmute` to turn paper insights into experiment ideas. What you read informs what you try next.
 
 Every experiment lives in a git repo. Every paper lives in your Zotero library. Notes are plain markdown. There's no lock-in — Distillate enhances your existing tools.
 

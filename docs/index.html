@@ -187,6 +187,16 @@
       line-height: 1.5;
     }
 
+    .hero-badges {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .hero-badges img {
+      height: 22px;
+    }
+
     .install-cmd {
       display: inline-block;
       background: rgba(99, 102, 241, 0.08);
@@ -671,7 +681,7 @@
   </style>
 </head>
 <body>
-  <div class="banner" id="banner"><span class="banner-text">Research preview v0.314.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
+  <div class="banner" id="banner"><span class="banner-text">Research preview v0.42.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
   <div class="container">
 
     <!-- ── Hero ────────────────────────────────────── -->
@@ -693,6 +703,11 @@
         </div>
         <p class="tagline">Your research alchemist.</p>
         <p class="subtitle">Conjure ML experiments that run themselves. Distill insights from everything you read.</p>
+        <p class="hero-badges">
+          <a href="https://pypi.org/project/distillate/"><img src="https://img.shields.io/pypi/v/distillate?color=6366f1&label=PyPI" alt="PyPI"></a>
+          <a href="https://github.com/rlacombe/distillate"><img src="https://img.shields.io/badge/v0.42.0-research%20preview-818cf8" alt="v0.42.0"></a>
+          <a href="https://github.com/rlacombe/distillate/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-34d399" alt="MIT"></a>
+        </p>
         <div class="hero-cta" id="download">
           <div class="os-toggle" id="os-toggle">
             <button data-os="mac" class="active">macOS</button>

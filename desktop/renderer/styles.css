@@ -462,6 +462,18 @@ body {
   color: var(--accent);
 }
 
+.sidebar-action-btn.brew-btn {
+  margin-left: auto;
+  opacity: 0.5;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.sidebar-action-btn.brew-btn:hover {
+  opacity: 1;
+  color: var(--gold);
+  background: rgba(251, 191, 36, 0.1);
+}
+
 .sidebar-content {
   flex: 1;
   overflow-y: auto;

@@ -111,9 +111,9 @@ function injectChatBanner(stats) {
   setTimeout(() => inputEl?.focus(), 50);
 }
 
-// Restore chat messages from previous session (survives page reload)
+// Restore chat messages from previous session (survives app restart)
 try {
-  const savedChat = sessionStorage.getItem("distillate-chat");
+  const savedChat = localStorage.getItem("distillate-chat");
   if (savedChat && messagesEl) {
     messagesEl.innerHTML = savedChat;
     chatBannerInjected = true;
@@ -124,7 +124,7 @@ try {
 window.addEventListener("beforeunload", () => {
   try {
     if (messagesEl && messagesEl.children.length > 0) {
-      sessionStorage.setItem("distillate-chat", messagesEl.innerHTML);
+      localStorage.setItem("distillate-chat", messagesEl.innerHTML);
     }
   } catch {}
 });
@@ -2069,6 +2069,14 @@ if (papersInsightsToggle) {
     if (papersFiltersEl) papersFiltersEl.classList.toggle("hidden", papersShowInsights);
     if (papersInsightsPanel) papersInsightsPanel.classList.toggle("hidden", !papersShowInsights);
     if (papersShowInsights) fetchInsightsData();
+  });
+}
+
+const brewSyncBtn = document.getElementById("brew-sync-btn");
+if (brewSyncBtn) {
+  brewSyncBtn.addEventListener("click", () => {
+    inputEl.value = "Sync my paper library";
+    sendMessage();
   });
 }
 
