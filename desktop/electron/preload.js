@@ -99,7 +99,8 @@ contextBridge.exposeInMainWorld("xtermBridge", {
       fontFamily: "'SF Mono', 'Fira Code', 'JetBrains Mono', monospace",
       fontSize: 13,
       cursorBlink: true,
-      scrollback: 0,  // tmux handles scrollback via copy-mode; 0 ensures wheel events pass through
+      scrollback: 5000,
+      scrollOnUserInput: false, // don't snap to bottom when user is reading/selecting
       rightClickSelectsWord: true,
     });
     _fitAddon = new FitAddon();
@@ -107,13 +108,30 @@ contextBridge.exposeInMainWorld("xtermBridge", {
     _term.open(container);
     _fitAddon.fit();
 
+    // Buffer writes while the user has a text selection, so incoming
+    // terminal output doesn't auto-scroll and destroy the selection.
+    let _writeBuffer = [];
+    let _hasSelection = false;
+
+    _term.onSelectionChange(() => {
+      _hasSelection = _term.hasSelection();
+      if (!_hasSelection && _writeBuffer.length > 0) {
+        // Selection cleared — flush buffered data
+        const flushed = _writeBuffer.join("");
+        _writeBuffer = [];
+        _term.write(flushed);
+      }
+    });
+
     // Cmd+C copies selection (if any), Cmd+V pastes from clipboard
     _term.attachCustomKeyEventHandler((e) => {
-      if (e.metaKey && e.key === "c" && _term.hasSelection()) {
+      if (e.type !== "keydown") return true;
+      if ((e.metaKey || e.ctrlKey) && e.key === "c" && _term.hasSelection()) {
         clipboard.writeText(_term.getSelection());
+        _term.clearSelection();
         return false; // prevent sending to pty
       }
-      if (e.metaKey && e.key === "v") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "v") {
         const text = clipboard.readText();
         if (text) _term.paste(text);
         return false;
@@ -121,9 +139,17 @@ contextBridge.exposeInMainWorld("xtermBridge", {
       return true;
     });
 
+    _writeBuffered = (data) => {
+      if (_hasSelection) {
+        _writeBuffer.push(data);
+      } else {
+        _term.write(data);
+      }
+    };
+
     return true;
   },
-  write: (data) => { if (_term) _term.write(data); },
+  write: (data) => { if (_writeBuffered) _writeBuffered(data); else if (_term) _term.write(data); },
   clear: () => { if (_term) _term.clear(); },
   fit: () => { if (_fitAddon) _fitAddon.fit(); },
   onData: (callback) => { if (_term) _term.onData(callback); },

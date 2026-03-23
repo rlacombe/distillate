@@ -12,6 +12,7 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 let sseSource = null;
 let hasExperiments = false;
 let currentProjectId = null;
+let _sessionTransition = null; // "stopping" | "launching" | null
 let cachedPapers = [];
 let cachedProjects = [];
 let liveMetrics = {};  // Per-project live metric_update events: { projectId: [...] }
@@ -1645,7 +1646,12 @@ function showSessionTerminal(projectId) {
   // Find the project and its active tmux session
   const proj = cachedProjects.find((p) => p.id === projectId);
   if (!proj || proj.active_sessions === 0) {
-    showSessionEmpty();
+    // Don't flash "No active session" while launch is in flight
+    if (_sessionTransition === "launching") {
+      showSessionConnecting();
+    } else {
+      showSessionEmpty();
+    }
     return;
   }
 
@@ -1664,9 +1670,22 @@ function showSessionTerminal(projectId) {
   attachToTerminalSession(projectId, sessionName);
 }
 
+function showSessionConnecting() {
+  const emptyEl = document.getElementById("session-empty");
+  const xtermEl = document.getElementById("xterm-container");
+  if (emptyEl) {
+    emptyEl.innerHTML = '<div class="empty-icon spinner-icon"></div><h2>Connecting\u2026</h2><p>Starting Claude session.</p>';
+    emptyEl.classList.remove("hidden");
+  }
+  if (xtermEl) xtermEl.classList.add("hidden");
+}
+
 function showSessionEmpty() {
   const xtermEl = document.getElementById("xterm-container");
   const emptyEl = document.getElementById("session-empty");
+  if (emptyEl) {
+    emptyEl.innerHTML = '<div class="empty-icon">&#x1F4BB;</div><h2>No active session</h2><p>Launch an experiment to see the live Claude session here.</p>';
+  }
   if (emptyEl) emptyEl.classList.remove("hidden");
   if (xtermEl) xtermEl.classList.add("hidden");
   detachTerminal();
@@ -4745,7 +4764,20 @@ function renderProjectDetail(projectId) {
   const actions = document.createElement("div");
   actions.className = "exp-detail-actions";
 
-  if (proj.active_sessions > 0) {
+  if (_sessionTransition === "stopping") {
+    // Show spinner while stop is in flight
+    const btn = document.createElement("button");
+    btn.className = "action-btn action-btn-stop action-btn-spinner";
+    btn.textContent = "Stopping\u2026";
+    btn.disabled = true;
+    actions.appendChild(btn);
+  } else if (_sessionTransition === "launching") {
+    const btn = document.createElement("button");
+    btn.className = "action-btn action-btn-launch action-btn-spinner";
+    btn.textContent = "Launching\u2026";
+    btn.disabled = true;
+    actions.appendChild(btn);
+  } else if (proj.active_sessions > 0) {
     const stopBtn = document.createElement("button");
     stopBtn.className = "action-btn action-btn-stop";
     stopBtn.textContent = "Stop";
@@ -5447,8 +5479,11 @@ function renderComparisonGrid(data) {
 
 function launchProject(projectId, model, btn) {
   if (!serverPort) return;
+  _sessionTransition = "launching";
   btn.disabled = true;
-  btn.textContent = "Launching...";
+  btn.textContent = "Launching\u2026";
+  btn.classList.add("action-btn-spinner");
+  showSessionConnecting();
   fetch(`http://127.0.0.1:${serverPort}/experiments/${encodeURIComponent(projectId)}/launch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -5456,9 +5491,8 @@ function launchProject(projectId, model, btn) {
   })
     .then((r) => r.json())
     .then((data) => {
+      _sessionTransition = null;
       if (data.ok) {
-        btn.textContent = "Launched!";
-        // Attach xterm only if session tab is visible
         if (data.tmux_session) {
           const sessionView = document.getElementById("session-view");
           if (sessionView && !sessionView.classList.contains("hidden"))
@@ -5466,47 +5500,46 @@ function launchProject(projectId, model, btn) {
           const st = document.querySelector('.editor-tab[data-view="session"]');
           if (st) st.classList.add("has-update");
         }
-        setTimeout(() => {
-          fetchExperimentsList();
-        }, 1000);
+        fetchExperimentsList();
       } else {
+        showSessionEmpty();
+        btn.classList.remove("action-btn-spinner");
         btn.textContent = data.reason || "Failed";
+        setTimeout(() => { btn.textContent = "Launch"; btn.disabled = false; }, 2000);
       }
-      setTimeout(() => { btn.textContent = "Launch"; btn.disabled = false; }, 2000);
     })
     .catch((err) => {
+      _sessionTransition = null;
+      showSessionEmpty();
+      btn.classList.remove("action-btn-spinner");
       btn.textContent = "Error";
-      btn.style.color = "var(--error)";
       console.error("Launch failed:", err);
       showToast("Failed to launch experiment");
-      setTimeout(() => { btn.textContent = "Go"; btn.style.color = ""; btn.disabled = false; }, 3000);
+      setTimeout(() => { btn.textContent = "Launch"; btn.disabled = false; }, 3000);
     });
 }
 
 function stopProject(projectId, btn) {
   if (!serverPort) return;
+  _sessionTransition = "stopping";
   btn.disabled = true;
-  btn.textContent = "Stopping...";
+  btn.textContent = "Stopping\u2026";
+  btn.classList.add("action-btn-spinner");
   fetch(`http://127.0.0.1:${serverPort}/experiments/${encodeURIComponent(projectId)}/stop`, {
     method: "POST",
   })
     .then((r) => r.json())
     .then((data) => {
-      if (data.ok) {
-        btn.textContent = "Stopped!";
-        setTimeout(() => fetchExperimentsList(), 2000);
-      } else {
-        btn.textContent = data.reason || "Failed";
-        // Session may already be dead — refresh to pick up current state
-        setTimeout(() => fetchExperimentsList(), 1500);
-      }
+      _sessionTransition = null;
+      fetchExperimentsList();
     })
     .catch((err) => {
+      _sessionTransition = null;
+      btn.classList.remove("action-btn-spinner");
       btn.textContent = "Error";
-      btn.style.color = "var(--error)";
       console.error("Stop failed:", err);
       showToast("Failed to stop experiment");
-      setTimeout(() => { btn.textContent = "Stop"; btn.style.color = ""; btn.disabled = false; }, 3000);
+      setTimeout(() => { btn.textContent = "Stop"; btn.disabled = false; }, 3000);
     });
 }
 

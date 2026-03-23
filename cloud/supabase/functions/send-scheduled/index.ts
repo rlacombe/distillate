@@ -38,26 +38,30 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    const isDailyUser = user.cadence === "daily";
-    const isWeeklyUser = user.cadence === "weekly";
+    let sentForUser = false;
 
-    // Determine what to send
-    if (isDailyUser) {
-      // Daily: paper suggestions based on reading tags
+    // Daily paper suggestions
+    if (user.daily_papers) {
       const subject = "Distillate: Daily paper suggestions";
       const html = renderDailySuggestions(snapshot, user);
-      const ok = await sendEmail({ to: user.email, subject, html });
-      if (ok) sent++;
-    } else if (isWeeklyUser) {
-      // Weekly: full digest
-      const subject = "Distillate: Weekly research digest";
-      const html = renderWeeklyDigest(snapshot, user);
-      const ok = await sendEmail({ to: user.email, subject, html });
-      if (ok) sent++;
+      if (await sendEmail({ to: user.email, subject, html })) {
+        sent++;
+        sentForUser = true;
+      }
     }
 
-    // Update last_email_at
-    if (sent > 0) {
+    // Weekly digest (only on the user's chosen day)
+    const todayDow = new Date(now.toLocaleString("en-US", { timeZone: user.timezone })).getDay();
+    if (user.weekly_digest && todayDow === user.digest_day) {
+      const subject = "Distillate: Weekly research digest";
+      const html = renderWeeklyDigest(snapshot, user);
+      if (await sendEmail({ to: user.email, subject, html })) {
+        sent++;
+        sentForUser = true;
+      }
+    }
+
+    if (sentForUser) {
       await db.from("users")
         .update({ last_email_at: now.toISOString() })
         .eq("id", user.id);

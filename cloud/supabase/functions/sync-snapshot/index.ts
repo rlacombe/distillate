@@ -14,7 +14,7 @@ Deno.serve(async (req) => {
   }
 
   const body = await req.json();
-  const { email, timezone, cadence, digest_day, preferred_hour, experiment_reports, resend_verification, snapshot } = body;
+  const { email, timezone, cadence, digest_day, preferred_hour, experiment_reports, daily_papers, weekly_digest, resend_verification, snapshot } = body;
 
   if (!email) {
     return new Response(JSON.stringify({ ok: false, reason: "email required" }), {
@@ -42,6 +42,8 @@ Deno.serve(async (req) => {
   if (digest_day !== undefined) userPayload.digest_day = digest_day;
   if (preferred_hour !== undefined) userPayload.preferred_hour = preferred_hour;
   if (experiment_reports !== undefined) userPayload.experiment_reports = experiment_reports;
+  if (daily_papers !== undefined) userPayload.daily_papers = daily_papers;
+  if (weekly_digest !== undefined) userPayload.weekly_digest = weekly_digest;
 
   const { data: user, error: userErr } = await db
     .from("users")

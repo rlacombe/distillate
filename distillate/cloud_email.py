@@ -133,14 +133,18 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
         tz_name = "UTC"
 
     # User preferences
-    cadence = os.environ.get("DISTILLATE_EMAIL_CADENCE", "weekly").strip()
     preferred_hour = int(os.environ.get("DISTILLATE_EMAIL_HOUR", "7"))
+    daily_papers = os.environ.get("DISTILLATE_EMAIL_DAILY_PAPERS", "true").strip().lower() in ("true", "1", "yes")
+    weekly_digest = os.environ.get("DISTILLATE_EMAIL_WEEKLY_DIGEST", "true").strip().lower() in ("true", "1", "yes")
+    experiment_reports = os.environ.get("DISTILLATE_EMAIL_EXPERIMENT_REPORTS", "true").strip().lower() in ("true", "1", "yes")
 
     data = {
         "email": email,
         "timezone": tz_name,
-        "cadence": cadence,
         "preferred_hour": preferred_hour,
+        "daily_papers": daily_papers,
+        "weekly_digest": weekly_digest,
+        "experiment_reports": experiment_reports,
         "resend_verification": resend_verification,
         "snapshot": {
             "papers_read": len(processed),

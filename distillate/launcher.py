@@ -298,10 +298,10 @@ def _install_hooks_into(project_path: Path) -> None:
 
 
 def _refresh_protocol_files(project_path: Path) -> None:
-    """Copy latest CLAUDE.md and REPORTING.md into the experiment project.
+    """Refresh protocol files and MCP config in the experiment project.
 
     Called on every session launch so running experiments always pick up
-    protocol updates without requiring a re-scaffold.
+    protocol updates and have MCP tools available.
     """
     autoresearch = Path(__file__).parent / "autoresearch"
 
@@ -309,10 +309,64 @@ def _refresh_protocol_files(project_path: Path) -> None:
     if claude_md_src.exists():
         shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
 
-    reporting_src = autoresearch / "REPORTING.md"
     distillate_dir = project_path / ".distillate"
-    if reporting_src.exists() and distillate_dir.exists():
+    distillate_dir.mkdir(exist_ok=True)
+
+    reporting_src = autoresearch / "REPORTING.md"
+    if reporting_src.exists():
         shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
+
+    # Ensure .mcp.json exists with current Python path (may change between
+    # installs/upgrades — always overwrite to keep it current)
+    mcp_json = project_path / ".mcp.json"
+    mcp_config = {
+        "mcpServers": {
+            "distillate": {
+                "command": sys.executable,
+                "args": ["-m", "distillate.mcp_server"],
+            },
+        },
+    }
+    mcp_json.write_text(
+        json.dumps(mcp_config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # Ensure .claude/settings.local.json has MCP tool permissions
+    # (older projects may be missing these)
+    claude_dir = project_path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_local = claude_dir / "settings.local.json"
+    local_config = {
+        "permissions": {
+            "allow": [
+                "Bash(python3:*)",
+                "Bash(git:*)",
+                "Bash(tail:*)",
+                "Bash(ls:*)",
+                "Bash(cat:*)",
+                "Bash(head:*)",
+                "Bash(wc:*)",
+                "Bash(mkdir:*)",
+                "Read",
+                "Write",
+                "Edit",
+                "Glob",
+                "Grep",
+                "WebFetch",
+                "WebSearch",
+                "mcp__distillate__start_run",
+                "mcp__distillate__conclude_run",
+                "mcp__distillate__save_enrichment",
+                "mcp__distillate__scan_project",
+                "mcp__distillate__annotate_run",
+            ],
+        },
+    }
+    settings_local.write_text(
+        json.dumps(local_config, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +712,65 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
     return (best, direction)
 
 
+def _build_launch_prompt(
+    project: dict | None,
+    project_path: Path,
+    context_path: Path | None,
+) -> str:
+    """Build a rich launch prompt with project context."""
+    lines = [
+        "You are an autonomous experiment agent. Your job is to run experiments, "
+        "improve metrics, and document everything.",
+        "",
+        "## Instructions",
+        "",
+        "1. Read CLAUDE.md — it contains the experiment protocol (how to log runs, commit, etc.)",
+        "2. Read PROMPT.md — it contains the experiment specification (what to build, dataset, constraints)",
+        "3. Read .distillate/context.md — it contains your prior run history and learnings"
+        if context_path else "",
+        "4. Follow the protocol precisely: Plan → Train → Record → Commit, one run at a time",
+        "",
+        "## Key rules",
+        "",
+        "- You are fully autonomous. Do NOT pause to ask the human. Work indefinitely until stopped.",
+        "- Use the MCP tools (start_run, conclude_run, save_enrichment) — do NOT write to runs.jsonl manually.",
+        "- Every run MUST produce at least one numeric metric in results.",
+        "- One configuration per run. No sweep scripts.",
+        "- Commit after every run: git add -A && git commit -m '<change>: <metric>=<value>' && git push",
+    ]
+
+    if project:
+        runs = project.get("runs", {})
+        key_metric = project.get("key_metric_name", "")
+        duration = project.get("duration_minutes", 5)
+
+        if key_metric and runs:
+            # Find best value for the key metric
+            from distillate.experiments import classify_metric
+            cat = classify_metric(key_metric)
+            lower_better = cat in ("loss", "count", "time", "cost")
+            best_val = None
+            for r in runs.values() if isinstance(runs, dict) else runs:
+                v = r.get("results", {}).get(key_metric)
+                if isinstance(v, (int, float)):
+                    if best_val is None or (lower_better and v < best_val) or (not lower_better and v > best_val):
+                        best_val = v
+
+            lines.append("")
+            lines.append("## Current state")
+            lines.append("")
+            lines.append(f"- {len(runs)} prior runs logged")
+            if best_val is not None:
+                direction = "lower is better" if lower_better else "higher is better"
+                lines.append(f"- Key metric: {key_metric} = {best_val} ({direction})")
+            lines.append(f"- Time budget per run: {duration} minutes")
+
+    lines.append("")
+    lines.append("Start by reading the files above, then begin your next experiment run.")
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_claude_command(
     prompt_path: Path,
     *,
@@ -756,6 +869,10 @@ def launch_experiment(
 
     # Generate run context from prior runs (if any)
     context_path = _generate_run_context(project_path)
+
+    # Build a richer launch prompt if no override was given
+    if not prompt_override:
+        prompt_override = _build_launch_prompt(project, project_path, context_path)
 
     # Build command
     cmd = _build_claude_command(
