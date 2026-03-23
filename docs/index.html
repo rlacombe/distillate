@@ -187,6 +187,16 @@
       line-height: 1.5;
     }
 
+    .hero-badges {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .hero-badges img {
+      height: 22px;
+    }
+
     .install-cmd {
       display: inline-block;
       background: rgba(99, 102, 241, 0.08);
@@ -198,6 +208,35 @@
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
       font-size: 0.85rem;
       margin-bottom: 8px;
+    }
+
+    .install-cmd .os-cmd { display: none; }
+    .install-cmd .os-cmd.active { display: inline; }
+
+    .os-toggle {
+      display: inline-flex;
+      gap: 0;
+      margin-bottom: 10px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      font-size: 0.78rem;
+    }
+    .os-toggle button {
+      background: transparent;
+      color: var(--dim);
+      border: none;
+      padding: 4px 14px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.2s, color 0.2s;
+    }
+    .os-toggle button.active {
+      background: rgba(99, 102, 241, 0.2);
+      color: var(--fg);
+    }
+    .os-toggle button:hover:not(.active) {
+      background: rgba(99, 102, 241, 0.08);
     }
 
     .hero-cta .install-links {
@@ -375,7 +414,7 @@
 
     .terminal-dot:nth-child(1) { background: #ef4444; }
     .terminal-dot:nth-child(2) { background: #f59e0b; }
-    .terminal-dot:nth-child(3) { background: #22c55e; }
+    .terminal-dot:nth-child(3) { background: #4ade80; }
 
     .terminal-body {
       padding: 12px 20px;
@@ -642,7 +681,7 @@
   </style>
 </head>
 <body>
-  <div class="banner" id="banner"><span class="banner-text">Research preview v0.314.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
+  <div class="banner" id="banner"><span class="banner-text">Research preview v0.42.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
   <div class="container">
 
     <!-- ── Hero ────────────────────────────────────── -->
@@ -664,8 +703,17 @@
         </div>
         <p class="tagline">Your research alchemist.</p>
         <p class="subtitle">Conjure ML experiments that run themselves. Distill insights from everything you read.</p>
+        <p class="hero-badges">
+          <a href="https://pypi.org/project/distillate/"><img src="https://img.shields.io/pypi/v/distillate?color=6366f1&label=PyPI" alt="PyPI"></a>
+          <a href="https://github.com/rlacombe/distillate"><img src="https://img.shields.io/badge/v0.42.0-research%20preview-818cf8" alt="v0.42.0"></a>
+          <a href="https://github.com/rlacombe/distillate/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-34d399" alt="MIT"></a>
+        </p>
         <div class="hero-cta" id="download">
-          <code class="install-cmd" style="margin-bottom:12px;">$ pip install distillate<br><span style="opacity:0.5;">$ cd desktop &amp;&amp; npm run install:mac</span></code>
+          <div class="os-toggle" id="os-toggle">
+            <button data-os="mac" class="active">macOS</button>
+            <button data-os="win">Windows</button>
+          </div>
+          <code class="install-cmd" style="margin-bottom:12px;"><span class="os-cmd active" data-os="mac">$ pip install distillate<br><span style="opacity:0.5;">$ cd desktop &amp;&amp; npm run install:mac</span></span><span class="os-cmd" data-os="win">&gt; pip install distillate<br><span style="opacity:0.5;">&gt; cd desktop; npm run install:win</span></span></code>
           <p class="install-links"><a href="https://github.com/rlacombe/distillate">GitHub</a> &ensp;&middot;&ensp; Powered by <a href="https://claude.ai/claude-code">Claude Code</a></p>
         </div>
       </div>
@@ -789,7 +837,7 @@
       <div class="terminal-body">
         <span class="dim">$ distillate</span><br><br>
         <span class="dim">  ─── ⚗️  Nicolas ──────────────────────────────</span><br>
-        <span class="dim">  Your research command center.</span><br>
+        <span class="dim">  Your research alchemist.</span><br>
         <span class="dim">  🧪 4 experiments · 12 runs · 1 running</span><br>
         <span class="dim">  📚 42 papers read · 7 in queue</span><br>
         <span class="dim">  ──────────────────────────────────────────────</span><br><br>
@@ -830,6 +878,31 @@
     <p class="colophon" style="text-align:center;">Built with love and coffee by <a href="https://github.com/rlacombe">Romain Lacombe</a>.</p>
   </div>
   <script>
+    // ── OS detection + install command toggle ────
+    (function() {
+      const isWin = /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent);
+      const defaultOS = isWin ? "win" : "mac";
+
+      function setOS(os) {
+        document.querySelectorAll(".os-cmd").forEach(el => {
+          el.classList.toggle("active", el.dataset.os === os);
+        });
+        document.querySelectorAll(".os-toggle button").forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.os === os);
+        });
+      }
+
+      setOS(defaultOS);
+
+      const toggle = document.getElementById("os-toggle");
+      if (toggle) {
+        toggle.addEventListener("click", function(e) {
+          const btn = e.target.closest("button[data-os]");
+          if (btn) setOS(btn.dataset.os);
+        });
+      }
+    })();
+
     // ── Banner aurora ────────────────────────────
     (function() {
       const banner = document.getElementById("banner");

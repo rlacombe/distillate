@@ -209,6 +209,58 @@ class TestScaffoldExperiment:
             cfg = json.loads(settings.read_text())
             assert "hooks" in cfg
 
+    def test_scaffold_creates_mcp_json(self, tmp_path, monkeypatch):
+        """scaffold_experiment creates a .mcp.json file."""
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        tmpl = tmp_path / "templates" / "mcp-test"
+        tmpl.mkdir(parents=True)
+        (tmpl / "PROMPT.md").write_text("prompt\n")
+
+        target = tmp_path / "mcp-exp"
+        from distillate.launcher import scaffold_experiment
+        scaffold_experiment("mcp-test", target)
+
+        mcp_json = target / ".mcp.json"
+        assert mcp_json.exists()
+        cfg = json.loads(mcp_json.read_text())
+        assert "mcpServers" in cfg
+
+    def test_scaffold_mcp_json_has_distillate_server(self, tmp_path, monkeypatch):
+        """The .mcp.json file references the distillate MCP server."""
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        tmpl = tmp_path / "templates" / "mcp-srv"
+        tmpl.mkdir(parents=True)
+        (tmpl / "PROMPT.md").write_text("prompt\n")
+
+        target = tmp_path / "mcp-srv-exp"
+        from distillate.launcher import scaffold_experiment
+        scaffold_experiment("mcp-srv", target)
+
+        cfg = json.loads((target / ".mcp.json").read_text())
+        assert "distillate" in cfg["mcpServers"]
+        server_cfg = cfg["mcpServers"]["distillate"]
+        assert "command" in server_cfg
+        assert server_cfg["args"] == ["-m", "distillate.mcp_server"]
+
+    def test_scaffold_settings_local_has_mcp_permissions(self, tmp_path, monkeypatch):
+        """settings.local.json includes MCP tool permissions (mcp__distillate__*)."""
+        monkeypatch.setattr("distillate.launcher.CONFIG_DIR", tmp_path)
+        tmpl = tmp_path / "templates" / "perm-test"
+        tmpl.mkdir(parents=True)
+        (tmpl / "PROMPT.md").write_text("prompt\n")
+
+        target = tmp_path / "perm-exp"
+        from distillate.launcher import scaffold_experiment
+        scaffold_experiment("perm-test", target)
+
+        local_cfg = json.loads((target / ".claude" / "settings.local.json").read_text())
+        allow_list = local_cfg["permissions"]["allow"]
+        assert "mcp__distillate__start_run" in allow_list
+        assert "mcp__distillate__conclude_run" in allow_list
+        assert "mcp__distillate__save_enrichment" in allow_list
+        assert "mcp__distillate__scan_project" in allow_list
+        assert "mcp__distillate__annotate_run" in allow_list
+
 
 # ---------------------------------------------------------------------------
 # Scaffold endpoint (server.py POST /experiments/scaffold)
@@ -277,6 +329,43 @@ class TestScaffoldEndpoint:
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
+
+class TestCreateGithubRepo:
+    def test_github_url_first_line_only(self, tmp_path, monkeypatch):
+        """create_github_repo extracts only the first line from gh output as URL."""
+        from distillate.launcher import create_github_repo
+
+        call_log = []
+
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            # gh repo create prints URL on first line, then push messages
+            if "repo" in cmd and "create" in cmd:
+                result.stdout = (
+                    "https://github.com/user/distillate-xp-test\n"
+                    "remote: Enumerating objects: 5, done.\n"
+                    "remote: Counting objects: 100% (5/5), done.\n"
+                )
+            else:
+                result.stdout = ""
+            return result
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("distillate.launcher.shutil.which", lambda x: "/usr/bin/" + x)
+
+        # Create minimal git repo in tmp_path
+        (tmp_path / ".git").mkdir()
+
+        result = create_github_repo(tmp_path, "distillate-xp-test")
+        assert result["ok"] is True
+        assert result["url"] == "https://github.com/user/distillate-xp-test"
+        # Ensure no git push messages leaked into the URL
+        assert "remote:" not in result["url"]
+        assert "\n" not in result["url"]
+
 
 class TestSlugify:
     def test_basic(self):
@@ -717,7 +806,7 @@ class TestStateSessionMethods:
 class TestExperimentToolSchemas:
     def test_schema_count(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS
-        assert len(EXPERIMENT_TOOL_SCHEMAS) == 35  # 29 + 3 paper-experiment + save_enrichment + start_run + conclude_run
+        assert len(EXPERIMENT_TOOL_SCHEMAS) == 37  # 35 + purge_hook_runs + discover_relevant_papers
 
     def test_new_tool_names(self):
         from distillate.experiment_tools import EXPERIMENT_TOOL_SCHEMAS

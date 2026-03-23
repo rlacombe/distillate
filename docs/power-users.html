@@ -245,7 +245,7 @@
 
 <pre><code>$ distillate
 ─── ⚗️  Nicolas ──────────────────────────────
-Your research command center.
+Your research alchemist.
 🧪 4 experiments · 12 runs · 1 running
 📚 42 papers read · 7 in queue</code></pre>
 
@@ -310,83 +310,7 @@ $ distillate "conjure an experiment to classify sigma factors"</code></pre>
       <code>annotate_run</code> <span>Add notes or hypotheses to a specific run</span>
     </div>
 
-    <!-- 1. GitHub Actions Automation -->
-    <h2>GitHub Actions Automation</h2>
-
-    <p>Run paper suggestions and weekly digests automatically from GitHub Actions, without needing a laptop running. Your local machine handles the sync (Zotero to reMarkable to notes); GitHub Actions handles the emails.</p>
-
-    <h3>Architecture</h3>
-
-    <p>The flow works like this:</p>
-    <ol>
-      <li>Run <code>distillate --sync</code> locally to sync papers and process highlights</li>
-      <li>Run <code>distillate --sync-state</code> to upload your <code>state.json</code> to a private GitHub Gist</li>
-      <li>GitHub Actions reads state from the Gist on a schedule</li>
-      <li>Actions runs <code>--suggest-email</code> (daily) or <code>--send-digest</code> (weekly) and sends the email</li>
-    </ol>
-
-    <h3>Step-by-step setup</h3>
-
-    <p><strong>a. Create a private Gist to hold your state</strong></p>
-<pre><code># Create the gist with your current state
-$ gh gist create state.json
-
-# Get the gist ID (you'll need it for the secret)
-$ gh gist list</code></pre>
-
-    <p><strong>b. Create a GitHub classic PAT</strong></p>
-    <p>Go to <a href="https://github.com/settings/tokens">github.com/settings/tokens</a> and create a classic Personal Access Token with the <code>gist</code> scope. This token lets the workflow read your state from the Gist.</p>
-
-    <p><strong>c. Add repository secrets</strong></p>
-    <p>In your fork's Settings &gt; Secrets and variables &gt; Actions, add these secrets:</p>
-
-    <table class="secrets-table">
-      <tr><th>Secret</th><th>Description</th></tr>
-      <tr><td><code>ZOTERO_API_KEY</code></td><td>Your Zotero API key</td></tr>
-      <tr><td><code>ZOTERO_USER_ID</code></td><td>Your Zotero user ID</td></tr>
-      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Optional &mdash; for AI-powered summaries in the sync pipeline</td></tr>
-      <tr><td><code>RESEND_API_KEY</code></td><td>For sending emails</td></tr>
-      <tr><td><code>DIGEST_TO</code></td><td>Your email address (recipient)</td></tr>
-      <tr><td><code>DIGEST_FROM</code></td><td>Sender address (configured in Resend)</td></tr>
-      <tr><td><code>STATE_GIST_ID</code></td><td>ID of the private Gist from step (a)</td></tr>
-      <tr><td><code>GH_GIST_TOKEN</code></td><td>Classic PAT with <code>gist</code> scope from step (b)</td></tr>
-      <tr><td><code>OBSIDIAN_VAULT_NAME</code></td><td>Your vault name, for deep-links in emails</td></tr>
-    </table>
-
-    <p><strong>d. The workflow is already included</strong></p>
-    <p>The file <code>.github/workflows/emails.yml</code> is part of the repo. It runs on two schedules:</p>
-<pre><code>schedule:
-  # Daily suggestion at 8am ET (1pm UTC)
-  - cron: '0 13 * * *'
-  # Weekly digest on Sunday at 9am ET (2pm UTC)
-  - cron: '0 14 * * 0'</code></pre>
-
-    <p><strong>e. Keep your state in sync</strong></p>
-    <p>Run <code>distillate --sync-state</code> after each local sync so GitHub Actions has current data. You can add it to your schedule or run it manually.</p>
-
-    <h3>Gotchas</h3>
-
-    <div class="gotcha">
-      <strong>GH_GIST_TOKEN must be a classic PAT</strong>
-      The built-in <code>GITHUB_TOKEN</code> cannot access Gists. You need a classic Personal Access Token with the <code>gist</code> scope. Fine-grained tokens also do not support Gist access.
-    </div>
-
-    <div class="gotcha">
-      <strong>Set OBSIDIAN_VAULT_NAME for deep-links</strong>
-      Without this, digest emails won't include <code>obsidian://</code> links to open notes directly in your vault.
-    </div>
-
-    <div class="gotcha">
-      <strong>State freshness matters</strong>
-      Run <code>--sync-state</code> after every local sync. If the Gist state is stale, suggestions will be based on outdated reading history.
-    </div>
-
-    <h3>Manual trigger</h3>
-    <p>You can trigger the workflow manually from the command line:</p>
-<pre><code>$ gh workflow run emails.yml -f command=--suggest-email
-$ gh workflow run emails.yml -f command=--send-digest</code></pre>
-
-    <!-- 2. Engagement Scores -->
+    <!-- 1. Engagement Scores -->
     <h2>Engagement Scores</h2>
 
     <p>Every processed paper gets an engagement score from 0 to 100, measuring how deeply you interacted with it. The score appears in your notes (YAML frontmatter), <code>--status</code> output, <code>--digest</code>, and email digests.</p>
@@ -472,17 +396,12 @@ LOG_LEVEL=DEBUG</code></pre>
     <!-- 7. State Sync and Backup -->
     <h2>State Sync and Backup</h2>
 
-    <p>Distillate tracks all your papers and experiments in a local <code>state.json</code> file. The <code>--sync-state</code> command uploads it to a private GitHub Gist, which enables two things:</p>
+    <p>Distillate tracks all your papers and experiments in a local <code>state.json</code> file. The <code>--sync-state</code> command syncs it with Supabase cloud &mdash; keeping the same reading state across your laptop and desktop, and enabling cloud email features.</p>
 
-    <ul>
-      <li><strong>Cross-machine sync</strong> &mdash; keep the same reading state on your laptop and desktop</li>
-      <li><strong>GitHub Actions automation</strong> &mdash; the workflow reads state from the Gist (see first section)</li>
-    </ul>
-
-<pre><code># Upload state to your Gist
+<pre><code># Sync state with the cloud
 $ distillate --sync-state</code></pre>
 
-    <p>Requires <code>STATE_GIST_ID</code> and <code>GH_GIST_TOKEN</code> in your <code>.env</code>.</p>
+    <p>Requires email registration in the desktop app (Control Panel &rarr; Updates). State sync uses the same Supabase account.</p>
 
     <h3>Corrupt state recovery</h3>
     <p>If <code>state.json</code> becomes corrupted (malformed JSON), distillate automatically backs it up as <code>state.json.bak</code> and starts with a fresh state. No data is silently lost &mdash; the backup file preserves whatever was there.</p>

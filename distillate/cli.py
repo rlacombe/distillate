@@ -141,7 +141,7 @@ Advanced:
   --backfill-s2           Refresh Semantic Scholar data for all papers
   --backfill-highlights [N]  Back-propagate highlights to Zotero (last N papers)
   --refresh-metadata [Q]  Re-fetch metadata from Zotero + Semantic Scholar
-  --sync-state            Push state.json to a GitHub Gist
+  --sync-state            Sync state.json with Supabase cloud
   --export-state <path>   Export state.json to a file
   --import-state <path>   Import state.json from a file (backs up existing)
 

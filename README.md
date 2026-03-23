@@ -1,30 +1,34 @@
 # Distillate
 
-*Your research alchemist. Conjure experiments, distill insights, transmute papers into gold.* &nbsp; [distillate.dev](https://distillate.dev)
+**Your research alchemist.** Conjure ML experiments that run themselves. Distill insights from everything you read.
 
 [![PyPI](https://img.shields.io/pypi/v/distillate)](https://pypi.org/project/distillate/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+&nbsp; [distillate.dev](https://distillate.dev)
+
+<img src="docs/app-screenshot.png" alt="Distillate desktop app" width="800">
 
 ## What is Distillate?
 
-Distillate is an alchemy-themed autonomous research platform powered by [Claude Code](https://claude.ai/claude-code). It combines paper reading, experiment running, and insight extraction into a single workflow — no API key needed, just a Claude Code subscription (Max or Pro).
+Distillate is an open-source research platform that orchestrates autonomous research agents. It turns your research questions into agents that run ML experiments, track results, and report what they find — while keeping your paper library organized with highlights and AI summaries.
 
-At the center is **Nicolas**, your research alchemist (named after Nicolas Flamel). He spawns **experimentalist agents** that live in tmux sessions, running ML experiments, testing hypotheses, and reporting results. He also tends the **apothecary** — your paper library, flowing from Zotero through optional reading surfaces (reMarkable, iPad, desktop) into structured notes with highlights and AI summaries.
+At the center is **Nicolas**, your research alchemist. He spawns **research agents** that live in tmux sessions, iteratively improving your models and reporting results. He also tends **the library** — your paper collection, flowing from Zotero through any reading surface (reMarkable, iPad, desktop) into structured notes.
 
-The core loop is simple: read papers, run experiments, see them improve on the chart, distill what you learned, and let those insights inform the next experiment. Nicolas remembers everything and connects the dots between your reading and your research. ⚗️
+The core loop: **read papers, run experiments, see them improve on the chart, distill what you learned, repeat.** What you read informs what you try. What you try informs what you read next.
 
 ```
 $ distillate
 
   ─── ⚗️  Nicolas ──────────────────────────────
-  12 experiments · 42 papers read · 7 in queue
-  Your research alchemist. Type /help or /quit.
+  Your research alchemist.
+  🧪 4 experiments · 12 runs · 1 running
+  📚 42 papers read · 7 in queue
 
 > /conjure tiny-matmul --duration 30m
-  🧪 Spawning experimentalist...
+  🧪 Spawning research agent...
   Created distillate-xp-tiny-matmul
-  Experimentalist spawned — 30 min budget, will report when done.
+  Research agent spawned — 30 min budget, will report when done.
 
 > /distill tiny-matmul
   🔬 Distilling 8 runs...
@@ -37,29 +41,24 @@ $ distillate
 
 Nicolas responds to 9 skills organized across three roles:
 
-### The Laboratory 🧪 — experiments
+### The Laboratory 🧪
 
 | Skill | Description |
 |-------|-------------|
+| `/conjure` | Summon a research agent — launch an experiment from a research question |
+| `/steer` | Guide a running agent — adjust goals or change direction |
+| `/assay` | Deep analysis of experiment results with cross-run comparison |
+| `/distill` | Extract insights from an experiment's session histories |
 | `/survey` | Scan all experiments for new runs and breakthroughs |
-| `/conjure` | Spawn an experimentalist — launch an experiment from a research question |
-| `/steer` | Review and redirect a running experiment mid-session |
-| `/assay` | Deep analysis of experiment results with comparisons |
-| `/distill` | Extract insights from an experiment's session histories (zero API calls) |
+| `/transmute` | Turn paper insights into experiment ideas |
 
-### The Apothecary 📜 — papers
+### The Library 📚
 
 | Skill | Description |
 |-------|-------------|
 | `/brew` | Sync papers, process highlights, refresh the library |
 | `/forage` | Discover trending papers and reading suggestions |
 | `/tincture` | Deep extraction from a single paper's highlights and notes |
-
-### The Bridge 🔬 — papers to experiments
-
-| Skill | Description |
-|-------|-------------|
-| `/transmute` | Turn paper insights into experiment ideas and replications |
 
 ## Quick Start
 
@@ -95,7 +94,9 @@ The Distillate desktop app provides an IDE-style layout with four tabs:
 - **Results** — runs grid with research insights (key breakthrough, lessons learned, dead ends)
 - **Prompt** — view and edit PROMPT.md with markdown rendering
 
-The desktop app connects to the same backend as the CLI — everything stays in sync. [Download for macOS](https://github.com/rlacombe/distillate/releases/latest).
+New users get one-click onboarding: launch a demo experiment from the sidebar, or connect your Zotero library from the papers panel. Context-aware suggestions in the chat adapt to what you're looking at — experiment-specific actions when viewing an experiment, paper-specific actions when viewing a paper.
+
+The desktop app connects to the same backend as the CLI — everything stays in sync.
 
 ## How It Works
 
@@ -103,11 +104,11 @@ The core research loop:
 
 1. **📜 Add papers** — Save papers to Zotero, read and highlight on any device. Nicolas extracts highlights, generates summaries, and builds your knowledge base.
 
-2. **⚗️ Conjure experiments** — Describe a research question or point at a paper. Nicolas drafts the prompt, sets up a git repo, and spawns an autonomous experimentalist agent to run it.
+2. **⚗️ Conjure experiments** — Describe a research question or point at a paper. Nicolas drafts the prompt, sets up a git repo, and spawns an autonomous research agent to run it.
 
 3. **🔬 Distill insights** — As experiments run, Nicolas tracks every iteration with metrics, diffs, and decisions. Distill the results to see what worked, what didn't, and why.
 
-4. **✨ Transmute findings** — Connect paper insights to experiment results. What you read informs what you try next. The cycle continues.
+4. **🔗 Connect the dots** — Link papers to experiments. When a run implements a technique from a paper, credit it with `inspired_by`. Use `/transmute` to turn paper insights into experiment ideas. What you read informs what you try next.
 
 Every experiment lives in a git repo. Every paper lives in your Zotero library. Notes are plain markdown. There's no lock-in — Distillate enhances your existing tools.
 

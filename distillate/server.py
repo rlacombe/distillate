@@ -196,6 +196,125 @@ def _create_app():
             resp["experiments"] = experiment_stats
         return JSONResponse(resp)
 
+    @app.get("/connectors")
+    async def list_connectors():
+        """Return status of all available connectors."""
+        import os
+        import shutil
+
+        connectors = []
+
+        # Papers — Zotero
+        connectors.append({
+            "id": "zotero",
+            "label": "Papers",
+            "service": "Zotero library",
+            "connected": bool(config.ZOTERO_API_KEY and config.ZOTERO_USER_ID),
+            "setup": "library",
+        })
+
+        # Notifications — Email
+        email = os.environ.get("DISTILLATE_EMAIL", "").strip()
+        connectors.append({
+            "id": "email",
+            "label": "Updates",
+            "service": "Email",
+            "connected": bool(email),
+            "detail": "Connected" if email else None,
+            "setup": "email",
+        })
+
+        # Notes — Obsidian
+        has_obsidian = bool(config.OBSIDIAN_VAULT_PATH)
+        connectors.append({
+            "id": "obsidian",
+            "label": "Notes",
+            "service": "Obsidian vault",
+            "connected": has_obsidian,
+            "detail": None,
+            "setup": "obsidian",
+        })
+
+        # Tablet — reMarkable (only show if reading source is remarkable or rmapi is available)
+        has_rmapi = shutil.which("rmapi") is not None
+        has_token = bool(config.REMARKABLE_DEVICE_TOKEN)
+        if config.READING_SOURCE == "remarkable" or has_rmapi:
+            connectors.append({
+                "id": "remarkable",
+                "label": "Tablet",
+                "service": "reMarkable",
+                "connected": has_rmapi and has_token,
+                "setup": "remarkable",
+            })
+
+        return JSONResponse({"ok": True, "connectors": connectors})
+
+    @app.get("/connectors/{connector_id}")
+    async def connector_detail(connector_id: str):
+        """Return full config for a connector."""
+        import os
+
+        if connector_id == "zotero":
+            return JSONResponse({"ok": True, "connector": {
+                "id": "zotero",
+                "label": "Papers",
+                "service": "Zotero library",
+                "connected": bool(config.ZOTERO_API_KEY and config.ZOTERO_USER_ID),
+                "settings": [
+                    {"key": "ZOTERO_API_KEY", "label": "API key", "value": config.ZOTERO_API_KEY[:8] + "..." if config.ZOTERO_API_KEY else "", "sensitive": True},
+                    {"key": "ZOTERO_USER_ID", "label": "User ID", "value": config.ZOTERO_USER_ID},
+                    {"key": "ZOTERO_COLLECTION_KEY", "label": "Collection", "value": config.ZOTERO_COLLECTION_KEY or "(whole library)"},
+                    {"key": "READING_SOURCE", "label": "Reading surface", "value": config.READING_SOURCE},
+                ],
+            }})
+        elif connector_id == "email":
+            email = os.environ.get("DISTILLATE_EMAIL", "").strip()
+            verified = os.environ.get("DISTILLATE_EMAIL_VERIFIED", "").strip().lower() in ("true", "1", "yes")
+            exp_reports = os.environ.get("DISTILLATE_EMAIL_EXPERIMENT_REPORTS", "true").strip().lower() in ("true", "1", "yes")
+            daily_papers = os.environ.get("DISTILLATE_EMAIL_DAILY_PAPERS", "true").strip().lower() in ("true", "1", "yes")
+            weekly_digest = os.environ.get("DISTILLATE_EMAIL_WEEKLY_DIGEST", "true").strip().lower() in ("true", "1", "yes")
+            return JSONResponse({"ok": True, "connector": {
+                "id": "email",
+                "label": "Updates",
+                "service": "Email",
+                "connected": bool(email),
+                "verified": verified,
+                "settings": [
+                    {"key": "DISTILLATE_EMAIL", "label": "Email address", "value": email},
+                    {"key": "experiment_reports", "label": "Experiment reports", "value": "on" if exp_reports else "off"},
+                    {"key": "daily_papers", "label": "Daily paper suggestions", "value": "on" if daily_papers else "off"},
+                    {"key": "weekly_digest", "label": "Weekly digest", "value": "on" if weekly_digest else "off"},
+                ],
+            }})
+        elif connector_id == "obsidian":
+            return JSONResponse({"ok": True, "connector": {
+                "id": "obsidian",
+                "label": "Notes",
+                "service": "Obsidian vault",
+                "connected": bool(config.OBSIDIAN_VAULT_PATH),
+                "settings": [
+                    {"key": "OBSIDIAN_VAULT_PATH", "label": "Vault path", "value": config.OBSIDIAN_VAULT_PATH or "(not set)"},
+                    {"key": "OBSIDIAN_VAULT_NAME", "label": "Vault name", "value": config.OBSIDIAN_VAULT_NAME or "(auto)"},
+                    {"key": "OBSIDIAN_PAPERS_FOLDER", "label": "Papers folder", "value": config.OBSIDIAN_PAPERS_FOLDER},
+                ],
+            }})
+        elif connector_id == "remarkable":
+            import shutil
+            has_rmapi = shutil.which("rmapi") is not None
+            return JSONResponse({"ok": True, "connector": {
+                "id": "remarkable",
+                "label": "Tablet",
+                "service": "reMarkable",
+                "connected": has_rmapi and bool(config.REMARKABLE_DEVICE_TOKEN),
+                "settings": [
+                    {"key": "rmapi", "label": "rmapi CLI", "value": "installed" if has_rmapi else "not found"},
+                    {"key": "REMARKABLE_DEVICE_TOKEN", "label": "Device token", "value": "configured" if config.REMARKABLE_DEVICE_TOKEN else "(not set)", "sensitive": True},
+                    {"key": "RM_FOLDER_PAPERS", "label": "Papers folder", "value": config.RM_FOLDER_PAPERS},
+                ],
+            }})
+        else:
+            return JSONResponse({"ok": False, "reason": "Unknown connector"}, status_code=404)
+
     @app.post("/sync")
     async def sync_to_cloud():
         from distillate.cloud_sync import cloud_sync_available, sync_state
@@ -272,6 +391,58 @@ def _create_app():
                 config.SYNC_HIGHLIGHTS = True
 
         return JSONResponse({"ok": True, "message": "Library configured successfully"})
+
+    @app.post("/email/register")
+    async def register_email(body: dict):
+        """Register email for notifications (experiment reports, digests)."""
+        from distillate.config import save_to_env
+
+        email = body.get("email", "").strip()
+
+        if not email or "@" not in email:
+            return JSONResponse({"ok": False, "reason": "Valid email required"}, status_code=400)
+
+        save_to_env("DISTILLATE_EMAIL", email)
+
+        # Save independent preferences
+        if "experiment_reports" in body:
+            save_to_env("DISTILLATE_EMAIL_EXPERIMENT_REPORTS", "true" if body["experiment_reports"] else "false")
+        if "daily_papers" in body:
+            save_to_env("DISTILLATE_EMAIL_DAILY_PAPERS", "true" if body["daily_papers"] else "false")
+        if "weekly_digest" in body:
+            save_to_env("DISTILLATE_EMAIL_WEEKLY_DIGEST", "true" if body["weekly_digest"] else "false")
+
+        # Sync snapshot to cloud
+        try:
+            from distillate.cloud_email import sync_snapshot
+            _state.reload()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(_executor, lambda: sync_snapshot(_state))
+            if result and result.get("ok"):
+                verified = result.get("verified", False)
+                save_to_env("DISTILLATE_EMAIL_VERIFIED", "true" if verified else "false")
+                return JSONResponse({"ok": True, "verified": verified, "message": "Email registered and synced"})
+        except Exception as e:
+            log.debug("Cloud sync failed: %s", e)
+
+        return JSONResponse({"ok": True, "verified": False, "message": "Email saved locally"})
+
+    @app.post("/email/resend-verification")
+    async def resend_verification():
+        """Re-trigger verification email via cloud."""
+        from distillate.cloud_email import sync_snapshot
+        email = os.environ.get("DISTILLATE_EMAIL", "").strip()
+        if not email:
+            return JSONResponse({"ok": False, "reason": "No email configured"}, status_code=400)
+        try:
+            _state.reload()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(_executor, lambda: sync_snapshot(_state, resend_verification=True))
+            if result and result.get("ok"):
+                return JSONResponse({"ok": True, "message": "Verification email sent"})
+        except Exception as e:
+            log.debug("Resend verification failed: %s", e)
+        return JSONResponse({"ok": False, "reason": "Failed to send verification email"}, status_code=500)
 
     @app.get("/experiments/templates")
     async def list_experiment_templates():
@@ -732,14 +903,21 @@ def _create_app():
     @app.post("/experiments/{project_id}/stop")
     async def stop_experiment_endpoint(project_id: str):
         """Stop all running sessions for the project."""
-        from distillate.launcher import _ensure_path, stop_session
+        from distillate.launcher import _ensure_path, refresh_session_statuses, stop_session
 
         _ensure_path()
+
+        # Refresh tmux statuses first — a session may have died but state
+        # still says "running".  This prevents false "no_running_session".
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(_executor, refresh_session_statuses, _state)
+
         proj = _get_project_or_404(project_id)
 
         sessions = proj.get("sessions", {})
         running = [s for s in sessions.values() if s.get("status") == "running"]
         if not running:
+            _state.save()
             return JSONResponse({"ok": False, "reason": "no_running_session"}, status_code=404)
 
         stopped = []
@@ -1167,7 +1345,7 @@ def _create_app():
         """Stop a campaign permanently."""
         proj = _get_project_or_404(project_id)
         campaign = proj.get("campaign", {})
-        campaign["status"] = "stopped"
+        campaign["status"] = "paused"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
         _state.update_project(project_id, campaign=campaign)
@@ -1672,11 +1850,14 @@ def _create_app():
                 "duration_minutes": proj.get("duration_minutes", 5),
                 "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
-                "runs": [_run_summary_full(r, *_extract_run_number(r.get("name", ""))) for r in sorted(
+                "runs": [_run_summary_full(r, i + 1) for i, r in enumerate(sorted(
                     runs.values(),
                     key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
-                )],
+                ))],
             }
+            linked_papers = proj.get("linked_papers", [])
+            if linked_papers:
+                entry["linked_papers"] = linked_papers
             github_url = proj.get("github_url", "")
             if github_url:
                 entry["github_url"] = github_url
@@ -1995,15 +2176,30 @@ def _create_app():
         meta = doc.get("metadata", {})
         idx = _state.index_of(paper_key)
 
-        # Read highlights from Obsidian note if available
+        # Read highlights from Obsidian note if available (no truncation for desktop)
         highlights = ""
         try:
-            from distillate.tools import _read_note_content, _extract_highlights_from_note
+            from distillate.tools import _read_note_content
             note = _read_note_content(meta.get("citekey", ""), doc.get("title", ""))
             if note:
-                highlights = _extract_highlights_from_note(note)
+                start = note.find("## Highlights")
+                if start >= 0:
+                    end = note.find("\n## ", start + 1)
+                    highlights = note[start:end] if end > 0 else note[start:]
         except Exception:
             pass
+
+        # Resolve linked projects to names
+        linked_projects = []
+        for pid in doc.get("linked_projects", []):
+            p = _state.find_project(pid)
+            if p:
+                linked_projects.append({
+                    "id": p.get("id", pid),
+                    "name": p.get("name", pid),
+                })
+            else:
+                linked_projects.append({"id": pid, "name": pid})
 
         return JSONResponse({"ok": True, "paper": {
             "index": idx,
@@ -2026,6 +2222,7 @@ def _create_app():
             "processed_at": doc.get("processed_at", ""),
             "promoted_at": doc.get("promoted_at", ""),
             "highlights": highlights,
+            "linked_projects": linked_projects,
         }})
 
     # -------------------------------------------------------------------
@@ -2181,6 +2378,7 @@ def _create_app():
         await websocket.accept()
 
         nicolas = NicolasClient(_state)
+        _cancel_flag = asyncio.Event()
 
         try:
             while True:
@@ -2201,12 +2399,42 @@ def _create_app():
                         log.info("Model changed to %s", new_model)
                     continue
 
+                if msg.get("type") == "cancel":
+                    _cancel_flag.set()
+                    continue
+
                 user_input = msg.get("text", "").strip()
                 if not user_input:
                     continue
 
+                _cancel_flag.clear()
+
+                # Listen for cancel messages while streaming
+                # NOTE: We do NOT call nicolas.interrupt() — that sends SIGINT
+                # to the Claude Code process which can disrupt running tools
+                # (e.g. tmux commands checking on experiments). Instead we just
+                # set the flag to stop forwarding events to the client.
+                async def _listen_for_cancel():
+                    try:
+                        while not _cancel_flag.is_set():
+                            raw = await websocket.receive_text()
+                            try:
+                                m = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if m.get("type") == "cancel":
+                                _cancel_flag.set()
+                                break
+                    except Exception:
+                        pass
+
+                cancel_task = asyncio.create_task(_listen_for_cancel())
+
                 try:
                     async for event in nicolas.send(user_input):
+                        if _cancel_flag.is_set():
+                            await websocket.send_json({"type": "cancelled"})
+                            break
                         await websocket.send_json(event)
                 except Exception as exc:
                     log.exception("Nicolas query failed")
@@ -2215,6 +2443,8 @@ def _create_app():
                         "message": str(exc),
                         "category": _classify_error(str(exc)),
                     })
+                finally:
+                    cancel_task.cancel()
 
         except WebSocketDisconnect:
             log.info("WebSocket client disconnected")

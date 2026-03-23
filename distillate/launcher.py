@@ -297,6 +297,24 @@ def _install_hooks_into(project_path: Path) -> None:
     )
 
 
+def _refresh_protocol_files(project_path: Path) -> None:
+    """Copy latest CLAUDE.md and REPORTING.md into the experiment project.
+
+    Called on every session launch so running experiments always pick up
+    protocol updates without requiring a re-scaffold.
+    """
+    autoresearch = Path(__file__).parent / "autoresearch"
+
+    claude_md_src = autoresearch / "CLAUDE.md"
+    if claude_md_src.exists():
+        shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
+
+    reporting_src = autoresearch / "REPORTING.md"
+    distillate_dir = project_path / ".distillate"
+    if reporting_src.exists() and distillate_dir.exists():
+        shutil.copy2(reporting_src, distillate_dir / "REPORTING.md")
+
+
 # ---------------------------------------------------------------------------
 # Session management (tmux-based)
 # ---------------------------------------------------------------------------
@@ -680,6 +698,7 @@ def launch_experiment(
     effort: str = "high",
     project: dict | None = None,
     prompt_override: str | None = None,
+    max_turns: int = 100,
 ) -> dict:
     """Launch a Claude Code session for the experiment.
 
@@ -705,12 +724,35 @@ def launch_experiment(
                         f"Session '{tmux_name}' is already running. Stop it first."
                     )
 
+    # Belt-and-suspenders: also check for tmux sessions matching the project
+    # name pattern, in case state got out of sync (e.g. crash, manual launch).
+    proj_slug = (project.get("name", project_path.name) if project
+                 else project_path.name).lower().replace(" ", "-")
+    try:
+        import subprocess
+        ls = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if ls.returncode == 0:
+            for line in ls.stdout.strip().splitlines():
+                if line.startswith(f"distillate-{proj_slug}-"):
+                    raise RuntimeError(
+                        f"Tmux session '{line}' is already running for this "
+                        f"project. Stop it first, or use 'continue' to resume."
+                    )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
     prompt = project_path / "PROMPT.md"
     if not prompt.exists():
         raise FileNotFoundError(f"No PROMPT.md found in {project_path}")
 
     # Ensure hooks are always installed
     _install_hooks_into(project_path)
+
+    # Refresh protocol files (CLAUDE.md, REPORTING.md) from latest source
+    _refresh_protocol_files(project_path)
 
     # Generate run context from prior runs (if any)
     context_path = _generate_run_context(project_path)
@@ -768,7 +810,7 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Source bash login profile for SSO auth, then run the command
     bash_profile = Path.home() / ".bash_profile"
     source_line = f"source {shlex.quote(str(bash_profile))} >/dev/null 2>&1; " if bash_profile.exists() else ""
-    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; export DISTILLATE_SESSION=1; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
 
     print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
     print(f"[launch] command: {full_command}")
@@ -820,7 +862,7 @@ def _spawn_ssh(
     session_name: str, host: str, remote_dir: str, command: str,
 ) -> None:
     """Spawn a remote tmux session via SSH."""
-    ssh_cmd = f"cd {shlex.quote(remote_dir)} && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
@@ -1202,7 +1244,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
             return None
         old_runs = existing.get("runs", {})
         old_count = len(old_runs)
-        existing_names = {r["name"] for r in old_runs.values()}
+        existing_names = {str(r.get("name", "")) for r in old_runs.values()}
         new_runs = 0
         for run_id, run_data in result.get("runs", {}).items():
             if run_data["name"] not in existing_names:
@@ -1228,6 +1270,30 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
                 if isinstance(v, (int, float)):
                     if best_metric is None or v > next(iter(best_metric.values())):
                         best_metric = {k: v}
+
+    # Send experiment completion email (non-blocking)
+    try:
+        from distillate.cloud_email import send_experiment_event, _cloud_configured
+        if _cloud_configured() and new_runs > 0:
+            proj_data = state.get_project(project_id) or {}
+            runs_all = proj_data.get("runs", {})
+            kept = sum(1 for r in runs_all.values()
+                       if (r.get("decision") or r.get("status", "")) == "keep")
+            best_str = ""
+            if best_metric:
+                k, v = next(iter(best_metric.items()))
+                best_str = f"{k}={v}"
+            send_experiment_event(
+                state,
+                project_name=proj_data.get("name", project_id),
+                runs=len(runs_all),
+                kept=kept,
+                best_metric=best_str,
+                insight=proj_data.get("latest_learning", ""),
+                github_url=proj_data.get("github_url", ""),
+            )
+    except Exception:
+        log.debug("Cloud email send failed (non-critical)", exc_info=True)
 
     return {
         "new_runs": new_runs,
@@ -1285,7 +1351,7 @@ def run_campaign(
 
         campaign = proj.get("campaign", {})
         if campaign.get("status") not in ("running", None):
-            # Externally paused/stopped
+            # Externally paused
             return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
 
         # Budget check
@@ -1383,9 +1449,59 @@ def run_campaign(
 def refresh_session_statuses(state) -> int:
     """Check all running sessions and update their status in state.
 
+    Also discovers untracked tmux sessions matching the distillate-*
+    naming pattern and registers them.
+
     Returns count of sessions that changed from running to completed.
     """
     changed = 0
+
+    # Discover untracked tmux sessions
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}:#{session_created}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if not line or ":" not in line:
+                    continue
+                tmux_name, created = line.split(":", 1)
+                if not tmux_name.startswith("distillate-"):
+                    continue
+                # Match to a project
+                for proj_id, proj in state.projects.items():
+                    if tmux_name.startswith(f"distillate-{proj_id}"):
+                        sessions = proj.get("sessions", {})
+                        # Check if already tracked
+                        already = any(
+                            s.get("tmux_session") == tmux_name
+                            for s in sessions.values()
+                        )
+                        if not already:
+                            # Register the discovered session
+                            sess_id = tmux_name
+                            try:
+                                started = datetime.fromtimestamp(
+                                    int(created), tz=timezone.utc
+                                ).isoformat()
+                            except (ValueError, OSError):
+                                started = datetime.now(timezone.utc).isoformat()
+                            sessions[sess_id] = {
+                                "tmux_session": tmux_name,
+                                "status": "running",
+                                "started_at": started,
+                                "discovered": True,
+                            }
+                            state.update_project(proj_id, sessions=sessions)
+                            changed += 1
+                            log.info("Discovered untracked session: %s → %s",
+                                     tmux_name, proj_id)
+                        break
+    except Exception:
+        log.debug("tmux discovery failed (non-critical)", exc_info=True)
+
+    # Check known sessions
     for proj_id, proj in state.projects.items():
         sessions = proj.get("sessions", {})
         for sess_id, sess in sessions.items():

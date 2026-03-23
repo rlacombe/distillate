@@ -23,6 +23,39 @@ let libraryConfigured = false;  // Set from /status — whether Zotero credentia
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
 
+// Delegated click handler for paper refs and external links in messages
+messagesEl?.addEventListener("click", (e) => {
+  // Paper [N] references
+  const paperRef = e.target.closest(".paper-ref");
+  if (paperRef) {
+    e.preventDefault();
+    const idx = parseInt(paperRef.dataset.index);
+    if (window._cachedPapersData) {
+      const paper = window._cachedPapersData.find((p) => p.index === idx);
+      if (paper) { selectPaper(paper.key); return; }
+    }
+    if (typeof serverPort !== "undefined" && serverPort) {
+      fetch(`http://127.0.0.1:${serverPort}/papers`)
+        .then((r) => r.json())
+        .then((data) => {
+          const paper = (data.papers || []).find((p) => p.index === idx);
+          if (paper) selectPaper(paper.key);
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+  // External links in assistant messages
+  const link = e.target.closest(".message.assistant a[href]");
+  if (link && !link.classList.contains("paper-ref") && !link.classList.contains("copy-btn")) {
+    const href = link.getAttribute("href");
+    if (href && !href.startsWith("#")) {
+      e.preventDefault();
+      handleExternalLink(href, link);
+    }
+  }
+});
+
 const NICOLAS_GREETINGS = [
   "Hello! What concoction shall we explore today?",
   "The laboratory is warm and the flasks are clean. What shall we work on?",
@@ -63,29 +96,24 @@ function injectChatBanner(stats) {
         <span class="banner-dashes-tail"></span>
       </div>
       <div class="banner-body">
-        <p class="banner-tagline">Your research command center.</p>
+        <p class="banner-tagline">Your research alchemist.</p>
         ${expLine ? `<p class="banner-stats">${expLine}</p>` : ""}
         <p class="banner-stats">${papersLine}</p>
       </div>
       <div class="banner-footer"></div>
     </div>
-    <div class="chat-tips">
-      <span>/conjure</span> launch experiment
-      <span class="tip-sep">&middot;</span>
-      <span>/brew</span> sync papers
-      <span class="tip-sep">&middot;</span>
-      <span>/survey</span> status check
-    </div>
   </div>
-  <div class="message assistant chat-greeting">${greeting}</div>
-  <div class="suggestions"></div>`;
+  <div class="message assistant">${greeting}</div>`;
 
   messagesEl.insertAdjacentHTML("afterbegin", bannerHtml);
+
+  // Ensure chat input is focused after banner renders
+  setTimeout(() => inputEl?.focus(), 50);
 }
 
-// Restore chat messages from previous session (survives page reload)
+// Restore chat messages from previous session (survives app restart)
 try {
-  const savedChat = sessionStorage.getItem("distillate-chat");
+  const savedChat = localStorage.getItem("distillate-chat");
   if (savedChat && messagesEl) {
     messagesEl.innerHTML = savedChat;
     chatBannerInjected = true;
@@ -96,7 +124,7 @@ try {
 window.addEventListener("beforeunload", () => {
   try {
     if (messagesEl && messagesEl.children.length > 0) {
-      sessionStorage.setItem("distillate-chat", messagesEl.innerHTML);
+      localStorage.setItem("distillate-chat", messagesEl.innerHTML);
     }
   } catch {}
 });
@@ -183,7 +211,7 @@ let toolLabels = {
   WebSearch: "\uD83C\uDF10 Searching the web",
   WebFetch: "\uD83C\uDF10 Fetching page",
   Agent: "\uD83E\uDD16 Delegating to subagent",
-  ToolSearch: "\uD83D\uDD0D Loading tools",
+  ToolSearch: "\u2697\uFE0F Preparing the apparatus",
   NotebookEdit: "\uD83D\uDCD3 Editing notebook",
   TodoWrite: "\u2611\uFE0F Updating tasks",
   TaskCreate: "\uD83D\uDCCB Creating task",
@@ -197,7 +225,7 @@ let toolLabels = {
 function sparklineSvg(values, highlightIdx, opts = {}) {
   const w = opts.width || 60, h = opts.height || 16;
   const color = opts.color || "#6366f1";
-  const highlightColor = opts.highlightColor || "#22c55e";
+  const highlightColor = opts.highlightColor || "#4ade80";
   if (!values.length) return "";
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -230,6 +258,7 @@ function connect(port) {
     reconnectAttempts = 0;
 
     statusDot.className = "dot connected";
+
     statusText.textContent = wasReconnecting ? "Reconnected" : "Connected";
     inputEl.disabled = false;
     sendBtn.disabled = false;
@@ -254,6 +283,7 @@ function connect(port) {
 
   ws.onclose = () => {
     statusDot.className = "dot disconnected";
+
     inputEl.disabled = true;
     sendBtn.disabled = true;
 
@@ -271,6 +301,7 @@ function connect(port) {
 
   ws.onerror = () => {
     statusDot.className = "dot disconnected";
+
     statusText.textContent = "Connection error \u2014 check that the server is running";
   };
 
@@ -288,6 +319,10 @@ function connect(port) {
 /* ───── Event handling ───── */
 
 function handleEvent(event) {
+  // Ignore events from a cancelled turn (except turn_end which resets state)
+  if (_cancelledTurn && event.type !== "turn_end") return;
+  if (_cancelledTurn && event.type === "turn_end") { _cancelledTurn = false; return; }
+
   switch (event.type) {
     case "text_delta":
       removeThinkingIndicator();
@@ -308,8 +343,11 @@ function handleEvent(event) {
         currentAssistantEl = null;
         currentText = "";
       }
-      addToolIndicator(event.name, false, event.input, event.label);
-      scrollToBottom();
+      // Hide internal plumbing tools (ToolSearch just loads schemas)
+      if (event.name !== "ToolSearch") {
+        addToolIndicator(event.name, false, event.input, event.label);
+        scrollToBottom();
+      }
       break;
 
     case "tool_done": {
@@ -323,10 +361,13 @@ function handleEvent(event) {
         turnHadMutation = true;
       }
       markToolDone(event.tool_use_id || event.name);
+      // Show thinking indicator while agent processes the tool result
+      showThinkingIndicator();
       break;
     }
 
     case "turn_end":
+      clearTimeout(_inputSafetyTimer);
       finishStreaming();
       if (turnHadMutation) {
         triggerCloudSync();
@@ -348,13 +389,18 @@ function handleEvent(event) {
       finishStreaming();
       addErrorMessage(event.message || "Something went wrong.");
       break;
+
+    case "cancelled":
+      // Server confirmed cancellation — UI already handled by stopGeneration()
+      removeThinkingIndicator();
+      finishStreaming();
+      break;
   }
 }
 
 /* ───── Message rendering ───── */
 
 function addUserMessage(text) {
-  welcomeEl.classList.add("hidden");
   const el = document.createElement("div");
   el.className = "message user";
   el.textContent = text;
@@ -364,22 +410,90 @@ function addUserMessage(text) {
 
 function startAssistantMessage() {
   currentAssistantEl = document.createElement("div");
-  currentAssistantEl.className = "message assistant streaming-cursor";
+  currentAssistantEl.className = "message assistant markdown-body streaming-cursor";
   messagesEl.appendChild(currentAssistantEl);
   currentText = "";
   isStreaming = true;
   setStreamingUI(true);
+  // Hide suggestions while streaming
+  const cs = document.getElementById("chat-suggestions");
+  if (cs) cs.classList.add("hidden");
 }
 
 function renderAssistantMessage() {
   if (!currentAssistantEl) return;
   if (typeof marked !== "undefined") {
     currentAssistantEl.innerHTML = window.markedParse(currentText);
-    // Attach copy button listeners to any new code blocks
-    currentAssistantEl.querySelectorAll(".copy-btn").forEach(attachCopyHandler);
+    // Turn [N] paper references into clickable links
+    currentAssistantEl.innerHTML = currentAssistantEl.innerHTML.replace(
+      /\[(\d{1,4})\]/g,
+      '<a href="#" class="paper-ref" data-index="$1">[$1]</a>'
+    );
   } else {
     currentAssistantEl.textContent = currentText;
   }
+}
+
+function _extractPaperId(url) {
+  // arXiv: arxiv.org/abs/2301.12345 or arxiv.org/pdf/2301.12345
+  const arxiv = url.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)/);
+  if (arxiv) return { type: "arxiv", id: arxiv[1], label: `arXiv:${arxiv[1]}` };
+  // DOI
+  const doi = url.match(/doi\.org\/(10\.\d{4,}\/\S+)/);
+  if (doi) return { type: "doi", id: doi[1], label: `DOI:${doi[1]}` };
+  // Semantic Scholar
+  if (url.includes("semanticscholar.org/paper/")) return { type: "url", id: url, label: "Semantic Scholar paper" };
+  return null;
+}
+
+function handleExternalLink(url, anchorEl) {
+  const paper = _extractPaperId(url);
+
+  if (!paper) {
+    // Not a paper link — just open externally
+    if (window.nicolas?.openExternal) window.nicolas.openExternal(url);
+    else window.open(url, "_blank");
+    return;
+  }
+
+  // Paper link — show popup with options
+  const existing = document.querySelector(".link-popup");
+  if (existing) existing.remove();
+
+  const popup = document.createElement("div");
+  popup.className = "link-popup";
+  popup.innerHTML = `
+    <div class="link-popup-header">${paper.label}</div>
+    <button class="link-popup-btn" data-action="open">Open in browser</button>
+    <button class="link-popup-btn link-popup-btn-accent" data-action="queue">Add to library queue</button>`;
+
+  popup.addEventListener("click", async (e) => {
+    const action = e.target.dataset?.action;
+    if (!action) return;
+    popup.remove();
+    if (action === "open") {
+      if (window.nicolas?.openExternal) window.nicolas.openExternal(url);
+      else window.open(url, "_blank");
+    } else if (action === "queue") {
+      // Use the add_paper_to_zotero tool via chat
+      const identifier = paper.type === "arxiv" ? paper.id : url;
+      inputEl.value = `Add this paper to my queue: ${identifier}`;
+      sendMessage();
+    }
+  });
+
+  // Position near the link
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.position = "fixed";
+  popup.style.left = `${rect.left}px`;
+  popup.style.top = `${rect.bottom + 4}px`;
+  document.body.appendChild(popup);
+
+  // Close on click outside
+  const close = (e) => {
+    if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener("mousedown", close); }
+  };
+  setTimeout(() => document.addEventListener("mousedown", close), 0);
 }
 
 function finishStreaming() {
@@ -394,6 +508,25 @@ function finishStreaming() {
   sendBtn.disabled = false;
   setStreamingUI(false);
   inputEl.focus();
+  // Restore suggestions after streaming
+  const cs = document.getElementById("chat-suggestions");
+  if (cs) cs.classList.remove("hidden");
+  refreshChatSuggestions();
+
+  // Send queued message if user typed while agent was working
+  if (_queuedMessage) {
+    const queued = _queuedMessage;
+    _queuedMessage = null;
+    // Upgrade the dimmed queued message to normal style
+    const qEl = messagesEl.querySelector(".message.queued");
+    if (qEl) qEl.classList.remove("queued");
+    // Send it
+    lastUserMessage = queued;
+    showThinkingIndicator();
+    ws.send(JSON.stringify({ text: queued }));
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+  }
 }
 
 function addToolIndicator(name, done, input, serverLabel) {
@@ -401,7 +534,7 @@ function addToolIndicator(name, done, input, serverLabel) {
   el.className = `tool-indicator${done ? " done" : ""}`;
   el.dataset.toolName = name;
 
-  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ");
+  const label = serverLabel || toolLabels[name] || name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 
   // Build dynamic subtitle from tool input
   let subtitle = "";
@@ -433,6 +566,32 @@ function addToolIndicator(name, done, input, serverLabel) {
       subtitle = `\u2018${p}\u2019`;
     } else if (name === "manage_session" && input.action) {
       subtitle = `${input.action}${input.project ? ` \u2014 ${input.project}` : ""}`;
+    } else if (name === "suggest_from_literature") {
+      const parts = [];
+      if (input.project) parts.push(input.project);
+      if (input.focus) parts.push(`\u2018${input.focus}\u2019`);
+      subtitle = parts.join(" \u2014 ");
+    } else if (name === "compare_projects" && input.projects) {
+      subtitle = input.projects.join(" vs ");
+    } else if (name === "compare_runs") {
+      const parts = [];
+      if (input.run_a) parts.push(input.run_a);
+      if (input.run_b) parts.push(input.run_b);
+      subtitle = parts.join(" vs ");
+    } else if (name === "list_projects") {
+      subtitle = "all experiments";
+    } else if (name === "get_project_details" && input.identifier) {
+      subtitle = input.identifier;
+    } else if (name === "extract_baselines" && input.paper) {
+      subtitle = input.paper;
+    } else if (name === "replicate_paper" && input.paper) {
+      subtitle = input.paper;
+    } else if (name === "steer_experiment" && input.project) {
+      subtitle = input.project;
+    } else if (name === "continue_experiment" && input.project) {
+      subtitle = input.project;
+    } else if (name === "init_experiment" && input.name) {
+      subtitle = input.name;
     }
     // Claude Code built-in tools
     else if ((name === "Read" || name === "Edit" || name === "Write") && input.file_path) {
@@ -450,6 +609,16 @@ function addToolIndicator(name, done, input, serverLabel) {
       try { subtitle = new URL(input.url).hostname; } catch { subtitle = input.url.slice(0, 40); }
     } else if (name === "Agent" && input.description) {
       subtitle = input.description;
+    } else if (name === "ToolSearch" && input.query) {
+      // Translate raw tool queries into readable text
+      const q = input.query;
+      if (q.includes("mcp__distillate__")) {
+        const toolName = q.replace(/.*mcp__distillate__/, "").replace(/,.*/, "").trim();
+        const readable = toolLabels[toolName] || toolName.replace(/_/g, " ");
+        subtitle = readable.replace(/^[^\w]*/, "").toLowerCase();
+      } else {
+        subtitle = q.replace(/^select:/, "").replace(/mcp__\w+__/g, "").replace(/_/g, " ");
+      }
     }
   }
 
@@ -636,44 +805,131 @@ function fetchWelcomeStats() {
 
   // Prefetch papers for Papers tab
   fetchPapersData();
+
+  // Load connectors
+  fetchConnectors();
 }
 
 function updateSuggestions(isFirstUse, hasPapers, hasExperiments) {
-  const container = document.querySelector(".suggestions");
+  const container = document.getElementById("chat-suggestions");
+  const suggestions = _buildSuggestions(isFirstUse, hasPapers, hasExperiments);
+  _renderSuggestions(container, suggestions);
+}
+
+function refreshChatSuggestions() {
+  const container = document.getElementById("chat-suggestions");
   if (!container) return;
 
   let suggestions;
+
+  // Context: experiment selected
+  if (currentProjectId) {
+    const proj = cachedProjects.find((p) => p.id === currentProjectId);
+    if (proj) {
+      suggestions = [];
+      if (proj.active_sessions > 0) {
+        suggestions.push({ text: `How is ${proj.name || proj.id} going?`, label: "Check progress" });
+        suggestions.push({ text: `Steer ${proj.name || proj.id} — what should it try next?`, label: "Steer experiment" });
+      } else if (proj.run_count > 0) {
+        suggestions.push({ text: `Analyze the results for ${proj.name || proj.id}`, label: "Analyze results" });
+        suggestions.push({ text: `Continue ${proj.name || proj.id} with a new session`, label: "Continue experiment" });
+      } else {
+        suggestions.push({ text: `Launch ${proj.name || proj.id}`, label: "Launch experiment" });
+      }
+      if (proj.run_count >= 2) {
+        suggestions.push({ text: `Compare the runs in ${proj.name || proj.id}`, label: "Compare runs" });
+      }
+      suggestions.push({ text: `What papers are relevant to ${proj.name || proj.id}?`, label: "Find related papers" });
+    }
+  }
+
+  // Context: paper selected
+  else if (currentPaperKey) {
+    const paper = cachedPapers.find((p) => p.key === currentPaperKey);
+    if (paper) {
+      const shortTitle = (paper.title || "").length > 40
+        ? paper.title.slice(0, 40) + "\u2026"
+        : paper.title;
+      suggestions = [];
+      if (paper.status === "processed") {
+        suggestions.push({ text: `Summarize "${shortTitle}"`, label: "Summarize" });
+        suggestions.push({ text: `What are the key insights from "${shortTitle}"?`, label: "Key insights" });
+        suggestions.push({ text: `What experiments could I run based on "${shortTitle}"?`, label: "Experiment ideas" });
+      } else {
+        suggestions.push({ text: `What is "${shortTitle}" about?`, label: "Quick overview" });
+      }
+      suggestions.push({ text: `Find papers similar to "${shortTitle}"`, label: "Similar papers" });
+      if (!paper.promoted) {
+        suggestions.push({ text: `Why should I promote "${shortTitle}"?`, label: "Worth promoting?" });
+      }
+    }
+  }
+
+  // Context: nothing selected — global suggestions
+  else {
+    const hasRunning = cachedProjects.some((p) => p.active_sessions > 0);
+    const hasPapers = cachedPapers.length > 0;
+    const hasExps = cachedProjects.length > 0;
+
+    suggestions = [];
+    if (hasRunning) {
+      suggestions.push({ text: "What's running right now?", label: "Live status" });
+    }
+    if (hasExps) {
+      suggestions.push({ text: "How are my experiments going?", label: "Experiment status" });
+    }
+    if (hasPapers) {
+      suggestions.push({ text: "What's in my reading queue?", label: "Reading queue" });
+      suggestions.push({ text: "Summarize my last read", label: "Last read" });
+    }
+    if (hasExps && hasPapers) {
+      suggestions.push({ text: "What should I try next based on what I've read?", label: "What's next?" });
+    }
+    if (!hasExps && !hasPapers) {
+      suggestions.push({ text: "__launch_demo__", label: "Launch demo experiment", action: launchDemoExperiment });
+      suggestions.push({ text: "What can you do?", label: "What can you do?" });
+    }
+  }
+
+  if (suggestions) {
+    _renderSuggestions(container, suggestions);
+  }
+}
+
+function _buildSuggestions(isFirstUse, hasPapers, hasExperiments) {
   if (isFirstUse) {
-    suggestions = [
+    return [
       { text: "__launch_demo__", label: "Launch demo experiment", action: launchDemoExperiment },
       { text: "What can you do?", label: "What can you do?" },
       { text: "How does this work?", label: "How does it work?" },
       { text: "How do I connect my Zotero library?", label: "Connect Zotero" },
     ];
   } else if (!hasExperiments) {
-    suggestions = [
+    return [
       { text: "What's in my queue?", label: "What's in my queue?" },
       { text: "Run my first experiment", label: "My first experiment" },
       { text: "Summarize my last read", label: "Summarize last read" },
       { text: "What should I try next?", label: "What should I try?" },
     ];
   } else if (!hasPapers) {
-    suggestions = [
+    return [
       { text: "How are my experiments going?", label: "Experiment status" },
       { text: "How do I connect my Zotero library?", label: "Connect Zotero" },
       { text: "What should I try next?", label: "What should I try?" },
       { text: "Run a new experiment", label: "New experiment" },
     ];
   } else {
-    // Returning user with both papers and experiments
-    suggestions = [
+    return [
       { text: "What's in my queue?", label: "What's in my queue?" },
       { text: "How are my experiments going?", label: "Experiment status" },
       { text: "Summarize my last read", label: "Summarize last read" },
       { text: "What should I try next?", label: "What should I try?" },
     ];
   }
+}
 
+function _renderSuggestions(container, suggestions) {
+  if (!container) return;
   container.innerHTML = "";
   for (const s of suggestions) {
     const btn = document.createElement("button");
@@ -682,6 +938,7 @@ function updateSuggestions(isFirstUse, hasPapers, hasExperiments) {
     btn.textContent = s.label;
     btn.addEventListener("click", () => {
       if (s.action) { s.action(); return; }
+      if (s.text === "__launch_demo__") { launchDemoExperiment(); return; }
       inputEl.value = s.text;
       sendMessage();
     });
@@ -750,17 +1007,40 @@ sendBtn.addEventListener("mousedown", (e) => {
   }
 });
 
+// Message history (arrow up/down like CLI)
+const _messageHistory = [];
+let _historyIndex = -1;
+let _historyDraft = "";
+
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
+    return;
+  }
+
+  // Arrow up/down for history navigation (only when cursor is at start/end)
+  if (e.key === "ArrowUp" && inputEl.selectionStart === 0 && _messageHistory.length > 0) {
+    e.preventDefault();
+    if (_historyIndex === -1) _historyDraft = inputEl.value;
+    _historyIndex = Math.min(_historyIndex + 1, _messageHistory.length - 1);
+    inputEl.value = _messageHistory[_historyIndex];
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  } else if (e.key === "ArrowDown" && _historyIndex >= 0) {
+    e.preventDefault();
+    _historyIndex--;
+    inputEl.value = _historyIndex >= 0 ? _messageHistory[_historyIndex] : _historyDraft;
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
   }
 });
 
 // Auto-resize textarea
 inputEl.addEventListener("input", () => {
   inputEl.style.height = "auto";
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
+  const maxH = 120;
+  const newH = Math.min(inputEl.scrollHeight, maxH);
+  inputEl.style.height = newH + "px";
+  inputEl.classList.toggle("has-scroll", inputEl.scrollHeight > maxH);
 });
 
 const sendIcon = document.getElementById("send-icon");
@@ -781,16 +1061,43 @@ function setStreamingUI(streaming) {
   }
 }
 
+let _cancelledTurn = false;
+
 function stopGeneration() {
   if (!isStreaming) return;
+
+  _cancelledTurn = true;
+
+  // Tell the server to interrupt Claude
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "cancel" }));
+  }
 
   // Finish whatever partial text we have
   removeThinkingIndicator();
   finishStreaming();
 
-  // Re-enable input so the user can type their next message
+  // Mark any in-progress tool indicators as stopped
+  document.querySelectorAll(".tool-indicator:not(.done)").forEach((el) => {
+    el.classList.add("done", "cancelled");
+    const spinner = el.querySelector(".spinner");
+    if (spinner) spinner.remove();
+  });
+
+  // Show interruption indicator (styled like a tool indicator)
+  const stopEl = document.createElement("div");
+  stopEl.className = "tool-indicator done cancelled";
+  stopEl.innerHTML = '<span class="stop-x">\u2715</span><span>Nicolas was interrupted by the user.</span>';
+  messagesEl.appendChild(stopEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  // Re-enable input and pre-fill with last message for easy retry
   inputEl.disabled = false;
   sendBtn.disabled = false;
+  if (lastUserMessage) {
+    inputEl.value = lastUserMessage;
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  }
   inputEl.focus();
 }
 
@@ -821,23 +1128,53 @@ function removeThinkingIndicator() {
   if (el) el.remove();
 }
 
+let _inputSafetyTimer = null;
+let _queuedMessage = null;
+
 function sendMessage() {
   const text = inputEl.value.trim();
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Hide suggestion pills after first message
-  const suggestionsEl = document.querySelector(".suggestions");
-  if (suggestionsEl) suggestionsEl.classList.add("hidden");
+  // If agent is still working, queue the message instead of blocking
+  if (isStreaming || inputEl.disabled) {
+    _queuedMessage = text;
+    // Show queued message in dimmed style
+    const qEl = document.createElement("div");
+    qEl.className = "message user queued";
+    qEl.textContent = text;
+    messagesEl.appendChild(qEl);
+    scrollToBottom(true);
+    inputEl.value = "";
+    inputEl.style.height = "auto";
+    return;
+  }
 
+  _cancelledTurn = false;
   lastUserMessage = text;
+  _messageHistory.unshift(text);
+  if (_messageHistory.length > 50) _messageHistory.pop();
+  _historyIndex = -1;
+  _historyDraft = "";
   addUserMessage(text);
   showThinkingIndicator();
   ws.send(JSON.stringify({ text }));
 
+  // Immediately enter streaming mode so stop button is visible
+  isStreaming = true;
+  setStreamingUI(true);
+
   inputEl.value = "";
   inputEl.style.height = "auto";
-  inputEl.disabled = true;
-  sendBtn.disabled = true;
+
+  // Safety: re-enable input after 120s if turn_end never arrives
+  clearTimeout(_inputSafetyTimer);
+  _inputSafetyTimer = setTimeout(() => {
+    if (isStreaming) {
+      console.warn("[safety] Re-enabling input after timeout");
+      removeThinkingIndicator();
+      finishStreaming();
+    }
+  }, 120000);
 }
 
 /* ───── Settings modal ───── */
@@ -947,14 +1284,10 @@ if (importBtn) {
   });
 }
 
-// Esc to close settings or stop generation
+// Esc to close settings — handled here because settingsOverlay is in scope
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (!settingsOverlay.classList.contains("hidden")) {
-      closeSettings();
-    } else if (isStreaming) {
-      stopGeneration();
-    }
+  if (e.key === "Escape" && !settingsOverlay.classList.contains("hidden")) {
+    closeSettings();
   }
 });
 
@@ -1091,6 +1424,7 @@ if (window.nicolas) {
   // Running inside Electron
   window.nicolas.onUpdateProgress(({ message }) => {
     statusDot.className = "dot updating";
+
     statusText.textContent = message;
   });
 
@@ -1101,6 +1435,7 @@ if (window.nicolas) {
   window.nicolas.onServerError(({ message }) => {
     statusText.textContent = `Error: ${message}`;
     statusDot.className = "dot disconnected";
+
   });
 
   window.nicolas.onDeepLink((url) => {
@@ -1202,6 +1537,11 @@ function switchEditorTab(viewName, { skipSessionAttach = false } = {}) {
     if (el) el.classList.toggle("hidden", v !== viewName);
   }
 
+  if (viewName === "control-panel") {
+    if (currentProjectId) {
+      renderProjectDetail(currentProjectId);
+    }
+  }
   if (viewName === "results") {
     if (currentProjectId) {
       loadResults(currentProjectId);
@@ -1377,14 +1717,6 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     togglePane("sidebar-left");
   }
-  if ((e.metaKey || e.ctrlKey) && e.key === "e") {
-    e.preventDefault();
-    togglePane("sidebar-left");
-  }
-  if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-    e.preventDefault();
-    togglePane("bottom-panel");
-  }
   if ((e.metaKey || e.ctrlKey) && e.key === "r") {
     e.preventDefault();
     reloadCurrentProject();
@@ -1396,22 +1728,16 @@ document.addEventListener("keydown", (e) => {
     const tabs = ["control-panel", "session", "results", "prompt-editor"];
     switchEditorTab(tabs[parseInt(e.key) - 1]);
   }
-  // Escape to deselect experiment
+  // Escape: stop generation first, then deselect experiment
   if (e.key === "Escape" && !e.metaKey && !e.ctrlKey) {
     const settingsOverlay = document.getElementById("settings-overlay");
-    if (settingsOverlay && !settingsOverlay.classList.contains("hidden")) return; // let settings handle it
-    if (currentProjectId) {
+    if (settingsOverlay && !settingsOverlay.classList.contains("hidden")) return;
+    if (isStreaming) {
       e.preventDefault();
-      currentProjectId = null;
-      const detailEl = document.getElementById("experiment-detail");
-      if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; }
-      welcomeEl?.classList.remove("hidden");
-      const tabLabel = document.getElementById("editor-tabs-project-name");
-      if (tabLabel) tabLabel.textContent = "";
-      document.querySelectorAll("#experiments-sidebar .sidebar-item").forEach((el) => el.classList.remove("active"));
-      resetResultsTab();
-      resetSetupTab();
-      switchEditorTab("control-panel");
+      stopGeneration();
+    } else if (currentProjectId || currentPaperKey) {
+      e.preventDefault();
+      deselectAll();
     }
   }
 });
@@ -1497,7 +1823,12 @@ function restoreLayoutState() {
   } catch {}
 }
 
-restoreLayoutState();
+// Only restore layout if not a fresh app launch (preserves sizes within session,
+// but resets to CSS defaults on full restart)
+if (sessionStorage.getItem("distillate-session-active")) {
+  restoreLayoutState();
+}
+sessionStorage.setItem("distillate-session-active", "1");
 
 /* ───── refreshTabData replacement ───── */
 
@@ -1591,8 +1922,9 @@ function handleSSEEvent(data) {
         proj.run_count = proj.runs.length;
       }
 
-      // Re-render if this project is currently displayed
-      if (currentProjectId === data.project_id) {
+      // Re-render if this project is displayed AND control panel is visible
+      const cpVisible = !document.getElementById("control-panel-view")?.classList.contains("hidden");
+      if (currentProjectId === data.project_id && cpVisible) {
         renderProjectDetail(data.project_id);
       }
       // Update sidebar counts
@@ -1637,7 +1969,7 @@ function handleSSEEvent(data) {
           const titleEl = document.querySelector("#experiment-detail .metric-chart-title");
           const activeMetric = titleEl ? titleEl.textContent.replace(/\s*[\u2191\u2193]\s*$/, "") : "";
           if (activeMetric) {
-            renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[pid]);
+            renderMetricChart(canvas, getDisplayRuns(proj.runs), activeMetric, liveMetrics[pid]);
           }
         }
       }
@@ -1756,6 +2088,14 @@ if (papersInsightsToggle) {
   });
 }
 
+const brewSyncBtn = document.getElementById("brew-sync-btn");
+if (brewSyncBtn) {
+  brewSyncBtn.addEventListener("click", () => {
+    inputEl.value = "Sync my paper library";
+    sendMessage();
+  });
+}
+
 let papersFirstLoad = true;
 
 function fetchPapersData() {
@@ -1769,7 +2109,8 @@ function fetchPapersData() {
     .then((data) => {
       papersFirstLoad = false;
       if (!data.ok) return;
-      renderPapersList(data.papers || []);
+      window._cachedPapersData = data.papers || [];
+      renderPapersList(window._cachedPapersData);
     })
     .catch(() => { papersFirstLoad = false; });
 }
@@ -1971,8 +2312,8 @@ function renderPapersList(papers) {
     papersSidebarEl.innerHTML = `
       <div class="sidebar-empty sidebar-empty-onboarding">
         <p>Your library is empty</p>
-        <button class="onboarding-btn" id="library-setup-btn">Connect Zotero</button>
-        <p class="sidebar-empty-hint">Link your Zotero library to start reading and annotating papers</p>
+        <button class="onboarding-btn" id="library-setup-btn">Connect your library</button>
+        <p class="sidebar-empty-hint">Sync your papers, highlights, and reading notes</p>
       </div>`;
     papersSidebarEl.querySelector("#library-setup-btn")
       ?.addEventListener("click", launchLibrarySetup);
@@ -2075,8 +2416,8 @@ async function launchLibrarySetup() {
 
   detailEl.innerHTML = `
     <div class="onboarding-progress">
-      <h2 class="exp-detail-title">Connect your library</h2>
-      <p class="exp-detail-meta">Link your Zotero account to start syncing papers.</p>
+      <h2 class="exp-detail-title">Connect your paper library</h2>
+      <p class="exp-detail-meta">Distillate syncs with Zotero to track your reading and extract highlights.</p>
 
       <div class="library-setup-wizard" id="library-wizard">
         <div class="library-step" id="lib-step-zotero">
@@ -2101,27 +2442,9 @@ async function launchLibrarySetup() {
           <button class="onboarding-btn" id="lib-verify-btn">Verify &amp; connect</button>
         </div>
 
-        <div class="library-step hidden" id="lib-step-reader">
-          <div class="library-step-header">
-            <span class="library-step-num">2</span>
-            <span>Where do you read?</span>
-          </div>
-          <p class="library-step-help">Choose how you read and annotate your papers.</p>
-          <div class="reader-choices">
-            <button class="reader-choice" data-source="remarkable">
-              <span class="reader-icon">📟</span>
-              <span class="reader-text"><span class="reader-name">reMarkable</span><span class="reader-desc">PDFs sync to your tablet, highlights flow back</span></span>
-            </button>
-            <button class="reader-choice" data-source="zotero">
-              <span class="reader-icon">📱</span>
-              <span class="reader-text"><span class="reader-name">iPad / Desktop / Any device</span><span class="reader-desc">Read in the Zotero app, tag "read" when done</span></span>
-            </button>
-          </div>
-        </div>
-
         <div class="library-step hidden" id="lib-step-done">
           <div class="library-step-header">
-            <span class="library-step-num">3</span>
+            <span class="library-step-num">2</span>
             <span>Syncing your library</span>
           </div>
           <div class="wizard-flow" id="lib-sync-flow">
@@ -2165,9 +2488,31 @@ async function launchLibrarySetup() {
       const data = await r.json();
       if (!data.ok) throw new Error(data.reason || "Verification failed");
 
-      // Move to step 2
+      // Move to sync step
       document.getElementById("lib-step-zotero").classList.add("library-step-done");
-      document.getElementById("lib-step-reader").classList.remove("hidden");
+      document.getElementById("lib-step-done").classList.remove("hidden");
+
+      // Trigger paper sync
+      try {
+        const r = await fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" });
+        const syncFlow = document.getElementById("lib-sync-flow");
+        const dot = syncFlow?.querySelector(".flow-dot");
+        const label = syncFlow?.querySelector(".flow-label");
+        if (dot) dot.className = "flow-dot done";
+        if (label) label.textContent = r.ok ? "Library synced!" : "Connected!";
+      } catch {
+        const syncFlow = document.getElementById("lib-sync-flow");
+        const dot = syncFlow?.querySelector(".flow-dot");
+        const label = syncFlow?.querySelector(".flow-label");
+        if (dot) dot.className = "flow-dot done";
+        if (label) label.textContent = "Connected!";
+      }
+
+      // Refresh papers sidebar
+      libraryConfigured = true;
+      await new Promise((r) => setTimeout(r, 800));
+      fetchPapersData();
+      fetchConnectors();
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.classList.remove("hidden");
@@ -2175,78 +2520,30 @@ async function launchLibrarySetup() {
       verifyBtn.textContent = "Verify & connect";
     }
   });
-
-  // Step 2: Reading surface choice
-  document.getElementById("lib-step-reader")?.addEventListener("click", async (e) => {
-    const choice = e.target.closest(".reader-choice");
-    if (!choice) return;
-    const source = choice.dataset.source;
-
-    // Highlight selection
-    document.querySelectorAll(".reader-choice").forEach((c) => c.classList.remove("selected"));
-    choice.classList.add("selected");
-
-    // Save reading source
-    try {
-      await fetch(`http://127.0.0.1:${serverPort}/library/setup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          zotero_api_key: apiKeyInput.value.trim(),
-          zotero_user_id: userIdInput.value.trim(),
-          reading_source: source,
-        }),
-      });
-    } catch {}
-
-    // Move to step 3: sync
-    document.getElementById("lib-step-reader").classList.add("library-step-done");
-    document.getElementById("lib-step-done").classList.remove("hidden");
-
-    // Trigger paper sync
-    try {
-      const r = await fetch(`http://127.0.0.1:${serverPort}/sync`, { method: "POST" });
-      const syncFlow = document.getElementById("lib-sync-flow");
-      if (r.ok) {
-        const dot = syncFlow?.querySelector(".flow-dot");
-        const label = syncFlow?.querySelector(".flow-label");
-        if (dot) dot.className = "flow-dot done";
-        if (label) label.textContent = "Library synced!";
-      } else {
-        // Sync may fail (no cloud sync), that's OK — papers endpoint still works
-        const dot = syncFlow?.querySelector(".flow-dot");
-        const label = syncFlow?.querySelector(".flow-label");
-        if (dot) dot.className = "flow-dot done";
-        if (label) label.textContent = "Connected!";
-      }
-    } catch {
-      const syncFlow = document.getElementById("lib-sync-flow");
-      const dot = syncFlow?.querySelector(".flow-dot");
-      const label = syncFlow?.querySelector(".flow-label");
-      if (dot) dot.className = "flow-dot done";
-      if (label) label.textContent = "Connected!";
-    }
-
-    // Refresh papers sidebar
-    libraryConfigured = true;
-    await new Promise((r) => setTimeout(r, 800));
-    fetchPapersData();
-  });
 }
 
 function selectPaper(paperKey) {
+  // Toggle: clicking the already-selected paper deselects
+  if (currentPaperKey === paperKey) {
+    deselectAll();
+    return;
+  }
   currentPaperKey = paperKey;
+  currentProjectId = null;
 
   // Update sidebar selection
   papersSidebarEl?.querySelectorAll(".sidebar-item").forEach((el) => {
     el.classList.toggle("active", el.dataset.key === paperKey);
   });
+  refreshChatSuggestions();
 
   // Show paper detail in experiment-detail area (reuse editor area)
   const detailEl = document.getElementById("experiment-detail");
   if (!detailEl || !serverPort) return;
 
-  // Switch to control panel and show detail
+  // Hide experiment tabs, switch to control panel and show detail
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.add("hidden");
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   detailEl.innerHTML = '<div class="exp-detail-loading">Loading paper...</div>';
@@ -2273,72 +2570,68 @@ function selectPaper(paperKey) {
       title.textContent = data.title || paperKey;
       header.appendChild(title);
 
-      // Status badges
-      const badges = document.createElement("div");
-      badges.className = "exp-detail-badges";
+      // Authors + date + venue on one line
+      const metaLine1 = [];
+      if (data.authors && data.authors.length) metaLine1.push(data.authors.join(", "));
+      if (data.publication_date) metaLine1.push(data.publication_date);
+      if (data.venue) metaLine1.push(data.venue);
+      if (metaLine1.length) {
+        const el = document.createElement("div");
+        el.className = "exp-detail-meta";
+        el.style.marginTop = "6px";
+        el.textContent = metaLine1.join(" \u00B7 ");
+        header.appendChild(el);
+      }
+
+      // URL + stats + badges on one line
+      const metaLine2 = document.createElement("div");
+      metaLine2.className = "exp-detail-meta";
+      metaLine2.style.display = "flex";
+      metaLine2.style.alignItems = "center";
+      metaLine2.style.gap = "12px";
+      metaLine2.style.flexWrap = "wrap";
+
+      const paperUrl = data.url
+        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
+        || (data.doi ? `https://doi.org/${data.doi}` : "");
       if (data.status === "processed") {
         const b = document.createElement("span");
         b.className = "exp-detail-badge keep";
         b.textContent = "read";
-        badges.appendChild(b);
+        metaLine2.appendChild(b);
       }
       if (data.promoted) {
         const b = document.createElement("span");
         b.className = "exp-detail-badge";
         b.style.background = "var(--accent)";
         b.textContent = "promoted";
-        badges.appendChild(b);
-      }
-      header.appendChild(badges);
-
-      // Authors
-      if (data.authors && data.authors.length) {
-        const authorsEl = document.createElement("div");
-        authorsEl.className = "exp-detail-meta";
-        authorsEl.textContent = data.authors.join(", ");
-        header.appendChild(authorsEl);
+        metaLine2.appendChild(b);
       }
 
-      // Venue + date + IDs
-      const metaParts = [];
-      if (data.venue) metaParts.push(data.venue);
-      if (data.publication_date) metaParts.push(data.publication_date);
-      if (data.doi) metaParts.push(`DOI: ${data.doi}`);
-      if (data.arxiv_id) metaParts.push(`arXiv: ${data.arxiv_id}`);
-      if (metaParts.length) {
-        const metaEl = document.createElement("div");
-        metaEl.className = "exp-detail-meta";
-        metaEl.textContent = metaParts.join(" \u00B7 ");
-        header.appendChild(metaEl);
+      const statParts = [];
+      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
+      if (data.page_count) statParts.push(`${data.page_count} pages`);
+      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
+      if (statParts.length) {
+        const statsSpan = document.createElement("span");
+        statsSpan.textContent = statParts.join(" \u00B7 ");
+        metaLine2.appendChild(statsSpan);
       }
 
-      // Paper URL link
-      const paperUrl = data.url
-        || (data.arxiv_id ? `https://arxiv.org/abs/${data.arxiv_id}` : "")
-        || (data.doi ? `https://doi.org/${data.doi}` : "");
       if (paperUrl) {
         const linkEl = document.createElement("a");
         linkEl.className = "paper-external-link";
         linkEl.href = "#";
+        linkEl.style.margin = "0";
         linkEl.textContent = data.arxiv_id ? `arxiv.org/abs/${data.arxiv_id}` : paperUrl.replace(/^https?:\/\//, "");
         linkEl.addEventListener("click", (e) => {
           e.preventDefault();
           window.nicolas.openExternal(paperUrl);
         });
-        header.appendChild(linkEl);
+        metaLine2.appendChild(linkEl);
       }
 
-      // Stats row
-      const statParts = [];
-      if (data.page_count) statParts.push(`${data.page_count} pages`);
-      if (data.citation_count) statParts.push(`${data.citation_count} citations`);
-      if (data.engagement) statParts.push(`${data.engagement}% engagement`);
-      if (statParts.length) {
-        const statsEl = document.createElement("div");
-        statsEl.className = "exp-detail-meta";
-        statsEl.textContent = statParts.join(" \u00B7 ");
-        header.appendChild(statsEl);
-      }
+      if (metaLine2.children.length) header.appendChild(metaLine2);
 
       detailEl.appendChild(header);
 
@@ -2410,24 +2703,51 @@ function selectPaper(paperKey) {
 
       // Highlights
       if (data.highlights && data.highlights.length) {
+        let hlText = typeof data.highlights === "string"
+          ? data.highlights
+          : data.highlights.map((h) => typeof h === "string" ? `- ${h}` : `- ${h.text || JSON.stringify(h)}`).join("\n");
+        // Strip leading markdown heading (already shown as section title)
+        hlText = hlText.replace(/^#{1,3}\s*Highlights?\s*\n*/i, "").trim();
+        if (hlText) {
+          const section = document.createElement("div");
+          section.className = "exp-detail-section";
+          const sTitle = document.createElement("h3");
+          sTitle.textContent = "Highlights";
+          section.appendChild(sTitle);
+          const hl = document.createElement("div");
+          hl.className = "paper-highlights-list markdown-body";
+          hl.innerHTML = window.markedParse(hlText);
+          section.appendChild(hl);
+          detailEl.appendChild(section);
+        }
+      }
+
+      // Related Experiments (cross-reference from linked_projects)
+      if (data.linked_projects && data.linked_projects.length > 0) {
         const section = document.createElement("div");
         section.className = "exp-detail-section";
         const sTitle = document.createElement("h3");
-        sTitle.textContent = "Highlights";
+        sTitle.textContent = "Related Experiments";
         section.appendChild(sTitle);
-        const ul = document.createElement("ul");
-        ul.className = "paper-highlights-list";
-        for (const h of data.highlights) {
-          const li = document.createElement("li");
-          li.textContent = typeof h === "string" ? h : h.text || JSON.stringify(h);
-          ul.appendChild(li);
+        const list = document.createElement("div");
+        list.className = "related-experiments-list";
+        for (const proj of data.linked_projects) {
+          const item = document.createElement("div");
+          item.className = "related-experiment-item";
+          item.textContent = proj.name || proj.id;
+          item.style.cursor = "pointer";
+          item.addEventListener("click", () => {
+            selectProject(proj.id);
+          });
+          list.appendChild(item);
         }
-        section.appendChild(ul);
+        section.appendChild(list);
         detailEl.appendChild(section);
       }
     })
-    .catch(() => {
-      detailEl.innerHTML = '<div class="exp-detail-loading">Failed to load paper details.</div>';
+    .catch((err) => {
+      console.error("[paper-detail] Error:", err);
+      detailEl.innerHTML = `<div class="exp-detail-loading">Failed to load paper details: ${err.message || err}</div>`;
     });
 }
 
@@ -2451,18 +2771,24 @@ function togglePromote(paperKey, promote, btn) {
         // Sync source data so re-renders (filters/sort) stay correct
         const paperObj = cachedPapers.find((p) => p.key === paperKey);
         if (paperObj) paperObj.promoted = nowPromoted;
-        // Update the badge on the card
+        // Update the badge on the card (if in paper card view)
         const card = btn.closest(".paper-card");
-        const header = card.querySelector(".paper-card-header");
-        const existingBadge = header.querySelector(".paper-promoted-badge");
-        if (nowPromoted && !existingBadge) {
-          const badge = document.createElement("span");
-          badge.className = "paper-promoted-badge";
-          badge.textContent = "promoted";
-          header.appendChild(badge);
-        } else if (!nowPromoted && existingBadge) {
-          existingBadge.remove();
+        if (card) {
+          const header = card.querySelector(".paper-card-header");
+          if (header) {
+            const existingBadge = header.querySelector(".paper-promoted-badge");
+            if (nowPromoted && !existingBadge) {
+              const badge = document.createElement("span");
+              badge.className = "paper-promoted-badge";
+              badge.textContent = "promoted";
+              header.appendChild(badge);
+            } else if (!nowPromoted && existingBadge) {
+              existingBadge.remove();
+            }
+          }
         }
+        // Update sidebar badge
+        fetchPapersData();
       }
     })
     .catch(() => {
@@ -2525,6 +2851,20 @@ function classifyMetric(name) {
 
 function isLowerBetter(metricName) {
   return _LOWER_BETTER_CATEGORIES.has(classifyMetric(metricName));
+}
+
+/** A run is displayable if it's completed and has at least one numeric result. */
+function isDisplayableRun(r) {
+  const d = r.decision || r.status || "other";
+  if (d === "running") return false;
+  return r.results && Object.values(r.results).some(v => typeof v === "number");
+}
+
+/** Deduplicate runs by ID (last entry wins) and keep only displayable ones. */
+function getDisplayRuns(runs) {
+  const byId = new Map();
+  for (const r of (runs || [])) byId.set(r.id, r);
+  return [...byId.values()].filter(isDisplayableRun);
 }
 
 function findBestRun(runs, metricName) {
@@ -2599,11 +2939,11 @@ function runDisplayNum(run) {
 
 function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
   const useLogScale = opts.logScale || false;
-  // Filter runs that have a real numeric value for this metric (skip 0 = missing data)
+  // Filter runs that have a real numeric value for this metric
   const points = [];
   for (let i = 0; i < runs.length; i++) {
     const val = runs[i].results?.[metricName];
-    if (typeof val === "number" && isFinite(val) && val !== 0) {
+    if (typeof val === "number" && isFinite(val)) {
       const decision = runs[i].decision || runs[i].status || "";
       points.push({ index: i, value: val, run: runs[i], kept: decision === "keep" });
     }
@@ -2657,10 +2997,12 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
   const h = rect.height;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
 
-  const pad = { top: 12, right: 16, bottom: 24, left: 48 };
+  const pad = { top: 12, right: 32, bottom: 24, left: 48 };
   const plotW = w - pad.left - pad.right;
   const plotH = h - pad.top - pad.bottom;
 
@@ -2706,6 +3048,12 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
 
   // Clear
   ctx.clearRect(0, 0, w, h);
+
+  // Clip to canvas bounds to prevent overflow
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, w, h);
+  ctx.clip();
 
   // Y-axis labels with nice rounded ticks
   ctx.fillStyle = "#8888a0";
@@ -2835,7 +3183,7 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
       }
     }
     if (bestLine.length > 1) {
-      ctx.strokeStyle = "rgba(34,197,94,0.5)";
+      ctx.strokeStyle = "rgba(74,222,128,0.5)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       for (let i = 0; i < bestLine.length; i++) {
@@ -2868,7 +3216,7 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     const x = toX(i);
     const y = toY(points[i].value);
     if (frontierSet.has(i)) {
-      ctx.fillStyle = "#22c55e";
+      ctx.fillStyle = "#4ade80";
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -2941,12 +3289,14 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
       ctx.stroke();
       ctx.setLineDash([]);
       // Label
-      ctx.fillStyle = "rgba(34, 197, 94, 0.8)";
+      ctx.fillStyle = "rgba(74, 222, 128, 0.8)";
       ctx.font = "10px sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(`goal: ${goal.threshold}`, pad.left + plotW - 4, goalY - 4);
     }
   }
+
+  ctx.restore(); // End clip region
 
   // Tooltip on hover (covers both run and live points)
   const container = canvas.parentElement;
@@ -3042,6 +3392,380 @@ function stopSessionPolling() {
 
 /* ───── Live tab: experiment list ───── */
 
+/* ───── Connectors ───── */
+
+let cachedConnectors = [];
+
+function fetchConnectors() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/connectors`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.ok) {
+        cachedConnectors = data.connectors || [];
+        renderConnectors(cachedConnectors);
+      }
+    })
+    .catch(() => {});
+}
+
+function renderConnectors(connectors) {
+  const listEl = document.getElementById("connectors-list");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+
+  // Counter badge
+  const countEl = document.getElementById("connectors-count");
+  const connected = connectors.filter((c) => c.connected).length;
+  if (countEl) countEl.textContent = `${connected}/${connectors.length}`;
+
+  for (const c of connectors) {
+    const item = document.createElement("div");
+    item.className = "connector-item";
+    item.dataset.id = c.id;
+    item.dataset.setup = c.setup || "";
+
+    const statusCheck = document.createElement("span");
+    statusCheck.className = `connector-status ${c.connected ? "connected" : "disconnected"}`;
+    statusCheck.textContent = c.connected ? "\u2713" : "\u2013";
+    item.appendChild(statusCheck);
+
+    const label = document.createElement("span");
+    label.className = "connector-label";
+    label.textContent = c.label;
+    item.appendChild(label);
+
+    if (c.service) {
+      const service = document.createElement("span");
+      service.className = "connector-service";
+      service.textContent = c.service;
+      item.appendChild(service);
+    }
+
+    if (c.connected && c.detail) {
+      const detail = document.createElement("span");
+      detail.className = "connector-detail";
+      detail.textContent = c.detail;
+      item.appendChild(detail);
+    }
+
+    item.addEventListener("click", () => handleConnectorClick(c));
+    listEl.appendChild(item);
+  }
+}
+
+function handleConnectorClick(connector) {
+  if (!connector.connected) {
+    launchConnectorSetup(connector.setup);
+  } else {
+    showConnectorSettings(connector.id);
+  }
+}
+
+async function showConnectorSettings(connectorId) {
+  const detailEl = document.getElementById("experiment-detail");
+  if (!detailEl || !serverPort) return;
+
+  welcomeEl?.classList.add("hidden");
+  detailEl.classList.remove("hidden");
+
+  // Show control panel view
+  const cpView = document.getElementById("control-panel-view");
+  if (cpView && cpView.classList.contains("hidden")) {
+    for (const v of editorViews) {
+      const viewEl = document.getElementById(`${v}-view`);
+      if (viewEl) viewEl.classList.toggle("hidden", v !== "control-panel");
+    }
+  }
+
+  detailEl.innerHTML = '<div class="exp-detail-loading">Loading...</div>';
+
+  try {
+    const r = await fetch(`http://127.0.0.1:${serverPort}/connectors/${connectorId}`);
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.reason || "Failed to load");
+    const c = data.connector;
+
+    detailEl.innerHTML = "";
+
+    const header = document.createElement("div");
+    header.className = "exp-detail-header";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "exp-detail-title-row";
+    const title = document.createElement("h2");
+    title.className = "exp-detail-title";
+    title.textContent = c.label;
+    const badge = document.createElement("span");
+    const emailPending = c.id === "email" && c.connected && !c.verified;
+    badge.className = `exp-detail-badge ${!c.connected ? "paused" : emailPending ? "waiting" : "running"}`;
+    badge.textContent = !c.connected ? "not connected" : emailPending ? "pending verification" : "connected";
+
+    titleRow.appendChild(title);
+    titleRow.appendChild(badge);
+    header.appendChild(titleRow);
+
+    const service = document.createElement("div");
+    service.className = "exp-detail-meta";
+    service.style.marginTop = "4px";
+    service.textContent = c.service;
+    header.appendChild(service);
+
+    detailEl.appendChild(header);
+
+    // Settings table
+    if (c.settings && c.settings.length) {
+      const section = document.createElement("div");
+      section.className = "connector-settings";
+
+      for (const s of c.settings) {
+        const row = document.createElement("div");
+        row.className = "connector-setting-row";
+
+        const label = document.createElement("span");
+        label.className = "connector-setting-label";
+        label.textContent = s.label;
+        row.appendChild(label);
+
+        const value = document.createElement("span");
+        value.className = "connector-setting-value";
+        value.textContent = s.value || "—";
+        if (s.sensitive && s.value) value.classList.add("sensitive");
+        row.appendChild(value);
+
+        section.appendChild(row);
+      }
+
+      detailEl.appendChild(section);
+    }
+
+    // Email: resend verification link if pending
+    if (c.id === "email" && c.connected && !c.verified) {
+      const verifyRow = document.createElement("div");
+      verifyRow.style.cssText = "margin-top:12px;font-size:12px;color:var(--text-dim);";
+      verifyRow.innerHTML = 'Check your inbox to verify · <a href="#" id="resend-verify-settings" style="color:var(--accent);">Resend</a>';
+      detailEl.appendChild(verifyRow);
+      document.getElementById("resend-verify-settings")?.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const link = e.target;
+        link.textContent = "Sending...";
+        try {
+          const r = await fetch(`http://127.0.0.1:${serverPort}/email/resend-verification`, { method: "POST" });
+          const d = await r.json();
+          link.textContent = d.ok ? "Sent!" : "Failed";
+        } catch { link.textContent = "Failed"; }
+      });
+    }
+
+    // Reconfigure button
+    const actions = document.createElement("div");
+    actions.className = "connector-actions";
+    const reconfigBtn = document.createElement("button");
+    reconfigBtn.className = "onboarding-btn";
+    reconfigBtn.textContent = c.connected ? "Reconfigure" : "Set up";
+    reconfigBtn.addEventListener("click", () => launchConnectorSetup(c.id === "zotero" ? "library" : c.id === "email" ? "email" : c.id));
+    actions.appendChild(reconfigBtn);
+    detailEl.appendChild(actions);
+
+  } catch (err) {
+    detailEl.innerHTML = `<div class="exp-detail-loading">Failed: ${err.message}</div>`;
+  }
+}
+
+function launchConnectorSetup(setup) {
+  if (setup === "library") {
+    launchLibrarySetup();
+  } else if (setup === "email") {
+    launchEmailSetup();
+  } else if (setup === "remarkable") {
+    inputEl.value = "How do I set up my reMarkable?";
+    sendMessage();
+  } else if (setup === "obsidian") {
+    inputEl.value = "How do I connect Obsidian for my notes?";
+    sendMessage();
+  }
+}
+
+function launchEmailSetup() {
+  const detailEl = document.getElementById("experiment-detail");
+  if (!detailEl || !serverPort) return;
+
+  welcomeEl?.classList.add("hidden");
+  detailEl.classList.remove("hidden");
+
+  const cpView = document.getElementById("control-panel-view");
+  if (cpView && cpView.classList.contains("hidden")) {
+    for (const v of editorViews) {
+      const viewEl = document.getElementById(`${v}-view`);
+      if (viewEl) viewEl.classList.toggle("hidden", v !== "control-panel");
+    }
+  }
+
+  detailEl.innerHTML = `
+    <div class="onboarding-progress">
+      <h2 class="exp-detail-title">Set up email updates</h2>
+      <p class="exp-detail-meta" style="margin-top:6px;">Choose what lands in your inbox. Each update is independent.</p>
+      <div class="library-setup-wizard" style="margin-top:20px;">
+        <div class="library-step" id="email-step">
+          <div class="library-step-header">
+            <span class="library-step-num">1</span>
+            <span>Your email</span>
+          </div>
+          <div class="library-field">
+            <label for="email-setup-input">Email address</label>
+            <input type="email" id="email-setup-input" placeholder="you@example.com" spellcheck="false" autocomplete="email">
+          </div>
+
+          <div class="library-step-header" style="margin-top:16px;">
+            <span class="library-step-num">2</span>
+            <span>What to receive</span>
+          </div>
+
+          <div class="email-toggle-list">
+            <label class="email-toggle">
+              <input type="checkbox" name="email-experiment-reports" checked>
+              <div class="email-toggle-text">
+                <span class="email-toggle-name">Experiment reports</span>
+                <span class="email-toggle-desc">When an experiment completes — results, best metric, key insight</span>
+              </div>
+            </label>
+            <label class="email-toggle">
+              <input type="checkbox" name="email-daily-papers" checked>
+              <div class="email-toggle-text">
+                <span class="email-toggle-name">Daily paper suggestions</span>
+                <span class="email-toggle-desc">Every morning at 7am — three papers matching your interests</span>
+              </div>
+            </label>
+            <label class="email-toggle">
+              <input type="checkbox" name="email-weekly-digest" checked>
+              <div class="email-toggle-text">
+                <span class="email-toggle-name">Weekly digest</span>
+                <span class="email-toggle-desc">Every Monday — papers read, experiments ran, highlights</span>
+              </div>
+            </label>
+          </div>
+
+          <p class="email-privacy-note">Emails are sent from distillate.dev via Supabase and Resend. Enabling updates stores your email and a summary of your reading and experiment activity. You can disable at any time.</p>
+          <div class="library-error hidden" id="email-setup-error"></div>
+          <button class="onboarding-btn" id="email-setup-submit" style="margin-top:12px;">Enable updates</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("email-setup-submit")?.addEventListener("click", async () => {
+    const email = document.getElementById("email-setup-input")?.value?.trim();
+    const errorEl = document.getElementById("email-setup-error");
+
+    if (!email || !email.includes("@")) {
+      if (errorEl) { errorEl.textContent = "Please enter a valid email."; errorEl.classList.remove("hidden"); }
+      return;
+    }
+
+    const experimentReports = document.querySelector('[name="email-experiment-reports"]')?.checked ?? true;
+    const dailyPapers = document.querySelector('[name="email-daily-papers"]')?.checked ?? true;
+    const weeklyDigest = document.querySelector('[name="email-weekly-digest"]')?.checked ?? true;
+
+    const btn = document.getElementById("email-setup-submit");
+    if (btn) { btn.disabled = true; btn.textContent = "Setting up..."; }
+
+    try {
+      const r = await fetch(`http://127.0.0.1:${serverPort}/email/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          experiment_reports: experimentReports,
+          daily_papers: dailyPapers,
+          weekly_digest: weeklyDigest,
+        }),
+      });
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.reason || "Failed");
+
+      localStorage.setItem("distillate-email-asked", "1");
+      const enabled = [];
+      if (experimentReports) enabled.push("experiment reports");
+      if (dailyPapers) enabled.push("daily papers");
+      if (weeklyDigest) enabled.push("weekly digest");
+      const enabledText = enabled.join(", ").replace(/^./, c => c.toUpperCase());
+      const verified = data.verified;
+      const stepEl = document.getElementById("email-step");
+      stepEl.innerHTML =
+        '<div style="text-align:center;padding:24px 16px;">' +
+        '<div style="font-size:28px;margin-bottom:6px;">✓</div>' +
+        '<div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:6px;">You\'re in!</div>' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">' + enabledText + ' coming to ' + email + '</div>' +
+        (verified ? '' :
+          '<div style="font-size:12px;color:var(--warning);margin-bottom:6px;">Check your inbox to verify your email</div>' +
+          '<a href="#" id="resend-verify-link" style="font-size:12px;color:var(--text-dim);">Resend verification email</a>') +
+        '</div>';
+      if (!verified) {
+        document.getElementById("resend-verify-link")?.addEventListener("click", async (e) => {
+          e.preventDefault();
+          const link = e.target;
+          link.textContent = "Sending...";
+          link.style.pointerEvents = "none";
+          try {
+            const r = await fetch(`http://127.0.0.1:${serverPort}/email/resend-verification`, { method: "POST" });
+            const d = await r.json();
+            link.textContent = d.ok ? "Sent! Check your inbox" : "Failed — try again";
+          } catch { link.textContent = "Failed — try again"; }
+          link.style.pointerEvents = "";
+        });
+      }
+      fetchConnectors();
+    } catch (err) {
+      if (errorEl) { errorEl.textContent = err.message; errorEl.classList.remove("hidden"); }
+      if (btn) { btn.disabled = false; btn.textContent = "Enable updates"; }
+    }
+  });
+}
+
+// + button: show menu of disconnected connectors
+document.getElementById("add-connector-btn")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const existing = document.querySelector(".connector-add-menu");
+  if (existing) { existing.remove(); return; }
+
+  const disconnected = cachedConnectors.filter((c) => !c.connected);
+  if (!disconnected.length) return;
+
+  const section = document.getElementById("connectors-section");
+  if (!section) return;
+  section.style.position = "relative";
+
+  const menu = document.createElement("div");
+  menu.className = "connector-add-menu";
+
+  for (const c of disconnected) {
+    const item = document.createElement("div");
+    item.className = "connector-add-item";
+    item.innerHTML = `<span class="connector-label">${c.label}</span><span class="connector-add-desc">${c.service}</span>`;
+    item.addEventListener("click", () => {
+      menu.remove();
+      launchConnectorSetup(c.setup);
+    });
+    menu.appendChild(item);
+  }
+  section.appendChild(menu);
+
+  // Close on click outside
+  setTimeout(() => {
+    const close = (ev) => {
+      if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("mousedown", close); }
+    };
+    document.addEventListener("mousedown", close);
+  }, 0);
+});
+
+// Toggle collapse
+document.getElementById("connectors-toggle")?.addEventListener("click", () => {
+  const listEl = document.getElementById("connectors-list");
+  const chevron = document.getElementById("connectors-toggle");
+  if (listEl) listEl.classList.toggle("hidden");
+  if (chevron) chevron.classList.toggle("collapsed");
+});
+
 let experimentsFirstLoad = true;
 
 function fetchExperimentsList() {
@@ -3058,10 +3782,8 @@ function fetchExperimentsList() {
       if (!data.ok) return;
       const projects = data.projects || [];
       renderProjectsList(projects);
-      // Re-render the detail view if a project is selected (picks up new runs/metrics)
-      if (currentProjectId && cachedProjects.find((p) => p.id === currentProjectId)) {
-        renderProjectDetail(currentProjectId);
-      }
+      // Re-render detail view so buttons (Launch/Stop) reflect new state
+      if (currentProjectId) renderProjectDetail(currentProjectId);
       // Start SSE if we have projects with active sessions
       if (projects.some((p) => p.active_sessions > 0)) {
         startExperimentSSE();
@@ -3072,10 +3794,17 @@ function fetchExperimentsList() {
 
 function reloadCurrentProject() {
   if (!serverPort || !currentProjectId) return fetchExperimentsList();
-  // Rescan disk first, then fetch updated data
+  // Rescan disk first, then fetch updated data and re-render
   fetch(`http://127.0.0.1:${serverPort}/experiments/${encodeURIComponent(currentProjectId)}/scan`, { method: "POST" })
     .then((r) => r.json())
-    .then(() => fetchExperimentsList())
+    .then(() => fetch(`http://127.0.0.1:${serverPort}/experiments/list`))
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.projects) {
+        renderProjectsList(data.projects);
+        if (currentProjectId) renderProjectDetail(currentProjectId);
+      }
+    })
     .catch(() => fetchExperimentsList());
 }
 
@@ -3092,7 +3821,15 @@ function doReload(projectId, btn) {
         if (data.new_runs) parts.push(`${data.new_runs} new`);
         if (data.backfilled) parts.push(`${data.backfilled} backfilled`);
         btn.textContent = parts.length ? parts.join(", ") : "\u2713";
-        fetchExperimentsList();
+        // Fetch fresh data, THEN re-render
+        return fetch(`http://127.0.0.1:${serverPort}/experiments/list`)
+          .then((r) => r.json())
+          .then((listData) => {
+            if (listData.projects) {
+              renderProjectsList(listData.projects);
+              if (currentProjectId) renderProjectDetail(currentProjectId);
+            }
+          });
       } else {
         btn.textContent = data.reason || "Failed";
       }
@@ -3177,43 +3914,42 @@ function renderProjectsList(projects) {
 
     const icon = document.createElement("span");
     icon.className = "sidebar-item-icon";
-    if (proj.active_sessions > 0 && proj.current_run === "Session active") {
-      // Ready: session alive, agent awaiting instructions
+    if (proj.active_sessions > 0 && proj.current_run !== "Session active") {
+      // Running: agent actively working
+      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" class="blink-play"><polygon points="1,0 9,5 1,10" fill="#4ade80"/></svg>`;
+      icon.title = "Running";
+    } else if (proj.active_sessions > 0) {
+      // Ready: session alive, agent waiting for steering
       icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#7366f1"/></svg>`;
       icon.title = "Ready";
-    } else if (proj.active_sessions > 0) {
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" class="blink-play"><polygon points="1,0 9,5 1,10" fill="#22c55e"/></svg>`;
-      icon.title = "Running";
-    } else if (proj.status === "paused") {
-      icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/><rect x="6" y="1" width="3" height="8" rx="0.5" fill="#f59e0b"/></svg>`;
-      icon.title = "Paused";
     } else {
+      // Paused: no active session
       icon.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="#8888a0"/></svg>`;
-      icon.title = "Stopped";
+      icon.title = "Paused";
     }
     item.appendChild(icon);
+
+    const nameGroup = document.createElement("div");
+    nameGroup.className = "sidebar-item-name-group";
 
     const name = document.createElement("span");
     name.className = "sidebar-item-name";
     name.textContent = proj.name || proj.id;
-    item.appendChild(name);
+    nameGroup.appendChild(name);
 
     const meta = document.createElement("span");
     meta.className = "sidebar-item-meta";
-    // Deduplicate by run ID, count only completed runs
+    // Count displayable runs (deduped, non-running, with metrics)
     let sidebarTotal = 0, sidebarKept = 0;
     if (proj.runs) {
-      const byId = new Map();
-      for (const r of proj.runs) byId.set(r.id, r);
-      for (const r of byId.values()) {
-        const d = r.decision || r.status || "other";
-        if (d === "running") continue;
+      for (const r of getDisplayRuns(proj.runs)) {
         sidebarTotal++;
-        if (d === "keep") sidebarKept++;
+        if ((r.decision || r.status) === "keep") sidebarKept++;
       }
     }
     meta.textContent = `${sidebarTotal} runs \u00B7 ${sidebarKept} kept`;
-    item.appendChild(meta);
+    nameGroup.appendChild(meta);
+    item.appendChild(nameGroup);
 
     if (proj.active_sessions > 0) {
       const badge = document.createElement("span");
@@ -3226,11 +3962,6 @@ function renderProjectsList(projects) {
     experimentsSidebarEl.appendChild(item);
   }
 
-  // Re-render detail if the currently selected project was updated
-  if (currentProjectId) {
-    const stillExists = projects.find((p) => p.id === currentProjectId);
-    if (stillExists) renderProjectDetail(currentProjectId);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3712,11 +4443,37 @@ function refreshExperiments(selectId) {
     .catch(() => {});
 }
 
+function deselectAll() {
+  currentProjectId = null;
+  currentPaperKey = null;
+  const detailEl = document.getElementById("experiment-detail");
+  if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; }
+  welcomeEl?.classList.remove("hidden");
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.add("hidden");
+  const tabLabel = document.getElementById("editor-tabs-project-name");
+  if (tabLabel) tabLabel.textContent = "";
+  document.querySelectorAll("#experiments-sidebar .sidebar-item").forEach((el) => el.classList.remove("active"));
+  papersSidebarEl?.querySelectorAll(".sidebar-item").forEach((el) => el.classList.remove("active"));
+  resetResultsTab();
+  resetSetupTab();
+  switchEditorTab("control-panel");
+  refreshChatSuggestions();
+}
+
 function selectProject(projectId) {
+  // Toggle: clicking the already-selected project deselects
+  if (currentProjectId === projectId) {
+    deselectAll();
+    return;
+  }
   const previousProject = currentProjectId;
   currentProjectId = projectId;
+  currentPaperKey = null;
 
-  // Show experiment name in tab bar
+  // Show experiment tabs and name
+  const editorTabs = document.getElementById("editor-tabs");
+  if (editorTabs) editorTabs.classList.remove("hidden");
   const tabLabel = document.getElementById("editor-tabs-project-name");
   if (tabLabel) {
     const proj = cachedProjects.find((p) => p.id === projectId);
@@ -3740,6 +4497,7 @@ function selectProject(projectId) {
   }
 
   renderProjectDetail(projectId);
+  refreshChatSuggestions();
 }
 
 function renderProjectDetail(projectId) {
@@ -3749,7 +4507,7 @@ function renderProjectDetail(projectId) {
   const proj = cachedProjects.find((p) => p.id === projectId);
   if (!proj) return;
 
-  // Show detail (only switch to control panel if no tab is active yet)
+  // Show detail
   welcomeEl.classList.add("hidden");
   detailEl.classList.remove("hidden");
   // Clean up any live timers from previous render
@@ -3759,8 +4517,20 @@ function renderProjectDetail(projectId) {
   }
   detailEl.innerHTML = "";
 
-  const activeTab = document.querySelector(".editor-tab.active");
-  if (!activeTab) switchEditorTab("control-panel");
+  // Switch to control panel only on first selection of a new project.
+  // Re-renders of the same project must NOT yank the user off their current tab.
+  const isNewProject = renderProjectDetail._lastProjectId !== projectId;
+  renderProjectDetail._lastProjectId = projectId;
+  const cpView = document.getElementById("control-panel-view");
+  if (isNewProject && cpView && cpView.classList.contains("hidden")) {
+    for (const v of editorViews) {
+      const viewEl = document.getElementById(`${v}-view`);
+      if (viewEl) viewEl.classList.toggle("hidden", v !== "control-panel");
+    }
+    document.querySelectorAll(".editor-tab").forEach((t) => t.classList.remove("active"));
+    document.querySelector('.editor-tab[data-view="control-panel"]')?.classList.add("active");
+  }
+
 
   // Light up Session tab when there's an active session
   const sessionTab = document.querySelector('.editor-tab[data-view="session"]');
@@ -3778,6 +4548,9 @@ function renderProjectDetail(projectId) {
     }
   }
 
+  // Shared filtered array: deduped, non-running, with at least one numeric result
+  const displayRuns = getDisplayRuns(proj.runs);
+
   // Header: title row with hero metric right-aligned
   const header = document.createElement("div");
   header.className = "exp-detail-header";
@@ -3792,48 +4565,76 @@ function renderProjectDetail(projectId) {
   title.textContent = proj.name || proj.id;
   titleLeft.appendChild(title);
   const isReady = proj.active_sessions > 0 && proj.current_run === "Session active";
-  if (proj.active_sessions > 0) {
-    const badge = document.createElement("span");
-    badge.className = isReady ? "exp-detail-badge ready" : "exp-detail-badge running";
-    badge.innerHTML = isReady
-      ? `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`
-      : `<span class="badge-play-icon">\u25B6</span> active`;
+  const badge = document.createElement("span");
+  if (proj.active_sessions > 0 && !isReady) {
+    badge.className = "exp-detail-badge running";
+    badge.innerHTML = `<span class="badge-play-icon">\u25B6</span> running`;
+    titleLeft.appendChild(badge);
+  } else if (proj.active_sessions > 0) {
+    badge.className = "exp-detail-badge ready";
+    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><circle cx="4" cy="4" r="3.5" fill="currentColor"/></svg> ready`;
+    titleLeft.appendChild(badge);
+  } else {
+    badge.className = "exp-detail-badge paused";
+    badge.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" style="margin-right:3px;position:relative;top:0.5px"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/></svg> paused`;
     titleLeft.appendChild(badge);
   }
 
-  // Session timer: show elapsed time since the active session started
-  if (proj.active_sessions > 0 && proj.sessions) {
-    const sessionStarted = Object.values(proj.sessions)[0]?.started_at;
-    if (sessionStarted) {
+  // Training timer: sum of actual run durations (not wall-clock session time)
+  if (proj.runs && proj.runs.length) {
+    // Deduplicate by run ID — take the latest entry per ID
+    const byId = new Map();
+    for (const r of proj.runs) byId.set(r.id, r);
+    const uniqueRuns = [...byId.values()];
+
+    // Sum completed run durations
+    let totalTrainingSecs = 0;
+    let liveRunStartMs = null;
+    for (const r of uniqueRuns) {
+      if (r.duration_seconds) {
+        totalTrainingSecs += r.duration_seconds;
+      }
+      // Check for a currently running run (has started_at but no completed_at)
+      // Ignore stale announcements older than 4 hours (likely never concluded)
+      if ((r.decision === "running" || r.status === "running") && r.started_at && !r.completed_at) {
+        const startMs = new Date(r.started_at).getTime();
+        const ageHours = (Date.now() - startMs) / 3600000;
+        if (ageHours < 4) {
+          liveRunStartMs = startMs;
+        }
+      }
+    }
+
+    if (totalTrainingSecs > 0 || liveRunStartMs) {
       const timerEl = document.createElement("span");
       timerEl.className = "exp-detail-timer";
       titleLeft.appendChild(timerEl);
-      const startMs = new Date(sessionStarted).getTime();
       const update = () => {
-        const secs = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        let secs = totalTrainingSecs;
+        if (liveRunStartMs) {
+          secs += Math.max(0, Math.floor((Date.now() - liveRunStartMs) / 1000));
+        }
         const h = Math.floor(secs / 3600);
         const m = Math.floor((secs % 3600) / 60);
         const s = secs % 60;
+        const label = liveRunStartMs ? "" : "";
         timerEl.textContent = h > 0
-          ? `${h}h ${m}m`
-          : `${m}:${String(s).padStart(2, "0")}`;
+          ? `${h}h ${m}m training`
+          : `${m}:${String(s).padStart(2, "0")} training`;
       };
       update();
-      const iv = setInterval(update, 1000);
-      if (!window._activeTimers) window._activeTimers = [];
-      window._activeTimers.push(iv);
+      if (liveRunStartMs) {
+        const iv = setInterval(update, 1000);
+        if (!window._activeTimers) window._activeTimers = [];
+        window._activeTimers.push(iv);
+      }
     }
   }
-  // Compact stats inline with title (deduplicate by run ID, last entry wins)
+  // Compact stats inline with title (displayRuns is already deduped and filtered)
   const decisionCounts = {};
-  if (proj.runs) {
-    const byId = new Map();
-    for (const r of proj.runs) byId.set(r.id, r);
-    for (const r of byId.values()) {
-      const d = r.decision || r.status || "other";
-      if (d === "running") continue; // don't count announcements
-      decisionCounts[d] = (decisionCounts[d] || 0) + 1;
-    }
+  for (const r of displayRuns) {
+    const d = r.decision || r.status || "other";
+    decisionCounts[d] = (decisionCounts[d] || 0) + 1;
   }
   const completedRuns = Object.values(decisionCounts).reduce((a, b) => a + b, 0);
   const statParts = [`${completedRuns} runs`];
@@ -3849,7 +4650,7 @@ function renderProjectDetail(projectId) {
   if (currentKey) {
     const heroEl = document.createElement("div");
     heroEl.className = "hero-metric";
-    const bestRun = findBestRun(proj.runs, currentKey);
+    const bestRun = findBestRun(displayRuns, currentKey);
     const currentVal = bestRun?.results?.[currentKey];
     const direction = isLowerBetter(currentKey) ? "\u2193" : "\u2191";
     heroEl.innerHTML = `
@@ -3873,7 +4674,7 @@ function renderProjectDetail(projectId) {
   if (proj.current_run && !isReady) {
     const current = document.createElement("div");
     current.className = "exp-detail-status-card running";
-    const runNum = proj.run_count || "?";
+    const runNum = displayRuns.length + 1;
     current.innerHTML = `<span class="status-card-label running">Run ${runNum}:</span> ${escapeHtml(proj.current_run)}`;
     header.appendChild(current);
 
@@ -3969,16 +4770,15 @@ function renderProjectDetail(projectId) {
 
   const reloadBtn = document.createElement("button");
   reloadBtn.className = "paper-action-btn";
-  reloadBtn.textContent = "\u21BB";
+  reloadBtn.textContent = "\u21BB Reload";
   reloadBtn.title = "Rescan & refresh (\u2318R)";
   reloadBtn.addEventListener("click", () => doReload(proj.id, reloadBtn));
   actions.appendChild(reloadBtn);
 
   const settingsActionBtn = document.createElement("button");
   settingsActionBtn.className = "paper-action-btn";
-  settingsActionBtn.textContent = "\u2699\uFE0F";
+  settingsActionBtn.textContent = "\u2699 Settings";
   settingsActionBtn.title = "Experiment settings";
-  settingsActionBtn.style.fontSize = "12px";
   settingsActionBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     showSettingsPopover(proj, settingsActionBtn);
@@ -4007,7 +4807,7 @@ function renderProjectDetail(projectId) {
   // Metric chart
   let activeMetric = "";
 
-  if (allMetricNames.size > 0 && proj.runs && proj.runs.length >= 2) {
+  if (allMetricNames.size > 0 && displayRuns.length >= 2) {
     const defaultMetric = proj.key_metric_name && allMetricNames.has(proj.key_metric_name)
       ? proj.key_metric_name
       : allMetricNames.values().next().value;
@@ -4088,7 +4888,7 @@ function renderProjectDetail(projectId) {
         activeMetric = selector.value;
         const dir = isLowerBetter(activeMetric) ? "\u2193" : "\u2191";
         chartTitle.textContent = `${activeMetric} ${dir}`;
-        renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
+        renderMetricChart(canvas, displayRuns, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
       });
       chartControls.appendChild(selector);
     }
@@ -4102,7 +4902,7 @@ function renderProjectDetail(projectId) {
     logToggle.addEventListener("click", () => {
       chartLogScale = !chartLogScale;
       logToggle.classList.toggle("active", chartLogScale);
-      renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
+      renderMetricChart(canvas, displayRuns, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
     });
     chartControls.appendChild(logToggle);
 
@@ -4126,7 +4926,7 @@ function renderProjectDetail(projectId) {
       const onMove = (ev) => {
         const newH = Math.max(100, Math.min(600, startH + ev.clientY - startY));
         canvas.style.height = newH + "px";
-        renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
+        renderMetricChart(canvas, displayRuns, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
       };
       const onUp = () => {
         document.removeEventListener("mousemove", onMove);
@@ -4140,12 +4940,41 @@ function renderProjectDetail(projectId) {
 
     // Render after DOM insertion so dimensions are available
     requestAnimationFrame(() => {
-      renderMetricChart(canvas, proj.runs, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
-      setupChartResize(chartContainer, canvas, proj.runs, () => activeMetric, () => proj.id, () => ({ logScale: chartLogScale }));
+      renderMetricChart(canvas, displayRuns, activeMetric, liveMetrics[proj.id], { logScale: chartLogScale });
+      setupChartResize(chartContainer, canvas, displayRuns, () => activeMetric, () => proj.id, () => ({ logScale: chartLogScale }));
     });
   }
 
   // Runs grid and insights are rendered in the Results tab (see loadResults)
+
+  // Related Papers section (cross-reference)
+  if (proj.linked_papers && proj.linked_papers.length > 0) {
+    const section = document.createElement("div");
+    section.className = "exp-detail-section";
+    const sTitle = document.createElement("h3");
+    sTitle.textContent = "Related Papers";
+    section.appendChild(sTitle);
+    const list = document.createElement("div");
+    list.className = "related-papers-list";
+    for (const paperTitle of proj.linked_papers) {
+      const item = document.createElement("div");
+      item.className = "related-paper-item";
+      item.textContent = paperTitle;
+      item.style.cursor = "pointer";
+      item.addEventListener("click", () => {
+        // Try to find the paper in cached papers by title match
+        const match = (cachedPapers || []).find(
+          (p) => p.title === paperTitle || p.citekey === paperTitle
+        );
+        if (match) {
+          selectPaper(match.key);
+        }
+      });
+      list.appendChild(item);
+    }
+    section.appendChild(list);
+    detailEl.appendChild(section);
+  }
 
   // Refresh the visible tab's content (Results or Prompt) for this project
   const visibleTab = document.querySelector(".editor-tab.active")?.dataset?.view;
@@ -4405,7 +5234,7 @@ async function startBackfill(proj) {
     await window.nicolas.terminalInput(proj.id, backfillPrompt + "\r");
     progressBar.classList.remove("indeterminate");
     progressBar.style.width = "100%";
-    progressBar.style.background = "var(--green, #22c55e)";
+    progressBar.style.background = "var(--green, #4ade80)";
     progressText.textContent = "Backfill instructions sent — watch the Session tab";
     setTimeout(() => bar.remove(), 4000);
   } else {
@@ -4433,7 +5262,7 @@ async function startBackfill(proj) {
       switchEditorTab("session");
       progressBar.classList.remove("indeterminate");
       progressBar.style.width = "100%";
-      progressBar.style.background = "var(--green, #22c55e)";
+      progressBar.style.background = "var(--green, #4ade80)";
       progressText.textContent = "Backfill agent launched — watch the Session tab, reload when done";
       fetchExperimentsList();
       setTimeout(() => bar.remove(), 6000);
@@ -4668,7 +5497,8 @@ function stopProject(projectId, btn) {
         setTimeout(() => fetchExperimentsList(), 2000);
       } else {
         btn.textContent = data.reason || "Failed";
-        setTimeout(() => { btn.textContent = "Stop"; btn.disabled = false; }, 2000);
+        // Session may already be dead — refresh to pick up current state
+        setTimeout(() => fetchExperimentsList(), 1500);
       }
     })
     .catch((err) => {
@@ -4811,11 +5641,12 @@ function loadResults(projectId) {
   if (proj.runs && proj.runs.length) {
     const section = document.createElement("div");
     section.className = "exp-detail-section";
+    const displayRuns = getDisplayRuns(proj.runs);
     const sTitle = document.createElement("h3");
-    sTitle.textContent = `Runs (${proj.runs.length})`;
+    sTitle.textContent = `Runs (${displayRuns.length})`;
     section.appendChild(sTitle);
 
-    const runsInOrder = proj.runs;
+    const runsInOrder = displayRuns;
     let currentSort = "newest";
 
     const sortModes = [
@@ -4987,7 +5818,13 @@ function loadResults(projectId) {
         if (run.duration_minutes) meta.push(`${run.duration_minutes}min`);
         if (run.started_at) {
           const d = new Date(run.started_at);
-          if (!isNaN(d)) meta.push(d.toLocaleDateString());
+          if (!isNaN(d)) {
+            const hoursAgo = (Date.now() - d.getTime()) / 3600000;
+            if (hoursAgo < 1) meta.push("just now");
+            else if (hoursAgo < 24) meta.push(`${Math.floor(hoursAgo)}h ago`);
+            else if (hoursAgo < 48) meta.push("yesterday");
+            else meta.push(d.toLocaleDateString());
+          }
         }
         if (run.tags && run.tags.length) meta.push(run.tags.join(", "));
         if (meta.length) {
@@ -5196,8 +6033,51 @@ document.getElementById("setup-save-btn")?.addEventListener("click", async () =>
 
 let consecutiveDiscards = 0;
 
+let _emailPromptShown = false;
+
+function showEmailPrompt() {
+  if (_emailPromptShown || localStorage.getItem("distillate-email-asked") || localStorage.getItem("distillate-email")) return;
+  _emailPromptShown = true;
+
+  const toast = document.createElement("div");
+  toast.className = "email-prompt-toast";
+  toast.innerHTML = `
+    <div class="email-prompt-text">Get experiment reports and paper suggestions by email?</div>
+    <div class="email-prompt-form">
+      <input type="email" id="email-prompt-input" placeholder="your@email.com" spellcheck="false">
+      <button class="onboarding-btn" id="email-prompt-submit">Enable</button>
+      <button class="email-prompt-dismiss" id="email-prompt-dismiss">No thanks</button>
+    </div>`;
+
+  document.getElementById("chat-area")?.appendChild(toast);
+  toast.scrollIntoView({ behavior: "smooth" });
+
+  document.getElementById("email-prompt-submit")?.addEventListener("click", async () => {
+    const email = document.getElementById("email-prompt-input")?.value?.trim();
+    if (!email || !email.includes("@")) return;
+    try {
+      await fetch(`http://127.0.0.1:${serverPort}/email/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, cadence: "weekly" }),
+      });
+      toast.innerHTML = `<div class="email-prompt-text" style="color:var(--green);">You're in! Weekly digests + experiment reports coming to ${email}</div>`;
+      localStorage.setItem("distillate-email-asked", "1");
+      setTimeout(() => toast.remove(), 4000);
+    } catch {
+      toast.innerHTML = `<div class="email-prompt-text" style="color:var(--error);">Failed to register. Try again later.</div>`;
+    }
+  });
+
+  document.getElementById("email-prompt-dismiss")?.addEventListener("click", () => {
+    localStorage.setItem("distillate-email-asked", "1");
+    toast.remove();
+  });
+}
+
 function notifyExperimentEvent(data) {
   if (data.type === "run_completed" || data.$schema === "distillate/run/v1") {
+    // Email setup is in Control Panel → Updates connector (no longer prompted in chat)
     const status = data.status || "";
 
     // Activity bar notification badge when sidebar is collapsed

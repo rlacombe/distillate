@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, Notification, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { PythonManager } = require("./python-manager");
@@ -141,6 +141,22 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // Prevent external URLs from navigating inside the app
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    // Allow local server and data: URLs (splash screen)
+    if (url.startsWith("http://127.0.0.1") || url.startsWith("data:")) return;
+    event.preventDefault();
+    shell.openExternal(url);
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://127.0.0.1") || url.startsWith("data:")) {
+      return { action: "allow" };
+    }
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
 }
 
 /**
@@ -173,14 +189,8 @@ app.setAsDefaultProtocolClient("distillate");
 app.setName("Distillate");
 
 app.on("ready", async () => {
-  // Set dock icon in dev mode (macOS)
-  if (process.platform === "darwin" && app.dock && process.resourcesPath?.includes("node_modules")) {
-    const iconPath = path.join(__dirname, "..", "resources", "icon.png");
-    if (fs.existsSync(iconPath)) {
-      const icon = nativeImage.createFromPath(iconPath);
-      app.dock.setIcon(icon);
-    }
-  }
+  // Dock icon comes from Electron.app bundle (patched by postinstall)
+
   // Build app menu
   buildMenu({
     onNewConversation: newConversation,

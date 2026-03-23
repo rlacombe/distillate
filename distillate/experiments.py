@@ -553,6 +553,10 @@ def scan_project(path: Path) -> dict:
         for k in artifact_keys:
             del runs[k]
     for run in ingested:
+        # Every run needs at least one numeric result to be displayable.
+        # "running" entries are kept (they haven't produced results yet).
+        if run.get("status") != "running" and not _has_numeric_results(run):
+            continue
         if run.get("source") == "structured":
             runs[run["id"]] = run
         elif not _is_duplicate_run(runs, run):
@@ -623,6 +627,14 @@ def scan_project(path: Path) -> dict:
 # Valid status values in runs.jsonl
 _STRUCTURED_STATUSES = {"keep", "discard", "crash", "running"}
 
+# Regex to fix invalid JSON escapes written by LLM agents (e.g. \! \' \`)
+_INVALID_JSON_ESCAPE_RE = re.compile(r'\\([^"\\/bfnrtu])')
+
+
+def _repair_json_line(line: str) -> str:
+    """Fix common invalid JSON escape sequences from LLM output."""
+    return _INVALID_JSON_ESCAPE_RE.sub(r'\1', line)
+
 
 def _parse_runs_jsonl(path: Path) -> list[dict]:
     """Parse .distillate/runs.jsonl into run dicts."""
@@ -640,7 +652,10 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
-                    continue
+                    try:
+                        entry = json.loads(_repair_json_line(line))
+                    except json.JSONDecodeError:
+                        continue
                 if not isinstance(entry, dict):
                     continue
                 if entry.get("$schema") != "distillate/run/v1":
@@ -735,9 +750,9 @@ def _parse_events_jsonl(path: Path) -> list[dict]:
                 metrics = event.get("results", {})
                 if not hp and not metrics:
                     continue
+                command = event.get("command", "")
 
                 ts = event.get("ts", "")
-                command = event.get("command", "")
                 session_id = event.get("session_id", "")
 
                 # Build name from command or session
@@ -781,16 +796,26 @@ def ingest_runs(project_path: Path) -> list[dict]:
     if not structured and not hook_runs:
         return []
 
-    # Index structured runs by fingerprint for correlation
+    # Index structured runs by fingerprint and timestamp for correlation
     structured_fps: dict[str, dict] = {}
+    structured_timestamps: set[str] = set()
     for run in structured:
         hp = run.get("hyperparameters", {})
         if hp:
             structured_fps[_hyperparam_fingerprint(hp)] = run
+        ts = run.get("started_at", "")
+        if ts:
+            structured_timestamps.add(ts[:16])  # match to minute
 
     # Correlate hook runs with structured reports
     result = list(structured)  # structured runs are primary
     for hook_run in hook_runs:
+        # Skip hook runs already covered by a backfilled structured entry
+        # (backfill writes events into runs.jsonl with matching timestamps)
+        hook_ts = hook_run.get("started_at", "")
+        if hook_ts and hook_ts[:16] in structured_timestamps:
+            continue
+
         hp = hook_run.get("hyperparameters", {})
         if hp:
             fp = _hyperparam_fingerprint(hp)
@@ -834,7 +859,10 @@ def backfill_runs_from_events(project_path: Path) -> int:
     if runs_file.exists():
         for line in runs_file.read_text(encoding="utf-8").strip().splitlines():
             try:
-                entry = json.loads(line)
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    entry = json.loads(_repair_json_line(line))
                 if entry.get("status") in ("keep", "discard", "crash"):
                     ts = entry.get("timestamp", "")
                     if ts:
@@ -861,6 +889,7 @@ def backfill_runs_from_events(project_path: Path) -> int:
         metrics = event.get("results", {})
         if not metrics:
             continue
+        command = event.get("command", "")
 
         ts = event.get("ts", "")
         # Skip if we already have a runs.jsonl entry near this timestamp
@@ -868,13 +897,15 @@ def backfill_runs_from_events(project_path: Path) -> int:
             continue
 
         # Extract script name from command
-        command = event.get("command", "")
         script_name = ""
         m = re.search(r"python[3]?\s+(\S+\.py)", command)
         if m:
             script_name = Path(m.group(1)).stem
 
-        run_id = f"run_{next_run_num:03d}"
+        import hashlib
+        seed = f"{ts}-{next_run_num}"
+        slug = hashlib.sha256(seed.encode()).hexdigest()[:6]
+        run_id = f"xp-{slug}"
         next_run_num += 1
 
         entry = {
@@ -890,6 +921,53 @@ def backfill_runs_from_events(project_path: Path) -> int:
         new_entries.append(entry)
         if ts:
             existing_timestamps.add(ts[:16])
+
+    # Close stale "running" entries — runs that were announced but never
+    # concluded (e.g. session died, timeout exit code 144).  A running entry
+    # is stale if it has no terminal follow-up and is older than 2 hours.
+    _STALE_THRESHOLD_SECS = 2 * 3600
+    if runs_file.exists():
+        running_entries: dict[str, dict] = {}  # run_id -> latest running entry
+        terminal_ids: set[str] = set()
+        for line in runs_file.read_text(encoding="utf-8").strip().splitlines():
+            try:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    entry = json.loads(_repair_json_line(line))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            rid = entry.get("id", "")
+            status = entry.get("status", "")
+            if status in ("keep", "discard", "crash"):
+                terminal_ids.add(rid)
+            elif status == "running" and rid:
+                running_entries[rid] = entry
+
+        now = datetime.now(timezone.utc)
+        for rid, entry in running_entries.items():
+            if rid in terminal_ids:
+                continue
+            ts = entry.get("timestamp", "") or entry.get("started_at", "")
+            if not ts:
+                continue
+            try:
+                started = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                age_secs = (now - started).total_seconds()
+            except (ValueError, TypeError):
+                continue
+            if age_secs < _STALE_THRESHOLD_SECS:
+                continue
+            crash_entry = {
+                "$schema": "distillate/run/v1",
+                "id": rid,
+                "timestamp": now.isoformat(),
+                "status": "crash",
+                "description": entry.get("description", ""),
+                "reasoning": f"Auto-closed: running entry from {ts} had no completion after {int(age_secs / 3600)}h",
+            }
+            new_entries.append(crash_entry)
+            log.info("Auto-closing stale running entry %s (age: %dh)", rid, int(age_secs / 3600))
 
     if not new_entries:
         return 0
@@ -1201,6 +1279,11 @@ def _run_sort_key(run: dict) -> tuple:
     return (0, "", ts)
 
 
+def _has_numeric_results(run: dict) -> bool:
+    """True if the run has at least one numeric value in results."""
+    return any(isinstance(v, (int, float)) for v in run.get("results", {}).values())
+
+
 def _is_experiment_run(run: dict) -> bool:
     """Return True if a run looks like an actual training experiment.
 
@@ -1238,6 +1321,8 @@ def _hyperparam_fingerprint(hp: dict) -> str:
         v = hp[k]
         if isinstance(v, float):
             v = round(v, 8)
+        elif isinstance(v, (list, tuple)):
+            v = str(v)
         items.append(f"{k}={v}")
     return "|".join(items)
 
@@ -3139,13 +3224,13 @@ def generate_export_chart(runs: list[dict], metric: str, title: str = "",
             front_ys.append(front_ys[-1])
 
     if len(front_xs) > 1:
-        ax.plot(front_xs, front_ys, color="#22c55e", linewidth=2, alpha=0.6,
+        ax.plot(front_xs, front_ys, color="#4ade80", linewidth=2, alpha=0.6,
                 zorder=2, solid_capstyle="round")
 
     # ── Dots: green = frontier-improving keeps, gray = everything else ──
     for i, p in enumerate(points):
         if i in front_set:
-            ax.scatter(xs[i], p["value"], c="#22c55e", s=30,
+            ax.scatter(xs[i], p["value"], c="#4ade80", s=30,
                        zorder=4, edgecolors="white", linewidths=0.5)
         else:
             ax.scatter(xs[i], p["value"], c="#ccc", s=12, zorder=3,

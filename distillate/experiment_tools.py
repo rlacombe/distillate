@@ -6,9 +6,18 @@ JSON-serializable dict. Same pattern as tools.py.
 """
 
 import logging
+import re
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# LLMs sometimes produce invalid JSON escape sequences like \! or \'
+_INVALID_ESCAPE_RE = re.compile(r'\\([^"\\/bfnrtu])')
+
+
+def _sanitize_llm_text(s: str) -> str:
+    """Strip invalid JSON escapes from LLM-generated text."""
+    return _INVALID_ESCAPE_RE.sub(r'\1', s) if isinstance(s, str) else s
 
 
 # ---------------------------------------------------------------------------
@@ -1115,8 +1124,47 @@ EXPERIMENT_TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "What changed from the previous run",
                 },
+                "inspired_by": {
+                    "type": "string",
+                    "description": (
+                        "Paper citekey or title that inspired this run. "
+                        "When set, the run is credited to the paper and the "
+                        "paper is auto-linked to the project."
+                    ),
+                },
             },
             "required": ["project", "run_id", "status", "results", "reasoning"],
+        },
+    },
+    {
+        "name": "discover_relevant_papers",
+        "description": (
+            "Search the user's paper library for papers relevant to an "
+            "experiment project. Uses the project's description, goals, "
+            "and latest learnings to find keyword matches in titles, tags, "
+            "and summaries. Returns candidate papers with relevance reasons."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project id, name substring, or index number",
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "purge_hook_runs",
+        "description": "Remove all hook-inferred spurious runs from a project, keeping only structured (runs.jsonl) runs. Use when a project has accumulated noise from manual script executions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Project identifier"},
+                "confirm": {"type": "boolean", "description": "Must be true to execute", "default": False},
+            },
+            "required": ["project"],
         },
     },
 ]
@@ -1193,6 +1241,27 @@ def get_project_details(
         key=lambda r: r.get("completed_at", "") or "", reverse=True
     )
 
+    # Resolve linked paper titles to brief details
+    linked_paper_details = []
+    for paper_ref in proj.get("linked_papers", []):
+        detail = {"title": paper_ref}
+        # Search for the paper in state by citekey or title
+        doc = state.find_by_citekey(paper_ref)
+        if not doc:
+            ref_lower = paper_ref.lower()
+            for _k, _d in state.documents.items():
+                ck = _d.get("metadata", {}).get("citekey", "")
+                if (ref_lower in ck.lower()
+                        or ref_lower in _d.get("title", "").lower()):
+                    doc = _d
+                    break
+        if doc:
+            meta = doc.get("metadata", {})
+            detail["citekey"] = meta.get("citekey", "")
+            detail["title"] = doc.get("title", paper_ref)
+            detail["status"] = doc.get("status", "")
+        linked_paper_details.append(detail)
+
     result = {
         "found": True,
         "project": {
@@ -1210,6 +1279,8 @@ def get_project_details(
         "runs": run_summaries,
         "total_runs": len(visible_runs),
     }
+    if linked_paper_details:
+        result["linked_paper_details"] = linked_paper_details
     if discarded_count:
         result["discarded_runs"] = discarded_count
     return result
@@ -1337,7 +1408,7 @@ def scan_project_tool(*, state, path: str) -> dict:
         if state.has_project(project_id):
             # Merge new runs into existing project
             existing = state.get_project(project_id)
-            existing_names = {r["name"] for r in existing.get("runs", {}).values()}
+            existing_names = {str(r.get("name", "")) for r in existing.get("runs", {}).values()}
             new_runs = 0
             for run_id, run_data in result.get("runs", {}).items():
                 if run_data["name"] not in existing_names:
@@ -2193,13 +2264,20 @@ def compare_projects_tool(*, state, projects: list[str]) -> dict:
 
         best: dict[str, float] = {}
         for run in proj.get("runs", {}).values():
-            if run.get("decision") != "keep" and run.get("status") != "keep":
+            decision = run.get("decision") or run.get("status", "")
+            if decision == "discard":
                 continue
             for k, v in run.get("results", {}).items():
-                if isinstance(v, (int, float)):
-                    if k not in best or v > best[k]:
-                        best[k] = v
-                    all_metrics.add(k)
+                if not isinstance(v, (int, float)):
+                    continue
+                lower = any(t in k.lower() for t in ("loss", "error", "perplexity", "mse", "mae"))
+                if k not in best:
+                    best[k] = v
+                elif lower:
+                    best[k] = min(best[k], v)
+                else:
+                    best[k] = max(best[k], v)
+                all_metrics.add(k)
 
         comparison.append({
             "id": proj.get("id", ""),
@@ -3313,10 +3391,16 @@ def start_run(
             except json.JSONDecodeError:
                 pass
 
-    n = 1
-    while f"run_{n:03d}" in existing_ids:
-        n += 1
-    run_id = f"run_{n:03d}"
+    import hashlib
+    # Short random ID: xp-{6 hex chars} derived from timestamp + counter
+    n = len(existing_ids) + 1
+    seed = f"{datetime.now(timezone.utc).isoformat()}-{n}"
+    slug = hashlib.sha256(seed.encode()).hexdigest()[:6]
+    run_id = f"xp-{slug}"
+    while run_id in existing_ids:
+        seed += "x"
+        slug = hashlib.sha256(seed.encode()).hexdigest()[:6]
+        run_id = f"xp-{slug}"
 
     now = datetime.now(timezone.utc).isoformat()
     entry = {
@@ -3325,10 +3409,10 @@ def start_run(
         "timestamp": now,
         "started_at": now,
         "status": "running",
-        "description": description,
+        "description": _sanitize_llm_text(description),
     }
     if hypothesis:
-        entry["hypothesis"] = hypothesis
+        entry["hypothesis"] = _sanitize_llm_text(hypothesis)
 
     with open(runs_jsonl, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -3347,6 +3431,7 @@ def conclude_run(
     results: dict, reasoning: str,
     hyperparameters: dict | None = None,
     changes: str = "",
+    inspired_by: str = "",
 ) -> dict:
     """Conclude an experiment run — appends completed entry to runs.jsonl."""
     import json
@@ -3385,9 +3470,9 @@ def conclude_run(
         "id": run_id,
         "timestamp": now,
         "status": status,
-        "description": changes or f"{run_id} completed",
+        "description": _sanitize_llm_text(changes) or f"{run_id} completed",
         "results": results,
-        "reasoning": reasoning,
+        "reasoning": _sanitize_llm_text(reasoning),
         "completed_at": now,
     }
     if started_at:
@@ -3403,20 +3488,186 @@ def conclude_run(
         entry["hyperparameters"] = hyperparameters
     if changes:
         entry["changes"] = changes
+    if inspired_by:
+        entry["inspired_by"] = inspired_by
 
     with open(runs_jsonl, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Auto-link the inspiring paper to the project
+    linked_paper = ""
+    if inspired_by:
+        try:
+            link_result = link_paper_tool(
+                state=state, project=project, paper=inspired_by,
+            )
+            if link_result.get("success"):
+                linked_paper = link_result.get("paper", inspired_by)
+        except Exception:
+            pass  # Non-fatal — run is already saved
 
     duration_str = ""
     if "duration_seconds" in entry:
         m, s = divmod(entry["duration_seconds"], 60)
         duration_str = f" ({m}m {s}s)"
 
-    return {
+    result = {
         "success": True,
         "run_id": run_id,
         "status": status,
         "duration": duration_str.strip(),
         "project": proj.get("name", project),
         "message": f"Run {run_id} concluded: {status}{duration_str}",
+    }
+    if linked_paper:
+        result["linked_paper"] = linked_paper
+    return result
+
+
+def discover_relevant_papers(*, state, project: str) -> dict:
+    """Search the user's paper library for papers relevant to a project."""
+    import json as _json
+    import re
+    from pathlib import Path as _Path
+
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    # Gather project context for keyword extraction
+    context_parts: list[str] = []
+    if proj.get("description"):
+        context_parts.append(proj["description"])
+    for goal in proj.get("goals", []):
+        if goal.get("metric"):
+            context_parts.append(goal["metric"])
+    if proj.get("tags"):
+        context_parts.extend(proj["tags"])
+
+    # Pull latest learnings from runs.jsonl
+    proj_path = proj.get("path", "")
+    if proj_path:
+        runs_jsonl = _Path(proj_path) / ".distillate" / "runs.jsonl"
+        if runs_jsonl.exists():
+            try:
+                lines = runs_jsonl.read_text(encoding="utf-8").splitlines()
+                for line in reversed(lines[-20:]):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rr = _json.loads(line)
+                        if rr.get("reasoning"):
+                            context_parts.append(rr["reasoning"])
+                            break  # just the latest
+                    except _json.JSONDecodeError:
+                        pass
+            except OSError:
+                pass
+
+    if not context_parts:
+        return {
+            "candidates": [],
+            "message": "No project context available to search against. Add a description or goals first.",
+        }
+
+    # Extract keywords: split on non-alphanumeric, lowercase, dedupe,
+    # filter short/common words
+    stopwords = {
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
+        "for", "of", "with", "by", "from", "is", "it", "as", "be", "was",
+        "are", "were", "been", "being", "have", "has", "had", "do", "does",
+        "did", "will", "would", "shall", "should", "may", "might", "can",
+        "could", "not", "no", "so", "if", "then", "than", "that", "this",
+        "these", "those", "which", "what", "who", "how", "when", "where",
+        "why", "all", "each", "every", "both", "few", "more", "most",
+        "other", "some", "such", "only", "same", "very", "just", "also",
+        "now", "new", "use", "using", "used", "run", "try", "tried",
+    }
+    raw_text = " ".join(context_parts).lower()
+    tokens = re.findall(r"[a-z][a-z0-9_]{2,}", raw_text)
+    keywords = list(dict.fromkeys(t for t in tokens if t not in stopwords))[:30]
+
+    if not keywords:
+        return {"candidates": [], "message": "Could not extract meaningful keywords from project context."}
+
+    # Search papers for matches
+    already_linked = set(p.lower() for p in proj.get("linked_papers", []))
+    candidates = []
+
+    for key, doc in state.documents.items():
+        if doc.get("status") != "processed":
+            continue
+        meta = doc.get("metadata", {})
+        citekey = meta.get("citekey", "")
+        title = doc.get("title", "")
+
+        # Skip already-linked papers
+        if citekey.lower() in already_linked or title.lower() in already_linked:
+            continue
+
+        # Build searchable text for this paper
+        paper_text = " ".join([
+            title,
+            " ".join(meta.get("tags", [])),
+            doc.get("summary", "") or "",
+            meta.get("abstract", "") or "",
+        ]).lower()
+
+        # Score: count keyword matches
+        matched = [kw for kw in keywords if kw in paper_text]
+        if len(matched) >= 2:
+            candidates.append({
+                "citekey": citekey,
+                "title": title,
+                "index": state.index_of(key),
+                "match_count": len(matched),
+                "matched_keywords": matched[:5],
+                "reason": f"Matches on: {', '.join(matched[:5])}",
+            })
+
+    # Sort by match count descending
+    candidates.sort(key=lambda c: c["match_count"], reverse=True)
+    candidates = candidates[:10]
+
+    return {
+        "project": proj.get("name", ""),
+        "keywords_used": keywords[:10],
+        "candidates": candidates,
+        "total_candidates": len(candidates),
+    }
+
+
+def purge_hook_runs_tool(*, state, project: str, confirm: bool = False) -> dict:
+    """Remove all hook-inferred runs from a project."""
+    proj, err = _resolve_project(state, project)
+    if err:
+        return err
+
+    runs = proj.get("runs", {})
+    hook_run_ids = [rid for rid, r in runs.items() if r.get("source") == "hooks"]
+
+    if not hook_run_ids:
+        return {"success": True, "message": "No hook runs found.", "removed": 0}
+
+    if not confirm:
+        return {
+            "success": False,
+            "confirm_required": True,
+            "hook_runs": len(hook_run_ids),
+            "total_runs": len(runs),
+            "message": f"Found {len(hook_run_ids)} hook-inferred runs out of {len(runs)} total. Pass confirm=true to remove them.",
+        }
+
+    for rid in hook_run_ids:
+        del runs[rid]
+
+    state.update_project(proj["id"], runs=runs)
+    state.save()
+
+    return {
+        "success": True,
+        "removed": len(hook_run_ids),
+        "remaining": len(runs),
+        "message": f"Removed {len(hook_run_ids)} hook runs. {len(runs)} runs remaining.",
     }

@@ -12,23 +12,33 @@ Before starting, **read `.distillate/runs.jsonl`** and `.distillate/context.md` 
 
 ### Announcing a Run
 
-BEFORE implementing each experiment, announce it by appending a `"running"` entry to `.distillate/runs.jsonl`:
+BEFORE implementing each experiment, call the `start_run` MCP tool. This generates a unique run ID (`xp-{slug}`) and appends a `"running"` entry to `.distillate/runs.jsonl`. **Do NOT write to runs.jsonl directly** — always use the MCP tools.
 
-```json
-{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", "status":"running", "description":"one sentence: what you're about to try and why"}
+```
+start_run(project: "<project name>", description: "what you're about to try and why", hypothesis: "why you think this will work")
 ```
 
-This lets the user see what you're attempting while the run trains. Keep the description to one sentence — what changed and the hypothesis (e.g. "Double d_model to 128 — testing if capacity is the bottleneck").
+This returns a `run_id` — save it for `conclude_run`.
 
 ### Recording Results
 
-After EACH experiment run completes, append a NEW line to `.distillate/runs.jsonl` with the same `id` and full results:
+After EACH experiment run completes, call the `conclude_run` MCP tool with the `run_id` from `start_run`:
 
-```json
-{"$schema":"distillate/run/v1", "id":"run_NNN", "timestamp":"ISO8601", "status":"keep", "description":"shortest change summary", "hypothesis":"why you tried this", "changes":"what changed from previous", "hyperparameters":{...}, "results":{...}, "reasoning":"2-3 sentences: what worked, what didn't, what you learned. Be specific with numbers."}
+```
+conclude_run(
+  project: "<project name>",
+  run_id: "<run_id from start_run>",
+  status: "keep",
+  results: {"metric_name": value, ...},
+  reasoning: "2-3 sentences: what worked, what didn't, what you learned.",
+  hyperparameters: {"lr": 0.001, ...},
+  changes: "what changed from previous run"
+)
 ```
 
-**Required fields:** `id`, `timestamp`, `status`, `results`, `reasoning`.
+**Required fields:** `run_id`, `status`, `results`, `reasoning`.
+
+**CRITICAL: Every run MUST produce a metric in `results`.** A run without a numeric metric is invisible on the chart and useless for tracking progress. If your training script fails to output metrics, that's a `crash`, not a `keep`. Always ensure your script prints and captures at least one evaluation metric (e.g. `macro_f1_test`, `val_loss`, `accuracy`) before concluding the run.
 
 **Recommended fields:**
 - `description` — shortest possible change summary (e.g. "seed: 42→137", "d_model: 64→128", "baseline")

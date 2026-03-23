@@ -336,6 +336,7 @@ async def _render_turn_sdk(nicolas, user_input: str, stream: bool = True) -> str
     first_token = True
     has_text = False
     assistant_text_parts: list[str] = []
+    tool_names_seen: set[str] = set()
 
     # Blank line before response
     if stream:
@@ -363,6 +364,7 @@ async def _render_turn_sdk(nicolas, user_input: str, stream: bool = True) -> str
                 # Stop the thinking spinner before tool execution
                 spinner.stop()
                 first_token = False
+                tool_names_seen.add(event.get("name", ""))
 
                 # If text was streamed before this tool, add spacing
                 if has_text:
@@ -406,6 +408,15 @@ async def _render_turn_sdk(nicolas, user_input: str, stream: bool = True) -> str
                 if has_text:
                     print(fmt.flush(), end="")
                     print()  # final newline
+                # Prompt for email after first experiment-related turn
+                if not os.environ.get("DISTILLATE_EMAIL") and not os.environ.get("DISTILLATE_EMAIL_ASKED"):
+                    if any(t in tool_names_seen for t in (
+                        "init_experiment", "launch_experiment", "conclude_run",
+                        "manage_session", "scan_project",
+                    )):
+                        from distillate.cloud_email import prompt_for_email_cli
+                        from distillate.state import State
+                        prompt_for_email_cli(State())
 
             elif etype == "session_init":
                 # Session ID received — logged for diagnostics
@@ -427,7 +438,7 @@ def _print_welcome(state: State) -> None:
     n_queue = len(queue)
 
     lines = []
-    lines.append("[dim]Your research command center.[/dim]")
+    lines.append("[dim]Your research alchemist.[/dim]")
 
     # Experiments first
     if config.EXPERIMENTS_ENABLED and state.projects:
@@ -475,6 +486,15 @@ def _print_welcome(state: State) -> None:
     print(f"  {_dim('/report')}           {_dim('Reading stats')}")
     print(f"  {_dim('/help')}             {_dim('All commands')}")
 
+    # First-use onboarding
+    is_first_use = n_read == 0 and not state.projects
+    if is_first_use:
+        print(f"\n  {_dim('Welcome! Two ways to get started:')}")
+        print(f"  {_dim('1.')} Ask me to conjure an experiment {_dim('(works right away)')}")
+        print(f"  {_dim('2.')} Run {_bold('/init')} {_dim('to connect your Zotero library')}")
+        print()
+        return
+
     # Contextual suggestions
     hints = []
     if config.EXPERIMENTS_ENABLED and state.projects:
@@ -486,6 +506,21 @@ def _print_welcome(state: State) -> None:
     hints.append("What's trending in AI?")
     sep = " \u00b7 "
     print(f"\n  {_dim('Or just ask:')} {_dim(sep.join(hints))}")
+
+    # Rotating tips (one per session)
+    import random
+    tips = [
+        "Tip: /conjure launches an autonomous experiment from a research question.",
+        "Tip: /survey scans all experiments for breakthroughs.",
+        "Tip: /brew syncs your paper library from Zotero.",
+        "Tip: /transmute turns paper insights into experiment ideas.",
+        "Tip: /distill extracts key findings from an experiment's history.",
+        "Tip: /forage discovers trending papers and reading suggestions.",
+        "Tip: /steer lets you redirect a running experiment mid-session.",
+        "Tip: /tincture does a deep extraction from a single paper.",
+        "Tip: /assay compares experiment runs side-by-side.",
+    ]
+    print(f"  {_dim(random.choice(tips))}")
 
 
 def _run_init() -> None:

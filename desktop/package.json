@@ -1,16 +1,18 @@
 {
   "name": "distillate",
-  "version": "0.314.0",
+  "version": "0.42.0",
   "description": "Distillate — a research alchemist on your desktop",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "postinstall": "electron-builder install-app-deps",
+    "start:app": "electron-builder --mac --dir -c.compression=store && open dist/mac-arm64/Distillate.app",
+    "postinstall": "electron-builder install-app-deps && bash scripts/patch-electron.sh",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac --dir",
     "install:mac": "bash scripts/install.sh",
     "dmg": "bash scripts/build-dmg.sh",
     "build:win": "electron-builder --win",
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "test": "node --test test/"
   },
   "author": "Romain Lacombe",

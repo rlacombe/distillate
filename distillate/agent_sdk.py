@@ -149,6 +149,11 @@ class NicolasClient:
                     "num_turns": message.num_turns,
                 }
 
+    async def interrupt(self) -> None:
+        """Interrupt a running query (sends SIGINT to Claude Code)."""
+        if self._client:
+            await self._client.interrupt()
+
     async def set_model(self, model: str) -> None:
         """Change model for subsequent queries."""
         self._model = model

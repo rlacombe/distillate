@@ -34,9 +34,25 @@ def match_suggestion_to_title(line: str, known_titles: list[str]) -> str | None:
 
 
 _SIGNATURE = (
-    '<p style="color:#999;font-size:13px;margin-top:24px;">--<br>'
-    'Sent from <a href="https://distillate.dev" style="color:#999;">distillate</a>.</p>'
+    '<div style="border-top:1px solid #eee;margin-top:24px;padding-top:12px;font-size:12px;color:#999;">'
+    '<a href="https://distillate.dev" style="color:#6366f1;text-decoration:none;">distillate.dev</a>'
+    ' · Your research alchemist</div>'
 )
+
+_HEADER = (
+    '<div style="margin-bottom:20px;font-size:14px;font-weight:600;color:#333;">'
+    '⚗️ Distillate</div>'
+)
+
+# Shared email wrapper — clean HTML, respects client light/dark mode
+def _wrap_email(content: str) -> str:
+    """Wrap email content in the branded template."""
+    return (
+        '<html><body style="font-family:-apple-system,system-ui,BlinkMacSystemFont,sans-serif;'
+        'max-width:560px;margin:0 auto;padding:24px 20px;color:#333;">'
+        f'{_HEADER}{content}{_SIGNATURE}'
+        '</body></html>'
+    )
 
 
 def _send_email(subject: str, html: str) -> dict | None:
@@ -129,16 +145,16 @@ def _sync_tags(state: State) -> None:
     except Exception:
         log.debug("Tag sync failed, continuing with cached data", exc_info=True)
 
-# Pastel palette for tag pills (deterministic by tag name hash)
+# Soft pastel palette for tag pills (deterministic by tag name hash)
 _PILL_COLORS = [
-    "#e8f0fe",  # blue
-    "#fce8e6",  # red
-    "#e6f4ea",  # green
-    "#fef7e0",  # yellow
-    "#f3e8fd",  # purple
-    "#e8f7f0",  # teal
-    "#fde8ef",  # pink
-    "#e8eaf6",  # indigo
+    ("#eef2ff", "#4f46e5"),  # indigo
+    ("#fef2f2", "#dc2626"),  # red
+    ("#ecfdf5", "#059669"),  # green
+    ("#fefce8", "#ca8a04"),  # yellow
+    ("#faf5ff", "#9333ea"),  # purple
+    ("#f0fdfa", "#0d9488"),  # teal
+    ("#fff1f2", "#e11d48"),  # pink
+    ("#eff6ff", "#2563eb"),  # blue
 ]
 
 
@@ -297,13 +313,8 @@ def _tag_pills_html(tags: list, max_tags: int = 3) -> str:
     pills = []
     for tag in tags[:max_tags]:
         label = _abbreviate_tag(tag)
-        bg = _PILL_COLORS[hash(tag) % len(_PILL_COLORS)]
-        pills.append(
-            f'<span style="display:inline-block;background:{bg};'
-            f'color:#555;padding:0 4px;border-radius:8px;'
-            f'font-size:10px;line-height:13px;margin:1px 1px;'
-            f'mso-line-height-rule:exactly;">{label}</span>'
-        )
+        _, fg = _PILL_COLORS[hash(tag) % len(_PILL_COLORS)]
+        pills.append(f'<span style="color:{fg};font-size:12px;">[{label}]</span>')
     return " ".join(pills)
 
 
@@ -507,7 +518,7 @@ def send_weekly_digest(days: int = 7) -> None:
 
 
 def _build_subject():
-    return datetime.now().strftime("Reading digest \u2013 %b %-d, %Y")
+    return datetime.now().strftime("Distillate: Reading digest \u2013 %b %-d, %Y")
 
 
 def _paper_url(p):
@@ -545,14 +556,14 @@ def _paper_html(p, index: int = 0):
     citekey = p.get("metadata", {}).get("citekey", "")
     if url:
         title_html = (
-            f'<a href="{url}" style="color:#333;text-decoration:none;">'
+            f'<a href="{url}" style="color:inherit;text-decoration:none;">'
             f'<strong>{title}</strong></a>'
         )
     else:
         title_html = f"<strong>{title}</strong>"
     obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
     obsidian_html = (
-        f' <a href="{obsidian_uri}" style="color:#999;font-size:11px;">'
+        f' <a href="{obsidian_uri}" style="color:#6366f1;font-size:11px;text-decoration:none;">'
         f'Open in Obsidian</a>'
         if obsidian_uri else ""
     )
@@ -612,10 +623,8 @@ def _paper_html(p, index: int = 0):
 def _build_body(papers, state: State):
     count = len(papers)
     lines = [
-        "<html><body style='font-family: sans-serif; max-width: 600px; "
-        "margin: 0 auto; padding: 20px; color: #333;'>",
-        f"<p>Paper{'s' if count != 1 else ''} I read this week:</p>",
-        "<ul style='padding-left: 20px;'>",
+        f"<h2 style='font-size:18px;font-weight:600;margin:0 0 16px;'>Paper{'s' if count != 1 else ''} I read this week</h2>",
+        "<ul style='padding-left:18px;'>",
     ]
 
     for p in sorted(papers, key=lambda d: d.get("processed_at", ""), reverse=True):
@@ -628,9 +637,7 @@ def _build_body(papers, state: State):
     trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
-    lines.append(_SIGNATURE)
-    lines.append("</body></html>")
-    return "\n".join(lines)
+    return _wrap_email("\n".join(lines))
 
 
 def _compute_suggestions(state: State) -> str | None:
@@ -739,11 +746,11 @@ def send_suggestion() -> None:
         result = _compute_suggestions(state)
 
     if result:
-        subject = datetime.now().strftime("What to read next \u2013 %b %-d, %Y")
+        subject = datetime.now().strftime("Distillate: What to read next \u2013 %b %-d, %Y")
         body = _build_suggestion_body(result, unread, state)
     else:
         # Claude unavailable — send a fallback email with stats + trending
-        subject = datetime.now().strftime("Your reading queue \u2013 %b %-d, %Y")
+        subject = datetime.now().strftime("Distillate: Your reading queue \u2013 %b %-d, %Y")
         body = _build_fallback_suggestion_body(unread, state)
 
     _send_email(subject, body)
@@ -773,10 +780,8 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
         index_lookup[t_lower] = state.index_of(doc.get("zotero_item_key", ""))
 
     lines = [
-        "<html><body style='font-family: sans-serif; max-width: 600px; "
-        "margin: 0 auto; padding: 20px; color: #333;'>",
-        "<p>Here are 3 papers from your queue to consider today:</p>",
-        "<ul style='padding-left: 20px;'>",
+        "<h2 style='font-size:18px;font-weight:600;margin:0 0 16px;'>What to read next</h2>",
+        "<ul style='padding-left:18px;'>",
     ]
 
     # Parse suggestion lines: "[number]. [title] — [reason]"
@@ -826,19 +831,18 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
             title_part = rest
             reason_part = ""
 
-        title_html = f"<strong>{title_part.strip()}</strong>"
-        reason_html = f" &mdash; {reason_part}" if reason_part else ""
-        pills_html = f"<br>{_tag_pills_html(tags)}" if tags else ""
-        url_html = (
-            f'<br><a href="{url}" style="color:#666;font-size:13px;">{url}</a>'
-            if url else ""
-        )
+        title_text = title_part.strip()
+        if url:
+            title_html = f'<a href="{url}" style="color:inherit;text-decoration:none;"><strong>{title_text}</strong></a>'
+        else:
+            title_html = f"<strong>{title_text}</strong>"
+        reason_html = f'<br><span style="color:#666;font-size:13px;">{reason_part}</span>' if reason_part else ""
 
         idx_label = paper_idx if paper_idx else queue_num
         lines.append(
-            f"<li style='margin-bottom: 14px;'>"
-            f'<span style="color:#999;">[{idx_label}]</span> '
-            f"{title_html}{reason_html}{pills_html}{url_html}"
+            f"<li style='margin-bottom:16px;line-height:1.5;'>"
+            f'<span style="color:#999;font-size:12px;">[{idx_label}]</span> '
+            f"{title_html}{reason_html}"
             f"</li>"
         )
 
@@ -848,9 +852,7 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
     trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
-    lines.append(_SIGNATURE)
-    lines.append("</body></html>")
-    return "\n".join(lines)
+    return _wrap_email("\n".join(lines))
 
 
 def _build_fallback_suggestion_body(unread: list, state: State) -> str:
@@ -860,10 +862,9 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
     """
     count = len(unread)
     lines = [
-        "<html><body style='font-family: sans-serif; max-width: 600px; "
-        "margin: 0 auto; padding: 20px; color: #333;'>",
-        f'<p>You have {count} paper{"s" if count != 1 else ""} in your reading queue:</p>',
-        "<ul style='padding-left: 20px;'>",
+        f'<h2 style="font-size:18px;font-weight:600;margin:0 0 16px;">'
+        f'Your reading queue ({count} paper{"s" if count != 1 else ""})</h2>',
+        "<ul style='padding-left:18px;'>",
     ]
 
     for doc in sorted(unread, key=lambda d: d.get("uploaded_at", ""), reverse=True):
@@ -871,19 +872,17 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
         url = _paper_url(doc)
         idx = state.index_of(doc.get("zotero_item_key", ""))
         tags = doc.get("metadata", {}).get("tags", [])
-        pills = _tag_pills_html(tags, max_tags=3)
+
 
         title_html = (
-            f'<a href="{url}" style="color:#333;text-decoration:none;">'
+            f'<a href="{url}" style="color:inherit;text-decoration:none;">'
             f"<strong>{title}</strong></a>"
             if url else f"<strong>{title}</strong>"
         )
-        idx_html = f'<span style="color:#999;">[{idx}]</span> ' if idx else ""
-        pills_html = f"<br>{pills}" if pills else ""
-
+        idx_html = f'<span style="color:#999;font-size:12px;">[{idx}]</span> ' if idx else ""
         lines.append(
-            f"<li style='margin-bottom: 10px;'>"
-            f"{idx_html}{title_html}{pills_html}</li>"
+            f"<li style='margin-bottom:12px;line-height:1.5;'>"
+            f"{idx_html}{title_html}</li>"
         )
 
     lines.append("</ul>")
@@ -892,6 +891,4 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
     trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
-    lines.append(_SIGNATURE)
-    lines.append("</body></html>")
-    return "\n".join(lines)
+    return _wrap_email("\n".join(lines))
