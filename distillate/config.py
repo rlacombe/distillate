@@ -104,11 +104,8 @@ DISTILLATE_AUTH_TOKEN: str = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
 DISTILLATE_API_URL: str = os.environ.get("DISTILLATE_API_URL", "").strip()
 
 RESEND_API_KEY: str = os.environ.get("RESEND_API_KEY", "").strip()
-DIGEST_FROM: str = os.environ.get("DIGEST_FROM", "papers@distillate.dev").strip()
+DIGEST_FROM: str = os.environ.get("DIGEST_FROM", "onboarding@resend.dev").strip()
 DIGEST_TO: str = os.environ.get("DIGEST_TO", "").strip()
-DIGEST_TIMEZONE: str = os.environ.get("DIGEST_TIMEZONE", "America/Los_Angeles").strip()
-DIGEST_HOUR: int = int(os.environ.get("DIGEST_HOUR", "6"))
-DIGEST_DAY: str = os.environ.get("DIGEST_DAY", "monday").strip().lower()  # weekly digest day
 
 ZOTERO_WEBDAV_URL: str = os.environ.get("ZOTERO_WEBDAV_URL", "").strip().rstrip("/")
 ZOTERO_WEBDAV_USERNAME: str = os.environ.get("ZOTERO_WEBDAV_USERNAME", "").strip()

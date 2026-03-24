@@ -4003,20 +4003,7 @@ function renderProjectsList(projects) {
 
   // Add/remove compare button in sidebar header when 2+ projects
   const sidebarHeader = experimentsSidebarEl.parentElement?.querySelector(".sidebar-header");
-  let compareBtn = sidebarHeader?.querySelector(".compare-btn");
-  if (projects.length >= 2 && sidebarHeader && !compareBtn) {
-    compareBtn = document.createElement("button");
-    compareBtn.className = "compare-btn sidebar-header-btn";
-    compareBtn.textContent = "\u2194";
-    compareBtn.title = "Compare experiments";
-    compareBtn.style.cssText = "font-size:13px;";
-    compareBtn.addEventListener("click", showComparisonGrid);
-    const newExpBtn = sidebarHeader.querySelector("#new-experiment-btn");
-    if (newExpBtn) newExpBtn.before(compareBtn);
-    else sidebarHeader.appendChild(compareBtn);
-  } else if (projects.length < 2 && compareBtn) {
-    compareBtn.remove();
-  }
+  // Compare button removed — not ready for prime time yet
 
   for (const proj of projects) {
     const item = document.createElement("div");
@@ -4691,8 +4678,8 @@ function renderProjectDetail(projectId) {
     titleLeft.appendChild(badge);
   }
 
-  // Training timer: sum of actual run durations (not wall-clock session time)
-  if (proj.runs && proj.runs.length) {
+  // Training timer: only show when a session is actively running
+  if (proj.active_sessions > 0 && proj.runs && proj.runs.length) {
     // Deduplicate by run ID — take the latest entry per ID
     const byId = new Map();
     for (const r of proj.runs) byId.set(r.id, r);

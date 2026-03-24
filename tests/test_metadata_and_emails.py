@@ -176,7 +176,7 @@ class TestTagPillsHtml:
         html = _tag_pills_html(["ml", "nlp"])
         assert "ml" in html
         assert "nlp" in html
-        assert "font-size:12px" in html
+        assert "border-radius" in html
 
     def test_deterministic_colors(self):
         from distillate.digest import _tag_pills_html
@@ -201,8 +201,10 @@ class TestReadingStatsHtml:
         ]
 
         html = _reading_stats_html(state)
-        assert "2 papers this week" in html
+        assert "Week: 2 papers" in html
         assert "65 pages" in html
+        assert "3,830 h/l words" in html
+        assert "Month: 3 papers" in html
 
     def test_singular_paper(self):
         from distillate.digest import _reading_stats_html
@@ -217,3 +219,27 @@ class TestReadingStatsHtml:
         assert "1 paper" in html
 
 
+class TestQueueHealthHtml:
+    """Tests for digest._queue_health_html()."""
+
+    def test_renders_stats(self):
+        from distillate.digest import _queue_health_html
+
+        now = datetime.now(timezone.utc)
+        old_date = (now - timedelta(days=45)).isoformat()
+
+        state = MagicMock()
+        state.documents_with_status.return_value = [
+            {"uploaded_at": old_date},
+            {"uploaded_at": now.isoformat()},
+            {"uploaded_at": now.isoformat()},
+        ]
+        state.documents = {
+            "a": {"uploaded_at": now.isoformat(), "status": "on_remarkable"},
+        }
+        state.documents_processed_since.return_value = [{}]
+
+        html = _queue_health_html(state)
+        assert "3 waiting" in html
+        assert "oldest 45d" in html or "oldest 44d" in html  # timezone edge
+        assert "+1/-1 this week" in html

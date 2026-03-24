@@ -159,7 +159,7 @@ Options:
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--verbose", "-v", "--init", "--register",
     "--status", "--list", "--queue", "--remove", "--import", "--reprocess",
-    "--digest", "--schedule", "--send-digest", "--scheduled-email", "--sync",
+    "--digest", "--schedule", "--send-digest", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
     "--export-state", "--import-state", "--report",
@@ -257,11 +257,6 @@ def main():
 
     if "--schedule" in sys.argv:
         wizard._schedule()
-        return
-
-    if "--scheduled-email" in sys.argv:
-        from distillate import digest
-        digest.send_scheduled()
         return
 
     if "--send-digest" in sys.argv:

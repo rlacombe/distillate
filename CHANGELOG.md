@@ -2,11 +2,14 @@
 
 ## 0.42.0 — 2026-03-22
 
-Autonomous research platform with desktop IDE, paper-experiment integration, and one-click onboarding.
+Distillate is now an autonomous research platform. Describe a hypothesis, and an AI agent runs experiments for you — training models, tuning hyperparameters, and reporting results. A desktop GUI lets you watch the frontier improve in real time, steer the agent, and compare runs across projects.
 
 ### Highlights
 
-- **One-click onboarding**: new users see CTAs to launch a demo experiment or connect their paper library — install to live experiment in 60 seconds
+- **Autonomous experiments**: describe what you want to test, an agent runs it. Time-budgeted sessions with live metric tracking, automatic frontier detection (`best`/`completed` runs), and structured insight extraction
+- **Desktop IDE**: Electron app with four tabs — Control Panel (frontier chart + live session status), Session (terminal), Results (run grid + insights), Prompt (PROMPT.md editor). Context-aware chat with Nicolas throughout
+- **Cloud & email** (optional): sign up with `--email` to get experiment reports with embedded charts, daily paper suggestions, and weekly digests. Papers and experiments sync to the cloud for backup
+- **One-click onboarding**: install to live experiment in 60 seconds — new users see CTAs to launch a demo or connect their paper library
 - **Paper-experiment integration**: link papers to experiments, discover relevant papers, credit papers via `inspired_by` on runs — what you read informs what you try
 - **Desktop IDE**: four-tab Electron app (Control Panel, Session, Results, Prompt) with context-aware chat, stop generation, and full highlight display
 - **No API key needed**: runs entirely through your Claude Code subscription (Max or Pro)
@@ -59,6 +62,37 @@ Autonomous research platform with desktop IDE, paper-experiment integration, and
 - **Tab hijack on polling**: 15-second session poll re-rendered the detail pane, snapping back to Control Panel. Polling now only updates sidebar
 - **Sync 501 errors in DevTools**: `triggerCloudSync()` called `.json()` on non-ok responses
 - **Dock icon too large in dev mode**: now uses `.icns` with proper resolutions
+
+### Cloud & Email
+
+- **Cloud state sync**: papers and experiments sync to the Distillate cloud API via granular endpoints with incremental pull (`?since=` watermark) and additive merge
+- **Run-level merge**: cross-device sync merges individual runs — decisions advance monotonically (best > completed > crash), metrics and metadata fill gaps
+- **Email notifications**: experiment reports on session completion (with embedded chart), daily paper suggestions, and weekly digest — each toggled independently
+- **Auto sync triggers**: background sync after first app load, automatic push after experiment sessions end
+- **Supabase URL auto-derived**: no manual configuration needed — the Supabase project ref is extracted from the anon key JWT
+
+### Experiment Decisions (best/completed)
+
+- **Auto-detected decisions**: `conclude_run()` automatically marks runs as `best` (frontier-improving) or `completed` — agents no longer decide keep/discard
+- **State migration v1→v2**: existing experiments re-evaluated chronologically to compute best/completed from the key metric frontier
+- **Backward compatible**: old `keep`/`discard` in runs.jsonl parsed as `completed`; `best` determined from state migration
+- **Commit format**: `[best]` prefix on frontier-improving runs — e.g. `[best] baseline CNN: f1=0.42`
+
+### Desktop Improvements
+
+- **Chart Y-axis**: scales to best runs only (discarded outliers no longer squish the frontier flat)
+- **Log-scale ticks**: clean rounded values when data spans less than one decade
+- **Sidebar stability**: experiments sorted by `added_at` instead of `last_scanned_at` (no more reordering on reload)
+- **Faster sidebar**: removed auto-rescan from experiment list — state.json is authoritative, rescans only on session end and manual reload
+- **Session status**: "Agent working — analyzing runs" instead of misleading "awaiting instructions"
+- **Enrichment prompts**: cleaner output — one-sentence breakthroughs, no ALL CAPS, no Greek letters
+
+### CLI Improvements
+
+- **`--connectors`**: check status of all integrations (Zotero, email, Obsidian, reMarkable) at a glance
+- **`--email`**: interactive email management with per-type toggles
+- **`--sync-state`**: manual cloud sync trigger
+- **Security**: CORS tightened to localhost only, auth token verification on sensitive endpoints
 
 ### Migration from 0.6.x
 
