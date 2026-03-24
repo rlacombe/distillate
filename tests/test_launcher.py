@@ -1,5 +1,6 @@
 """Tests for the experiment launcher — templates, scaffolding, sessions."""
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -266,6 +267,10 @@ class TestScaffoldExperiment:
 # Scaffold endpoint (server.py POST /experiments/scaffold)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("fastapi"),
+    reason="fastapi not installed (desktop-only dependency)",
+)
 class TestScaffoldEndpoint:
     """Test the scaffold_from_template endpoint logic via the server app."""
 
@@ -972,6 +977,10 @@ class TestListExperimentsCLI:
 # Server endpoint tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("fastapi"),
+    reason="fastapi not installed (desktop-only dependency)",
+)
 class TestServerEndpoints:
     """Tests for the desktop-app REST endpoints in server.py."""
 

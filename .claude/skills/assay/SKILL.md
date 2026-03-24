@@ -5,7 +5,7 @@ description: Assay an experiment — deep analysis of results with cross-run com
 
 # Assay
 
-Test the purity of what the homunculus produced. Deep analysis of an experiment's results.
+Test the purity of what the experimentalist agent produced. Deep analysis of an experiment's results.
 
 ## Arguments
 

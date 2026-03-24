@@ -1,11 +1,11 @@
 ---
 name: conjure
-description: Conjure a homunculus — initialize and launch a new autonomous experiment
+description: Conjure a experimentalist agent — initialize and launch a new autonomous experiment
 ---
 
-# Conjure a Homunculus
+# Conjure a Experimentalist Agent
 
-Summon a new experiment agent into being. From an empty flask (directory) to a living, running homunculus.
+Summon a new experiment agent into being. From an empty flask (directory) to a living, running experimentalist agent.
 
 ## Arguments
 
@@ -28,7 +28,7 @@ The user provides a research goal, and optionally a directory path, constraints,
    - Pull baselines from literature if relevant (`mcp__distillate__extract_baselines`)
 
 4. **Launch**: On user approval, call `mcp__distillate__manage_session` with action="start"
-   - The homunculus comes alive in a tmux session
+   - The experimentalist agent comes alive in a tmux session
 
 5. **Verify**: Call `mcp__distillate__manage_session` with action="status" to confirm it's running
 

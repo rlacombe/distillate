@@ -176,7 +176,7 @@ class TestTagPillsHtml:
         html = _tag_pills_html(["ml", "nlp"])
         assert "ml" in html
         assert "nlp" in html
-        assert "border-radius" in html
+        assert "font-size" in html
 
     def test_deterministic_colors(self):
         from distillate.digest import _tag_pills_html

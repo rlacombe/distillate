@@ -10,6 +10,7 @@ Covers:
   BUG 7: time enforcement hook
 """
 
+import importlib.util
 import json
 import os
 import tempfile
@@ -844,6 +845,10 @@ class TestEditPrompt:
 # CLI command: --chart
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("matplotlib"),
+    reason="matplotlib not installed (optional dependency)",
+)
 class TestChartExport:
     """_chart_export generates a PNG file."""
 

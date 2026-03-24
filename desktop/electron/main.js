@@ -50,7 +50,7 @@ function _saveWindowState() {
 function createWindow() {
   const saved = _loadWindowState();
   const opts = {
-    width: saved?.width || 700,
+    width: saved?.width || 1280,
     height: saved?.height || 850,
     minWidth: 480,
     minHeight: 600,

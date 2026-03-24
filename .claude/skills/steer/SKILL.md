@@ -1,11 +1,11 @@
 ---
 name: steer
-description: Steer a homunculus — review progress and redirect a running experiment
+description: Steer a experimentalist agent — review progress and redirect a running experiment
 ---
 
 # Steer
 
-Review what a homunculus is doing and redirect it. Like an alchemist adjusting the flame under the athanor.
+Review what a experimentalist agent is doing and redirect it. Like an alchemist adjusting the flame under the athanor.
 
 ## Arguments
 
@@ -13,11 +13,11 @@ The user provides an experiment name and optionally a steering direction.
 
 ## Steps
 
-1. **Check status**: Call `mcp__distillate__manage_session` with action="status" to see if the homunculus is running
+1. **Check status**: Call `mcp__distillate__manage_session` with action="status" to see if the experimentalist agent is running
 
 2. **Review progress**: Call `mcp__distillate__get_project_details` to see recent runs, metrics, and trajectory
 
-3. **Read the homunculus's mind**: If session history exists (Glob `~/.claude/projects/*<name>*/*.jsonl`), read the most recent session to understand:
+3. **Read the experimentalist agent's mind**: If session history exists (Glob `~/.claude/projects/*<name>*/*.jsonl`), read the most recent session to understand:
    - What the agent is currently trying
    - What it learned from recent runs
    - Whether it's stuck in a loop or making progress
@@ -32,4 +32,4 @@ The user provides an experiment name and optionally a steering direction.
    - Suggest concrete next steps with parameter values
    - Set priority: what to try first vs. fallback options
 
-6. **Confirm**: Report the steering instructions and whether the homunculus picked them up (the agent reads `.distillate/steering.md` via the post_bash hook)
+6. **Confirm**: Report the steering instructions and whether the experimentalist agent picked them up (the agent reads `.distillate/steering.md` via the post_bash hook)

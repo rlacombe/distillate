@@ -1,11 +1,11 @@
 ---
 name: distill
-description: Distill insights from a homunculus's session histories — zero API calls
+description: Distill insights from a experimentalist agent's session histories — zero API calls
 ---
 
 # Distill
 
-Extract the essence from a homunculus's work. Read its Claude Code session histories, cross-reference with runs.jsonl, and produce structured research insights.
+Extract the essence from a experimentalist agent's work. Read its Claude Code session histories, cross-reference with runs.jsonl, and produce structured research insights.
 
 ## Arguments
 
@@ -15,7 +15,7 @@ The user provides an experiment name or project ID (e.g. "tiny-matmul").
 
 1. **Resolve the project** — call `mcp__distillate__get_project_details` to get the project path and run list.
 
-2. **Find session histories** — Claude Code sessions are at `~/.claude/projects/` with a path-based key. Use Glob to find `~/.claude/projects/*<project-name>*/*.jsonl`. Each .jsonl file is one homunculus session.
+2. **Find session histories** — Claude Code sessions are at `~/.claude/projects/` with a path-based key. Use Glob to find `~/.claude/projects/*<project-name>*/*.jsonl`. Each .jsonl file is one experimentalist agent session.
 
 3. **Read sessions** — for each session file (newest first, up to 10), read it and extract:
    - **Agent reasoning** — `assistant` messages with `type: "text"` blocks

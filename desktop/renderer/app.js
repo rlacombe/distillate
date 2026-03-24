@@ -126,14 +126,7 @@ function injectChatBanner(stats) {
   setTimeout(() => inputEl?.focus(), 50);
 }
 
-// Restore chat messages from previous session (survives app restart)
-try {
-  const savedChat = localStorage.getItem("distillate-chat");
-  if (savedChat && messagesEl) {
-    messagesEl.innerHTML = savedChat;
-    chatBannerInjected = true;
-  }
-} catch {}
+// Start each session with a clean chat — no stale restoration
 
 // Save chat before unload
 window.addEventListener("beforeunload", () => {
@@ -5724,7 +5717,7 @@ function loadResults(projectId) {
     const body = document.createElement("div");
     body.className = "insights-body";
     if (proj.insights.key_breakthrough) {
-      body.innerHTML += `<div class="insight-breakthrough markdown-body"><span class="insight-section-label">Key Breakthrough</span>${window.markedParse(proj.insights.key_breakthrough)}</div>`;
+      body.innerHTML += `<div class="insight-breakthrough"><span class="insight-section-label">Key Breakthrough</span>${window.markedParse(proj.insights.key_breakthrough)}</div>`;
     }
     if (proj.insights.lessons_learned && proj.insights.lessons_learned.length) {
       let lessonsHtml = '<div class="insight-lessons"><span class="insight-section-label">Lessons Learned</span><ul>';

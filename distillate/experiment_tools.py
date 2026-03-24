@@ -1017,7 +1017,7 @@ EXPERIMENT_TOOL_SCHEMAS = [
             "Save research insights for an experiment. Writes structured "
             "enrichment data to the project's .distillate/llm_enrichment.json. "
             "Used by the /distill skill after extracting insights from "
-            "homunculus session histories. The insights then appear in the "
+            "experimentalist agent session histories. The insights then appear in the "
             "desktop Control Panel."
         ),
         "input_schema": {
