@@ -212,7 +212,7 @@ def _check_dirty_git(project_root: Path) -> None:
                 "\n*** WARNING: You have uncommitted changes. The protocol "
                 "requires committing after EACH experiment run before "
                 "starting the next one. Run: git add -A && git commit -m "
-                "'<description>: <metric>=<value> [keep|discard]' && "
+                "'[best] <description>: <metric>=<value>' && "
                 "git push ***"
             )
     except Exception:

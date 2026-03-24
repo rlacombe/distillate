@@ -461,13 +461,12 @@ class TestProcessingState:
 
 class TestInitDisclosures:
     def test_init_step2_mentions_text_recognition(self):
-        """Verify the init Step 2 output includes text recognition guidance."""
-        # We can check the source code directly
+        """Verify the reMarkable setup output includes text recognition guidance."""
         import inspect
-        from distillate import main
+        from distillate import wizard
 
-        # Read the source of the init wizard
-        source = inspect.getsource(main._init_wizard)
+        # Text recognition guidance is in the extracted _setup_remarkable function
+        source = inspect.getsource(wizard._setup_remarkable)
         assert "Text recognition" in source or "text recognition" in source
 
     def test_init_step5_mentions_claude_data(self):

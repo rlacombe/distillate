@@ -122,6 +122,12 @@ Experiments:
   --delete-experiment <project>
                           Remove experiment from tracking (keeps files)
 
+Setup:
+  --connectors            Show status of all connectors
+  --setup <connector>     Configure a connector (zotero, email, remarkable, obsidian)
+  --email                 Sign up for email notifications
+  --init                  Run the full setup wizard
+
 Papers:
   --sync                  Sync papers: Zotero -> reMarkable -> notes
   --import                Import existing papers from Zotero
@@ -133,7 +139,6 @@ Papers:
   --digest                Show your reading digest
   --report                Show reading insights dashboard
   --schedule              Set up automatic syncing (launchd/cron)
-  --init                  Run the setup wizard
   --remove "Title"        Remove a paper from tracking
   --reprocess "Title"     Re-extract highlights and regenerate note
 
@@ -154,7 +159,7 @@ Options:
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--verbose", "-v", "--init", "--register",
     "--status", "--list", "--queue", "--remove", "--import", "--reprocess",
-    "--digest", "--schedule", "--send-digest", "--sync",
+    "--digest", "--schedule", "--send-digest", "--scheduled-email", "--sync",
     "--backfill-s2", "--backfill-highlights", "--refresh-metadata",
     "--suggest", "--suggest-email", "--sync-state",
     "--export-state", "--import-state", "--report",
@@ -168,6 +173,7 @@ _KNOWN_FLAGS = {
     "--key-metric", "--description", "--count", "--private",
     "--direction", "--metric", "--budget", "--goal",
     "--chart", "--delete-experiment", "--edit-prompt", "--yes", "--log-scale",
+    "--connectors", "--setup", "--email",
 }
 
 
@@ -195,6 +201,23 @@ def main():
     if "--register" in sys.argv:
         from distillate.remarkable_auth import register_interactive
         register_interactive()
+        return
+
+    if "--connectors" in sys.argv:
+        wizard._connectors()
+        return
+
+    if "--email" in sys.argv:
+        wizard._email_signup()
+        return
+
+    if "--setup" in sys.argv:
+        idx = sys.argv.index("--setup")
+        if idx + 1 >= len(sys.argv):
+            print("Usage: distillate --setup <connector>")
+            print("Connectors: zotero, email, remarkable, obsidian")
+            sys.exit(1)
+        wizard._setup_single(sys.argv[idx + 1])
         return
 
     # Commands that only need local state (no Zotero credentials)
@@ -234,6 +257,11 @@ def main():
 
     if "--schedule" in sys.argv:
         wizard._schedule()
+        return
+
+    if "--scheduled-email" in sys.argv:
+        from distillate import digest
+        digest.send_scheduled()
         return
 
     if "--send-digest" in sys.argv:

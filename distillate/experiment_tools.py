@@ -1029,21 +1029,29 @@ EXPERIMENT_TOOL_SCHEMAS = [
                 },
                 "key_breakthrough": {
                     "type": "string",
-                    "description": "The single most impactful discovery",
+                    "description": (
+                        "One sentence: the metric improvement and what caused it. "
+                        "No Greek letters, no parenthetical asides. "
+                        "Example: 'F1 improved from 0.42 to 0.76 by adding a 39-bag LDA cascade.'"
+                    ),
                 },
                 "lessons_learned": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "3-5 actionable insights",
+                    "description": (
+                        "3-5 short sentences. Each starts with the finding, "
+                        "then one supporting number. No ALL CAPS headers. "
+                        "Write for a smart colleague scanning a dashboard."
+                    ),
                 },
                 "dead_ends": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Approaches tried and abandoned",
+                    "description": "One sentence each: name the approach and why it failed.",
                 },
                 "trajectory": {
                     "type": "string",
-                    "description": "How the agent's strategy evolved over time",
+                    "description": "2-3 sentences: the story arc from baseline to current best.",
                 },
                 "run_insights": {
                     "type": "object",
@@ -1102,10 +1110,11 @@ EXPERIMENT_TOOL_SCHEMAS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["keep", "crash"],
+                    "enum": ["crash"],
                     "description": (
-                        "keep for ALL runs with results (even if metrics "
-                        "didn't improve). crash ONLY for complete failures."
+                        "Only pass 'crash' for complete failures with no "
+                        "results. Omit for normal runs — best/completed "
+                        "is auto-detected from the key metric frontier."
                     ),
                 },
                 "results": {
@@ -1183,15 +1192,12 @@ def list_projects(*, state) -> dict:
     results = []
     for proj_id, proj in projects.items():
         runs = proj.get("runs", {})
-        kept = 0
-        discarded = 0
+        best_count = 0
         running = 0
         for r in runs.values():
             decision = r.get("decision") or r.get("status", "")
-            if decision == "keep":
-                kept += 1
-            elif decision == "discard":
-                discarded += 1
+            if decision == "best":
+                best_count += 1
             elif decision == "running":
                 running += 1
 
@@ -1201,9 +1207,8 @@ def list_projects(*, state) -> dict:
             "name": proj.get("name", ""),
             "status": proj.get("status", ""),
             "path": proj.get("path", ""),
-            "run_count": len(runs) - discarded,
-            "kept_runs": kept,
-            "discarded_runs": discarded,
+            "run_count": len(runs),
+            "best_runs": best_count,
             "running_runs": running,
             "tags": proj.get("tags", []),
             "last_scanned_at": proj.get("last_scanned_at", ""),
@@ -1218,7 +1223,7 @@ def get_project_details(
 ) -> dict:
     """Get full details for a project including runs.
 
-    Discarded runs are hidden by default. Pass ``include_discarded=True``
+    Crash runs are hidden by default. Pass ``include_discarded=True``
     to see them.
     """
     proj, err = _resolve_project(state, identifier)
@@ -1226,12 +1231,12 @@ def get_project_details(
         return {"found": False, **err}
 
     all_runs = proj.get("runs", {})
-    discarded_count = 0
+    crash_count = 0
     visible_runs = []
     for r in all_runs.values():
         decision = r.get("decision") or r.get("status", "")
-        if decision == "discard":
-            discarded_count += 1
+        if decision == "crash":
+            crash_count += 1
             if not include_discarded:
                 continue
         visible_runs.append(r)
@@ -1281,8 +1286,8 @@ def get_project_details(
     }
     if linked_paper_details:
         result["linked_paper_details"] = linked_paper_details
-    if discarded_count:
-        result["discarded_runs"] = discarded_count
+    if crash_count:
+        result["crash_runs"] = crash_count
     return result
 
 
@@ -1314,8 +1319,8 @@ def compare_runs(
     if not include_discarded:
         for label, run in [("run_a", a), ("run_b", b)]:
             decision = run.get("decision") or run.get("status", "")
-            if decision == "discard":
-                return {"error": f"{label} ({run.get('name', run.get('id', '?'))}) was discarded. Pass include_discarded=true to compare anyway."}
+            if decision == "crash":
+                return {"error": f"{label} ({run.get('name', run.get('id', '?'))}) crashed. Pass include_discarded=true to compare anyway."}
 
     return diff_runs(a, b)
 
@@ -2265,7 +2270,7 @@ def compare_projects_tool(*, state, projects: list[str]) -> dict:
         best: dict[str, float] = {}
         for run in proj.get("runs", {}).values():
             decision = run.get("decision") or run.get("status", "")
-            if decision == "discard":
+            if decision == "crash":
                 continue
             for k, v in run.get("results", {}).items():
                 if not isinstance(v, (int, float)):
@@ -3427,13 +3432,18 @@ def start_run(
 
 
 def conclude_run(
-    *, state, project: str, run_id: str, status: str,
+    *, state, project: str, run_id: str, status: str = "",
     results: dict, reasoning: str,
     hyperparameters: dict | None = None,
     changes: str = "",
     inspired_by: str = "",
 ) -> dict:
-    """Conclude an experiment run — appends completed entry to runs.jsonl."""
+    """Conclude an experiment run — appends completed entry to runs.jsonl.
+
+    Auto-detects ``best`` vs ``completed`` by comparing the key metric
+    against the frontier of prior ``best`` runs.  Pass ``status="crash"``
+    explicitly for runs that failed with no output.
+    """
     import json
     from datetime import datetime, timezone
     from pathlib import Path as _Path
@@ -3465,11 +3475,80 @@ def conclude_run(
 
     now = datetime.now(timezone.utc).isoformat()
 
+    # ── Auto-detect best vs completed ──
+    # Accept explicit "crash" (or legacy "keep") but auto-compute otherwise
+    is_best = False
+    if status == "crash":
+        final_status = "crash"
+    elif status == "keep":
+        # Legacy caller — treat as auto-detect
+        final_status = "completed"
+    else:
+        final_status = "completed"
+
+    if final_status != "crash" and results:
+        from distillate.experiments import infer_key_metric_name, _is_lower_better
+        key_metric = infer_key_metric_name(proj)
+        val = results.get(key_metric) if key_metric else None
+        if isinstance(val, (int, float)):
+            lower_better = _is_lower_better(key_metric)
+            # Find frontier value from prior best runs in runs.jsonl
+            frontier_val = None
+            if runs_jsonl.exists():
+                for line in runs_jsonl.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        prev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if prev.get("status") not in ("best", "keep"):
+                        continue
+                    pv = prev.get("results", {}).get(key_metric)
+                    if not isinstance(pv, (int, float)):
+                        continue
+                    if frontier_val is None:
+                        frontier_val = pv
+                    elif lower_better:
+                        frontier_val = min(frontier_val, pv)
+                    else:
+                        frontier_val = max(frontier_val, pv)
+
+            if frontier_val is None:
+                # First run with this metric → best
+                is_best = True
+            elif lower_better and val < frontier_val:
+                is_best = True
+            elif not lower_better and val > frontier_val:
+                is_best = True
+
+        elif key_metric == "" and final_status != "crash":
+            # No key metric at all — first run is best
+            has_any_prior = False
+            if runs_jsonl.exists():
+                for line in runs_jsonl.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        prev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if prev.get("status") in ("best", "completed", "keep", "discard"):
+                        has_any_prior = True
+                        break
+            if not has_any_prior:
+                is_best = True
+
+        if is_best:
+            final_status = "best"
+
     entry = {
         "$schema": "distillate/run/v1",
         "id": run_id,
         "timestamp": now,
-        "status": status,
+        "status": final_status,
         "description": _sanitize_llm_text(changes) or f"{run_id} completed",
         "results": results,
         "reasoning": _sanitize_llm_text(reasoning),
@@ -3483,7 +3562,7 @@ def conclude_run(
             end = _dt.fromisoformat(now)
             entry["duration_seconds"] = round((end - start).total_seconds())
         except Exception:
-            pass
+            log.debug("Failed to calculate run duration", exc_info=True)
     if hyperparameters:
         entry["hyperparameters"] = hyperparameters
     if changes:
@@ -3504,7 +3583,7 @@ def conclude_run(
             if link_result.get("success"):
                 linked_paper = link_result.get("paper", inspired_by)
         except Exception:
-            pass  # Non-fatal — run is already saved
+            log.debug("Failed to auto-link paper '%s'", inspired_by, exc_info=True)
 
     duration_str = ""
     if "duration_seconds" in entry:
@@ -3514,10 +3593,11 @@ def conclude_run(
     result = {
         "success": True,
         "run_id": run_id,
-        "status": status,
+        "status": final_status,
+        "is_best": is_best,
         "duration": duration_str.strip(),
         "project": proj.get("name", project),
-        "message": f"Run {run_id} concluded: {status}{duration_str}",
+        "message": f"Run {run_id} concluded: {final_status}{duration_str}",
     }
     if linked_paper:
         result["linked_paper"] = linked_paper

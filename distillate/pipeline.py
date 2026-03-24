@@ -182,7 +182,7 @@ def _process_paper_bundle(
                     page_count = len(doc_pdf)
                     doc_pdf.close()
                 except Exception:
-                    pass
+                    log.debug("Failed to get page count from PDF for '%s'", title, exc_info=True)
             else:
                 log.warning("Could not download PDF for '%s', skipping", title)
                 return False

@@ -497,7 +497,7 @@ body {
 /* ───── Sidebar items (compact) ───── */
 .sidebar-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px 12px;
   cursor: pointer;
@@ -535,6 +535,7 @@ body {
   flex-shrink: 0;
   width: 10px;
   height: 10px;
+  margin-top: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -553,6 +554,7 @@ body {
   white-space: nowrap;
   color: var(--text);
   font-weight: 500;
+  line-height: 16px;
 }
 
 .github-flare {
@@ -988,7 +990,7 @@ body {
   align-self: flex-end;
 }
 
-.exp-detail-badge.keep { color: var(--emerald); background: rgba(52, 211, 153, 0.12); }
+.exp-detail-badge.best { color: var(--emerald); background: rgba(52, 211, 153, 0.12); }
 .exp-detail-badge.running { color: var(--green); background: rgba(34, 197, 94, 0.12); }
 .exp-detail-badge.ready { color: var(--accent-light); background: rgba(99, 102, 241, 0.12); }
 .exp-detail-badge.paused { color: var(--text-dim); background: rgba(136, 136, 160, 0.12); }
@@ -1150,13 +1152,17 @@ body {
   color: var(--accent);
   margin-bottom: 4px;
 }
-.insight-breakthrough {
-  margin-bottom: 10px;
+.insight-breakthrough,
+.insight-lessons {
+  margin-bottom: 14px;
+  padding-left: 0;
 }
-.insight-breakthrough p {
+.insight-breakthrough p,
+.insight-lessons p {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text);
+  margin: 0 0 6px;
 }
 .insight-lessons ul {
   list-style: none;
@@ -1295,8 +1301,8 @@ body {
   border-radius: 10px;
 }
 
-.exp-run-decision.keep { color: var(--green); background: rgba(34, 197, 94, 0.1); }
-.exp-run-decision.discard { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+.exp-run-decision.best { color: var(--green); background: rgba(34, 197, 94, 0.1); }
+.exp-run-decision.completed { color: var(--text-dim); background: rgba(136, 136, 160, 0.1); }
 .exp-run-decision.crash { color: #d29922; background: rgba(210, 153, 34, 0.1); }
 
 .exp-run-metric {
@@ -1350,7 +1356,7 @@ body {
 #chat-area {
   flex: 1;
   overflow-y: auto;
-  scroll-behavior: smooth;
+  /* scroll-behavior: smooth removed — causes jank during streaming */
 }
 
 #chat-suggestions {
@@ -3376,4 +3382,32 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
 }
 .connector-actions {
   margin-top: 16px;
+}
+
+/* ───── Performance: pause animations on hidden elements ───── */
+.hidden *,
+.hidden {
+  animation-play-state: paused !important;
+}
+
+/* ───── Migration toast ───── */
+.migration-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--surface);
+  border: 1px solid var(--accent-dim);
+  color: var(--text);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 9999;
+  pointer-events: none;
+}
+.migration-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }

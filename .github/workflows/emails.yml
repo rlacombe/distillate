@@ -2,10 +2,8 @@ name: Paper Emails
 
 on:
   schedule:
-    # Daily suggestion at 8am ET (1pm UTC)
-    - cron: '0 13 * * *'
-    # Weekly digest on Sunday at 9am ET (2pm UTC)
-    - cron: '0 14 * * 0'
+    # Run every hour — Python checks if it's 6am in the user's timezone
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       command:
@@ -45,10 +43,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "args=${{ inputs.command }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 14 * * 0" ]; then
-            echo "args=--send-digest" >> "$GITHUB_OUTPUT"
           else
-            echo "args=--suggest-email" >> "$GITHUB_OUTPUT"
+            echo "args=--scheduled-email" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run command
@@ -61,6 +57,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           DIGEST_FROM: ${{ secrets.DIGEST_FROM }}
+          DIGEST_TIMEZONE: ${{ secrets.DIGEST_TIMEZONE }}
           STATE_GIST_ID: ${{ secrets.STATE_GIST_ID }}
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
           OBSIDIAN_VAULT_NAME: ${{ secrets.OBSIDIAN_VAULT_NAME }}

@@ -1066,7 +1066,7 @@ class TestServerEndpoints:
                 "id": "run-1",
                 "name": "baseline",
                 "status": "completed",
-                "decision": "keep",
+                "decision": "best",
                 "results": {"accuracy": 0.95},
                 "started_at": "2025-01-01T00:00:00Z",
                 "duration_minutes": 10,
@@ -1082,8 +1082,9 @@ class TestServerEndpoints:
         proj = data["projects"][0]
         assert proj["id"] == "tiny-gene"
         assert proj["name"] == "Tiny Gene Code"
-        assert proj["run_count"] == 0
-        assert len(proj["runs"]) == 0
+        assert proj["run_count"] == 1
+        assert len(proj["runs"]) == 1
+        assert proj["runs"][0]["name"] == "baseline"
         assert "github_url" not in proj  # no github_url when not set
 
     def test_experiments_list_includes_github_url(self):
@@ -1322,11 +1323,11 @@ class TestCompareProjectsTool:
 
         # Add kept runs with metrics
         state._data["projects"]["p1"]["runs"] = {
-            "r1": {"status": "keep", "decision": "keep",
+            "r1": {"status": "completed", "decision": "best",
                     "results": {"accuracy": 0.85, "loss": 0.3}},
         }
         state._data["projects"]["p2"]["runs"] = {
-            "r1": {"status": "keep", "decision": "keep",
+            "r1": {"status": "completed", "decision": "best",
                     "results": {"accuracy": 0.92, "loss": 0.15}},
         }
         state.save()
@@ -1341,7 +1342,7 @@ class TestCompareProjectsTool:
         assert result["projects"][0]["best_metrics"]["accuracy"] == 0.85
         assert result["projects"][1]["best_metrics"]["accuracy"] == 0.92
 
-    def test_skips_non_kept_runs(self, tmp_path, monkeypatch):
+    def test_skips_crash_runs(self, tmp_path, monkeypatch):
         monkeypatch.setattr("distillate.state.STATE_PATH", tmp_path / "state.json")
         monkeypatch.setattr("distillate.state.LOCK_PATH", tmp_path / "state.lock")
         from distillate.experiment_tools import compare_projects_tool
@@ -1351,7 +1352,7 @@ class TestCompareProjectsTool:
         state.add_project("p1", "Proj 1", str(tmp_path))
         state.add_project("p2", "Proj 2", str(tmp_path))
         state._data["projects"]["p1"]["runs"] = {
-            "r1": {"status": "discard", "decision": "discard",
+            "r1": {"status": "completed", "decision": "crash",
                     "results": {"accuracy": 0.99}},
         }
         state._data["projects"]["p2"]["runs"] = {}
@@ -1805,10 +1806,10 @@ class TestCompareProjectsCLI:
         state.add_project("p1", "Alpha", str(tmp_path))
         state.add_project("p2", "Beta", str(tmp_path))
         state._data["projects"]["p1"]["runs"] = {
-            "r1": {"decision": "keep", "results": {"accuracy": 0.80}},
+            "r1": {"decision": "best", "results": {"accuracy": 0.80}},
         }
         state._data["projects"]["p2"]["runs"] = {
-            "r1": {"decision": "keep", "results": {"accuracy": 0.95}},
+            "r1": {"decision": "best", "results": {"accuracy": 0.95}},
         }
         state.save()
 

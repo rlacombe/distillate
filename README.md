@@ -1,4 +1,4 @@
-# Distillate
+# Distillate — Orchestrate ML auto-research agents
 
 **Your research alchemist.** Conjure ML experiments that run themselves. Distill insights from everything you read.
 

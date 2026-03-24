@@ -11,7 +11,7 @@ Deno.serve(async (req) => {
   const now = new Date();
 
   // Find users whose local time matches their preferred_hour
-  // and who are due for an email based on their cadence
+  // and who have at least one email type enabled
   const { data: users, error } = await db.rpc("get_users_due_for_email");
 
   if (error) {

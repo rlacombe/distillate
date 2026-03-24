@@ -58,13 +58,27 @@ messagesEl?.addEventListener("click", (e) => {
 });
 
 const NICOLAS_GREETINGS = [
+  // Warm & curious
   "Hello! What concoction shall we explore today?",
-  "The laboratory is warm and the flasks are clean. What shall we work on?",
   "Good to see you! Any hypotheses to test or papers to read?",
+  "What's on your mind? I'm ready when you are.",
+  // Scene-setting
+  "The laboratory is warm and the flasks are clean. What shall we work on?",
   "The cauldron is bubbling. What experiment shall we conjure?",
-  "Welcome back! I've been tending the library while you were away.",
   "The alembic is ready. What shall we distill?",
+  // Returning user
+  "Welcome back! I've been tending the library while you were away.",
+  "Ah, picking up where we left off. Let's go.",
+  // Brief & energetic
+  "Fresh notebook, sharp pencil. Let's discover something.",
+  "Ready to make progress.",
+  // Playful
   "Ah, a fellow seeker! What knowledge shall we transmute today?",
+  "I read three papers while you were gone. Just kidding. Mostly.",
+  "Another day, another hypothesis to break.",
+  // Reflective
+  "The best experiments start with a good question.",
+  "Science is patient. But we don't have to be.",
 ];
 
 let chatBannerInjected = false;
@@ -331,8 +345,8 @@ function handleEvent(event) {
         startAssistantMessage();
       }
       currentText += event.text;
-      renderAssistantMessage();
-      scrollToBottom();
+      scheduleStreamingRender();
+      scheduleScrollToBottom();
       break;
 
     case "tool_start":
@@ -421,6 +435,28 @@ function startAssistantMessage() {
   if (cs) cs.classList.add("hidden");
 }
 
+// --- Streaming render throttle (P0 perf fix) ---
+// During streaming, batch text_delta renders to one per animation frame
+// instead of re-parsing the full markdown on every character chunk.
+let _renderRAF = null;
+let _scrollRAF = null;
+
+function scheduleStreamingRender() {
+  if (_renderRAF) return;
+  _renderRAF = requestAnimationFrame(() => {
+    _renderRAF = null;
+    renderAssistantMessage();
+  });
+}
+
+function scheduleScrollToBottom() {
+  if (_scrollRAF) return;
+  _scrollRAF = requestAnimationFrame(() => {
+    _scrollRAF = null;
+    scrollToBottom();
+  });
+}
+
 function renderAssistantMessage() {
   if (!currentAssistantEl) return;
   if (typeof marked !== "undefined") {
@@ -498,6 +534,9 @@ function handleExternalLink(url, anchorEl) {
 }
 
 function finishStreaming() {
+  // Flush any pending throttled render so final content is complete
+  if (_renderRAF) { cancelAnimationFrame(_renderRAF); _renderRAF = null; }
+  if (_scrollRAF) { cancelAnimationFrame(_scrollRAF); _scrollRAF = null; }
   if (currentAssistantEl) {
     currentAssistantEl.classList.remove("streaming-cursor");
     renderAssistantMessage();
@@ -722,8 +761,8 @@ function clearConversation() {
   inputEl.style.height = "auto";
   inputEl.focus();
 
-  // Refresh stats
-  fetchWelcomeStats();
+  // Refresh stats (sidebars already loaded, just refresh welcome screen)
+  _fetchStatusOnly();
 
   // Tell server to start fresh
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -735,80 +774,127 @@ function clearConversation() {
 
 const welcomeStatsEl = document.getElementById("welcome-stats");
 
+function _applyStatusData(data) {
+  const hasPapers = (data.papers_read || 0) > 0;
+  const hasExperiments = data.experiments && data.experiments.total_projects > 0;
+  const isFirstUse = !hasPapers && !hasExperiments;
+  libraryConfigured = !!data.library_configured;
+
+  // Welcome screen stats — papers line
+  if (welcomeStatsEl) {
+    const parts = [];
+    if (data.papers_read != null) parts.push(`${data.papers_read} papers read`);
+    if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
+    if (parts.length) {
+      welcomeStatsEl.textContent = parts.join(" \u00B7 ");
+    }
+  }
+  // Welcome screen stats — experiments line
+  const expStatsEl = document.getElementById("welcome-stats-experiments");
+  if (expStatsEl && data.experiments) {
+    const exp = data.experiments;
+    const expParts = [];
+    if (exp.total_projects > 0) expParts.push(`${exp.total_projects} experiments`);
+    if (exp.total_runs > 0) expParts.push(`${exp.total_runs} runs`);
+    if (expParts.length) {
+      expStatsEl.textContent = expParts.join(" \u00B7 ");
+    }
+  }
+
+  // Inject chat banner with stats (CLI-style welcome)
+  const exp = data.experiments || {};
+  injectChatBanner({
+    experiments: exp.total_projects || 0,
+    runs: exp.total_runs || 0,
+    running: exp.active_sessions || 0,
+    papers: data.papers_read || 0,
+    queue: data.papers_queued || 0,
+  });
+
+  // Context-aware suggestion buttons
+  updateSuggestions(isFirstUse, hasPapers, hasExperiments);
+
+  // Onboarding CTA on welcome screen for first-use
+  const onboarded = localStorage.getItem("distillate-onboarded");
+  const guidanceEl = document.querySelector(".welcome-guidance");
+  const tipEl = document.querySelector(".welcome-tip");
+  if (isFirstUse && !onboarded) {
+    if (guidanceEl) guidanceEl.innerHTML = '<button class="onboarding-btn onboarding-btn-large" id="welcome-demo-btn">Launch your first experiment</button>';
+    if (tipEl) tipEl.textContent = "A tiny transformer will learn matrix multiplication while you watch.";
+    document.getElementById("welcome-demo-btn")
+      ?.addEventListener("click", launchDemoExperiment);
+  }
+
+  // Merge server-provided tool labels
+  if (data.tool_labels && typeof data.tool_labels === "object") {
+    toolLabels = { ...toolLabels, ...data.tool_labels };
+  }
+
+  // One-shot migration toast
+  if (data.migration_message) {
+    const toast = document.createElement("div");
+    toast.className = "migration-toast";
+    toast.textContent = data.migration_message;
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.classList.add("visible"); }, 50);
+    setTimeout(() => {
+      toast.classList.remove("visible");
+      setTimeout(() => toast.remove(), 400);
+    }, 5000);
+  }
+}
+
+function _applyExperimentsData(data) {
+  experimentsFirstLoad = false;
+  if (!data.ok) return;
+  const projects = data.projects || [];
+  renderProjectsList(projects);
+  if (currentProjectId) renderProjectDetail(currentProjectId);
+  _sessionTransition = null;
+  if (projects.some((p) => p.active_sessions > 0)) startExperimentSSE();
+}
+
+function _applyPapersData(data) {
+  papersFirstLoad = false;
+  if (!data.ok) return;
+  window._cachedPapersData = data.papers || [];
+  renderPapersList(window._cachedPapersData);
+}
+
+function _applyConnectorsData(data) {
+  if (!data.ok) return;
+  cachedConnectors = data.connectors || [];
+  renderConnectors(cachedConnectors);
+}
+
 function fetchWelcomeStats() {
   if (!serverPort) return;
 
-  // Single /status call for welcome screen + tool labels
-  fetch(`http://127.0.0.1:${serverPort}/status`)
+  // Batched init: one round-trip instead of four parallel fetches
+  fetch(`http://127.0.0.1:${serverPort}/init`)
     .then((r) => r.json())
     .then((data) => {
       if (!data.ok) return;
-
-      const hasPapers = (data.papers_read || 0) > 0;
-      const hasExperiments = data.experiments && data.experiments.total_projects > 0;
-      const isFirstUse = !hasPapers && !hasExperiments;
-      libraryConfigured = !!data.library_configured;
-
-      // Welcome screen stats — papers line
-      if (welcomeStatsEl) {
-        const parts = [];
-        if (data.papers_read != null) parts.push(`${data.papers_read} papers read`);
-        if (data.papers_queued != null) parts.push(`${data.papers_queued} in queue`);
-        if (parts.length) {
-          welcomeStatsEl.textContent = parts.join(" \u00B7 ");
-        }
-      }
-      // Welcome screen stats — experiments line
-      const expStatsEl = document.getElementById("welcome-stats-experiments");
-      if (expStatsEl && data.experiments) {
-        const exp = data.experiments;
-        const expParts = [];
-        if (exp.total_projects > 0) expParts.push(`${exp.total_projects} experiments`);
-        if (exp.total_runs > 0) expParts.push(`${exp.total_runs} runs`);
-        if (expParts.length) {
-          expStatsEl.textContent = expParts.join(" \u00B7 ");
-        }
-      }
-
-      // Inject chat banner with stats (CLI-style welcome)
-      const exp = data.experiments || {};
-      injectChatBanner({
-        experiments: exp.total_projects || 0,
-        runs: exp.total_runs || 0,
-        running: exp.active_sessions || 0,
-        papers: data.papers_read || 0,
-        queue: data.papers_queued || 0,
-      });
-
-      // Context-aware suggestion buttons
-      updateSuggestions(isFirstUse, hasPapers, hasExperiments);
-
-      // Onboarding CTA on welcome screen for first-use
-      const onboarded = localStorage.getItem("distillate-onboarded");
-      const guidanceEl = document.querySelector(".welcome-guidance");
-      const tipEl = document.querySelector(".welcome-tip");
-      if (isFirstUse && !onboarded) {
-        if (guidanceEl) guidanceEl.innerHTML = '<button class="onboarding-btn onboarding-btn-large" id="welcome-demo-btn">Launch your first experiment</button>';
-        if (tipEl) tipEl.textContent = "A tiny transformer will learn matrix multiplication while you watch.";
-        document.getElementById("welcome-demo-btn")
-          ?.addEventListener("click", launchDemoExperiment);
-      }
-
-      // Merge server-provided tool labels
-      if (data.tool_labels && typeof data.tool_labels === "object") {
-        toolLabels = { ...toolLabels, ...data.tool_labels };
-      }
+      _applyStatusData(data.status);
+      _applyExperimentsData(data.experiments);
+      _applyPapersData(data.papers);
+      _applyConnectorsData(data.connectors);
     })
+    .catch(() => {
+      // Fallback: if /init not available, use individual endpoints
+      _fetchStatusOnly();
+      fetchExperimentsList();
+      fetchPapersData();
+      fetchConnectors();
+    });
+}
+
+function _fetchStatusOnly() {
+  if (!serverPort) return;
+  fetch(`http://127.0.0.1:${serverPort}/status`)
+    .then((r) => r.json())
+    .then((data) => { if (data.ok) _applyStatusData(data); })
     .catch(() => {});
-
-  // Load experiments from dedicated endpoint (owns Live tab empty/content state)
-  fetchExperimentsList();
-
-  // Prefetch papers for Papers tab
-  fetchPapersData();
-
-  // Load connectors
-  fetchConnectors();
 }
 
 function updateSuggestions(isFirstUse, hasPapers, hasExperiments) {
@@ -1595,8 +1681,17 @@ function ensureTerminalReady() {
       if (ok) {
         terminalInitialized = true;
         window.xtermBridge.onData((data) => {
+          // Don't forward mouse reports to PTY (they'd confuse tmux)
+          if (data.match(/\x1b\[<?\d+;\d+;\d+[Mm]/)) return;
           if (currentTerminalProject && window.nicolas)
             window.nicolas.terminalInput(currentTerminalProject, data);
+        });
+        // Forward scroll wheel to tmux as SGR mouse sequences
+        window.xtermBridge.onScroll((button, lines) => {
+          if (currentTerminalProject && window.nicolas) {
+            for (let i = 0; i < lines; i++)
+              window.nicolas.terminalInput(currentTerminalProject, `\x1b[<${button};1;1M`);
+          }
         });
       }
       _termReadyPromise = null; resolve(ok);
@@ -2125,12 +2220,7 @@ function fetchPapersData() {
   }
   fetch(`http://127.0.0.1:${serverPort}/papers`)
     .then((r) => r.json())
-    .then((data) => {
-      papersFirstLoad = false;
-      if (!data.ok) return;
-      window._cachedPapersData = data.papers || [];
-      renderPapersList(window._cachedPapersData);
-    })
+    .then((data) => _applyPapersData(data))
     .catch(() => { papersFirstLoad = false; });
 }
 
@@ -2883,7 +2973,8 @@ function isDisplayableRun(r) {
 function getDisplayRuns(runs) {
   const byId = new Map();
   for (const r of (runs || [])) byId.set(r.id, r);
-  return [...byId.values()].filter(isDisplayableRun);
+  return [...byId.values()].filter(isDisplayableRun)
+    .sort((a, b) => (a.run_number || 0) - (b.run_number || 0));
 }
 
 function findBestRun(runs, metricName) {
@@ -2891,7 +2982,7 @@ function findBestRun(runs, metricName) {
   let best = null;
   for (const r of (runs || [])) {
     const decision = r.decision || r.status || "";
-    if (decision !== "keep") continue;
+    if (decision === "crash") continue;
     const v = r.results?.[metricName];
     if (v == null) continue;
     if (!best || (lower ? v < best.results[metricName] : v > best.results[metricName]))
@@ -2964,7 +3055,7 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     const val = runs[i].results?.[metricName];
     if (typeof val === "number" && isFinite(val)) {
       const decision = runs[i].decision || runs[i].status || "";
-      points.push({ index: i, value: val, run: runs[i], kept: decision === "keep" });
+      points.push({ index: i, value: val, run: runs[i], best: decision === "best" });
     }
   }
 
@@ -3025,10 +3116,14 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
   const plotW = w - pad.left - pad.right;
   const plotH = h - pad.top - pad.bottom;
 
-  // Combine all values for Y-axis range calculation
-  const allValues = points.map((p) => p.value).concat(livePoints.map((p) => p.value));
-  let minVal = Math.min(...allValues);
-  let maxVal = Math.max(...allValues);
+  // Y-axis range: scale to best runs + live points so the frontier
+  // fills the chart. Dim dots outside this range are drawn at the edge.
+  const bestValues = points.filter((p) => p.best).map((p) => p.value)
+    .concat(livePoints.map((p) => p.value));
+  // Fall back to all points if no best runs yet
+  const rangeValues = bestValues.length ? bestValues : points.map((p) => p.value);
+  let minVal = Math.min(...rangeValues);
+  let maxVal = Math.max(...rangeValues);
 
   // Include goal thresholds in Y-axis range so the line is always visible
   const proj = cachedProjects.find((p) => p.id === currentProjectId);
@@ -3111,9 +3206,17 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
       }
     }
     if (yTickValues.length < 2) {
-      for (let i = 0; i <= 4; i++) {
-        const logV = logMin + (i / 4) * (logMax - logMin);
-        yTickValues.push(Math.pow(10, logV));
+      // Data spans less than one decade — fall back to linear-style
+      // nice ticks so labels stay clean (e.g. 0.50, 0.60, 0.70)
+      yTickValues = [];
+      const linRange = maxVal - minVal;
+      const linSpacing = niceNum(linRange / (maxTicks - 1), true);
+      const linMin = Math.floor(minVal / linSpacing) * linSpacing;
+      const linMax = Math.ceil(maxVal / linSpacing) * linSpacing;
+      for (let v = linMin; v <= linMax + linSpacing * 0.5; v += linSpacing) {
+        if (v >= minVal - linSpacing * 0.1 && v <= maxVal + linSpacing * 0.1) {
+          yTickValues.push(v);
+        }
       }
     }
   } else {
@@ -3172,35 +3275,45 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     }
   }
 
-  // Best-so-far frontier: seed from first run, advance only on kept runs
+  // Best-so-far frontier: use server-computed "best" flag
   const lowerBetter = isLowerBetter(metricName);
-  const frontierSet = new Set(); // indices of runs that improved the frontier
   if (points.length > 0) {
-    let bestSoFar = points[0].value;
+    // Seed frontier from the first "best" run (not the first point,
+    // which may be a non-frontier run with a misleading value)
+    const firstBestIdx = points.findIndex(p => p.best);
     const bestLine = [];
-    frontierSet.add(0);
-    bestLine.push({ x: toX(0), y: toY(bestSoFar) });
 
-    for (let i = 1; i < points.length; i++) {
-      const v = points[i].value;
-      // Only let kept runs advance the frontier (discards are noise)
-      if (points[i].kept) {
-        const improved = lowerBetter ? v < bestSoFar : v > bestSoFar;
-        if (improved) {
-          bestSoFar = v;
-          frontierSet.add(i);
-        }
+    if (firstBestIdx >= 0) {
+      let bestSoFar = points[firstBestIdx].value;
+      // Flat line from chart start to first best
+      bestLine.push({ x: toX(0), y: toY(bestSoFar) });
+      if (firstBestIdx > 0) {
+        bestLine.push({ x: toX(firstBestIdx), y: toY(bestSoFar) });
       }
-      bestLine.push({ x: toX(i), y: toY(bestSoFar) });
-    }
-    // Extend frontier to right edge
-    if (bestLine.length > 0 && bestSoFar !== null) {
+
+      // Downgrade "best" dots that sit above the frontier in display
+      // order (they were best chronologically but timestamps put them
+      // out of order on the chart)
+      for (let i = firstBestIdx + 1; i < points.length; i++) {
+        if (points[i].best) {
+          const v = points[i].value;
+          if (lowerBetter ? v < bestSoFar : v > bestSoFar) {
+            bestSoFar = v;
+          } else {
+            // Above the frontier line — demote to dim dot
+            points[i].best = false;
+          }
+        }
+        bestLine.push({ x: toX(i), y: toY(bestSoFar) });
+      }
+      // Extend frontier to right edge
       const lastX = bestLine[bestLine.length - 1].x;
       const rightEdge = toX(totalPoints - 1);
       if (lastX < rightEdge) {
         bestLine.push({ x: rightEdge, y: toY(bestSoFar) });
       }
     }
+
     if (bestLine.length > 1) {
       ctx.strokeStyle = "rgba(74,222,128,0.5)";
       ctx.lineWidth = 2;
@@ -3230,11 +3343,11 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     ctx.setLineDash([]);
   }
 
-  // Run dots: green = frontier-improving keeps, purple = other keeps, dim = discards
+  // Run dots: green = best (frontier-improving), dim = completed
   for (let i = 0; i < points.length; i++) {
     const x = toX(i);
     const y = toY(points[i].value);
-    if (frontierSet.has(i)) {
+    if (points[i].best) {
       ctx.fillStyle = "#4ade80";
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, Math.PI * 2);
@@ -3242,11 +3355,6 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
       ctx.strokeStyle = "#0f0f23";
       ctx.lineWidth = 1.5;
       ctx.stroke();
-    } else if (points[i].kept) {
-      ctx.fillStyle = "#6366f1";
-      ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fill();
     } else {
       ctx.fillStyle = "#555";
       ctx.globalAlpha = 0.3;
@@ -3257,7 +3365,7 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     }
   }
 
-  // Tilted description labels on every kept run
+  // Tilted description labels on every best run
   {
     const angle = -Math.PI / 6; // -30 degrees
     ctx.save();
@@ -3265,7 +3373,7 @@ function renderMetricChart(canvas, runs, metricName, liveEvents, opts = {}) {
     ctx.fillStyle = "rgba(160,160,180,0.5)";
     ctx.textAlign = "left";
     for (let i = 0; i < points.length; i++) {
-      if (!frontierSet.has(i)) continue;
+      if (!points[i].best) continue;
       const desc = points[i].run.description || points[i].run.hypothesis || "";
       if (!desc) continue;
       const label = desc.length > 24 ? desc.slice(0, 22) + "\u2026" : desc;
@@ -3419,12 +3527,7 @@ function fetchConnectors() {
   if (!serverPort) return;
   fetch(`http://127.0.0.1:${serverPort}/connectors`)
     .then((r) => r.json())
-    .then((data) => {
-      if (data.ok) {
-        cachedConnectors = data.connectors || [];
-        renderConnectors(cachedConnectors);
-      }
-    })
+    .then((data) => _applyConnectorsData(data))
     .catch(() => {});
 }
 
@@ -3622,8 +3725,8 @@ function launchEmailSetup() {
 
   detailEl.innerHTML = `
     <div class="onboarding-progress">
-      <h2 class="exp-detail-title">Set up email updates</h2>
-      <p class="exp-detail-meta" style="margin-top:6px;">Choose what lands in your inbox. Each update is independent.</p>
+      <h2 class="exp-detail-title">Create your account</h2>
+      <p class="exp-detail-meta" style="margin-top:6px;">Sync your library across devices and choose what lands in your inbox.</p>
       <div class="library-setup-wizard" style="margin-top:20px;">
         <div class="library-step" id="email-step">
           <div class="library-step-header">
@@ -3796,19 +3899,8 @@ function fetchExperimentsList() {
   }
   fetch(`http://127.0.0.1:${serverPort}/experiments/list`)
     .then((r) => r.json())
-    .then((data) => {
-      experimentsFirstLoad = false;
-      if (!data.ok) return;
-      const projects = data.projects || [];
-      renderProjectsList(projects);
-      // Re-render detail view so buttons (Launch/Stop) reflect new state
-      if (currentProjectId) renderProjectDetail(currentProjectId);
-      // Start SSE if we have projects with active sessions
-      if (projects.some((p) => p.active_sessions > 0)) {
-        startExperimentSSE();
-      }
-    })
-    .catch(() => { experimentsFirstLoad = false; });
+    .then((data) => _applyExperimentsData(data))
+    .catch(() => { experimentsFirstLoad = false; _sessionTransition = null; });
 }
 
 function reloadCurrentProject() {
@@ -3864,24 +3956,24 @@ const experimentsSidebarEl = document.getElementById("experiments-sidebar");
 const experimentsCountEl = document.getElementById("experiments-count");
 
 function renderProjectsList(projects) {
-  // Sort: active sessions first, then by most recent activity
+  // Sort: active sessions first, then by when the experiment was added (stable)
   projects.sort((a, b) => {
     // Active sessions always on top
     if (a.active_sessions > 0 && b.active_sessions === 0) return -1;
     if (b.active_sessions > 0 && a.active_sessions === 0) return 1;
-    // Then by last_scanned_at (most recent first)
-    const aDate = a.last_scanned_at || a.added_at || "";
-    const bDate = b.last_scanned_at || b.added_at || "";
+    // Then by added_at (most recent first) — stable across rescans
+    const aDate = a.added_at || "";
+    const bDate = b.added_at || "";
     return bDate.localeCompare(aDate);
   });
 
   cachedProjects = projects;
   if (!experimentsSidebarEl) return;
 
-  // Manage session polling
+  // Manage session polling — skip if SSE is already pushing updates
   const hasActive = projects.some((p) => p.active_sessions > 0);
-  if (hasActive) startSessionPolling();
-  else stopSessionPolling();
+  if (hasActive && !sseSource) startSessionPolling();
+  else if (!hasActive || sseSource) stopSessionPolling();
 
   // Update count badge
   if (experimentsCountEl) {
@@ -3959,14 +4051,14 @@ function renderProjectsList(projects) {
     const meta = document.createElement("span");
     meta.className = "sidebar-item-meta";
     // Count displayable runs (deduped, non-running, with metrics)
-    let sidebarTotal = 0, sidebarKept = 0;
+    let sidebarTotal = 0, sidebarBest = 0;
     if (proj.runs) {
       for (const r of getDisplayRuns(proj.runs)) {
         sidebarTotal++;
-        if ((r.decision || r.status) === "keep") sidebarKept++;
+        if ((r.decision || "") === "best") sidebarBest++;
       }
     }
-    meta.textContent = `${sidebarTotal} runs \u00B7 ${sidebarKept} kept`;
+    meta.textContent = `${sidebarTotal} runs \u00B7 ${sidebarBest} best`;
     nameGroup.appendChild(meta);
     item.appendChild(nameGroup);
 
@@ -4657,7 +4749,7 @@ function renderProjectDetail(projectId) {
   }
   const completedRuns = Object.values(decisionCounts).reduce((a, b) => a + b, 0);
   const statParts = [`${completedRuns} runs`];
-  if (decisionCounts.keep) statParts.push(`${decisionCounts.keep} kept`);
+  if (decisionCounts.best) statParts.push(`${decisionCounts.best} best`);
   const statsSpan = document.createElement("span");
   statsSpan.className = "exp-detail-stats-inline";
   statsSpan.textContent = statParts.join(" \u00B7 ");
@@ -4722,7 +4814,7 @@ function renderProjectDetail(projectId) {
   } else if (isReady) {
     const readyCard = document.createElement("div");
     readyCard.className = "exp-detail-status-card ready";
-    readyCard.innerHTML = `<span class="status-card-label ready">Ready</span> Session active — awaiting instructions`;
+    readyCard.innerHTML = `<span class="status-card-label ready">Active</span> Agent working — analyzing runs, planning next steps`;
     header.appendChild(readyCard);
   } else if (proj.latest_learning) {
     const learning = document.createElement("div");
@@ -4737,6 +4829,7 @@ function renderProjectDetail(projectId) {
     goalsEl.className = "exp-detail-goals";
     if (proj.goals && proj.goals.length) {
       for (const g of proj.goals) {
+        if (g.threshold == null) continue;  // skip goals without a threshold
         const chip = document.createElement("span");
         chip.className = "goal-chip";
         const dir = g.direction === "maximize" ? "\u2265" : "\u2264";
@@ -5491,7 +5584,6 @@ function launchProject(projectId, model, btn) {
   })
     .then((r) => r.json())
     .then((data) => {
-      _sessionTransition = null;
       if (data.ok) {
         if (data.tmux_session) {
           const sessionView = document.getElementById("session-view");
@@ -5529,10 +5621,7 @@ function stopProject(projectId, btn) {
     method: "POST",
   })
     .then((r) => r.json())
-    .then((data) => {
-      _sessionTransition = null;
-      fetchExperimentsList();
-    })
+    .then(() => fetchExperimentsList())
     .catch((err) => {
       _sessionTransition = null;
       btn.classList.remove("action-btn-spinner");
@@ -5686,7 +5775,7 @@ function loadResults(projectId) {
       { key: "newest", label: "Newest" },
       { key: "oldest", label: "Oldest" },
       { key: "best", label: "Best metric" },
-      { key: "decision", label: "Keeps first" },
+      { key: "decision", label: "Best first" },
     ];
 
     function sortRuns(mode) {
@@ -5703,7 +5792,7 @@ function loadResults(projectId) {
           return isLowerBetter(activeMetric) ? va - vb : vb - va;
         });
       } else if (mode === "decision") {
-        const order = { keep: 0, discard: 1, crash: 2 };
+        const order = { best: 0, completed: 1, crash: 2 };
         sorted.sort((a, b) => (order[a.decision] ?? 3) - (order[b.decision] ?? 3));
       }
       return sorted;
@@ -5763,9 +5852,9 @@ function loadResults(projectId) {
             let prevVal = null;
             for (let pi = origIndex - 1; pi >= 0; pi--) {
               const pr = runsInOrder[pi];
-              if (pr.results?.[activeMetric] != null && (pr.decision === "keep" || prevVal === null)) {
+              if (pr.results?.[activeMetric] != null && (pr.decision === "best" || prevVal === null)) {
                 prevVal = pr.results[activeMetric];
-                if (pr.decision === "keep") break;
+                if (pr.decision === "best") break;
               }
             }
             if (prevVal !== null && prevVal !== 0) {
@@ -6064,8 +6153,6 @@ document.getElementById("setup-save-btn")?.addEventListener("click", async () =>
 
 /* ───── Experiment notifications ───── */
 
-let consecutiveDiscards = 0;
-
 let _emailPromptShown = false;
 
 function showEmailPrompt() {
@@ -6075,7 +6162,7 @@ function showEmailPrompt() {
   const toast = document.createElement("div");
   toast.className = "email-prompt-toast";
   toast.innerHTML = `
-    <div class="email-prompt-text">Get experiment reports and paper suggestions by email?</div>
+    <div class="email-prompt-text">Sync across devices and get experiment reports by email?</div>
     <div class="email-prompt-form">
       <input type="email" id="email-prompt-input" placeholder="your@email.com" spellcheck="false">
       <button class="onboarding-btn" id="email-prompt-submit">Enable</button>
@@ -6092,9 +6179,9 @@ function showEmailPrompt() {
       await fetch(`http://127.0.0.1:${serverPort}/email/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, cadence: "weekly" }),
+        body: JSON.stringify({ email, daily_papers: true, weekly_digest: true, experiment_reports: true }),
       });
-      toast.innerHTML = `<div class="email-prompt-text" style="color:var(--green);">You're in! Weekly digests + experiment reports coming to ${email}</div>`;
+      toast.innerHTML = `<div class="email-prompt-text" style="color:var(--green);">You're in! Daily suggestions + weekly digests coming to ${email}</div>`;
       localStorage.setItem("distillate-email-asked", "1");
       setTimeout(() => toast.remove(), 4000);
     } catch {
@@ -6115,15 +6202,10 @@ function notifyExperimentEvent(data) {
 
     // Activity bar notification badge when sidebar is collapsed
     if (sidebarLeft?.classList.contains("collapsed") &&
-        (status === "keep" || status === "crash" || (status === "discard" && consecutiveDiscards >= 4))) {
+        (status === "best" || status === "crash")) {
       const expBtn = document.querySelector('.activity-btn[data-pane="sidebar-left"]');
       if (expBtn) expBtn.classList.add("has-notification");
     }
-
-    // Track discards regardless of focus/notification state
-    if (status === "keep") consecutiveDiscards = 0;
-    else if (status === "discard") consecutiveDiscards++;
-    else if (status === "crash") consecutiveDiscards = 0;
 
     // Crashes always get OS notification (even when focused)
     if (status === "crash" && window.nicolas?.notify) {
@@ -6136,11 +6218,11 @@ function notifyExperimentEvent(data) {
 
     if (!window.nicolas?.notify || document.hasFocus()) return;
 
-    if (status === "keep" && data.results) {
+    if (status === "best" && data.results) {
       const metric = Object.entries(data.results)[0];
       if (metric) {
         window.nicolas.notify(
-          "New baseline",
+          "New best",
           `${metric[0]} improved to ${metric[1]}`
         );
       }
@@ -6156,13 +6238,6 @@ function notifyExperimentEvent(data) {
             }
           }
         }
-      }
-    } else if (status === "discard") {
-      if (consecutiveDiscards >= 5) {
-        window.nicolas.notify(
-          "Agent may be stuck",
-          `${consecutiveDiscards} consecutive discards`
-        );
       }
     }
   }

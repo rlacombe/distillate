@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, session, shell, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { PythonManager } = require("./python-manager");
@@ -61,7 +61,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // allow require() in preload for highlight.js
+      // sandbox: false is required for require() in preload (highlight.js, xterm).
+      // Security: contextIsolation=true and nodeIntegration=false are both ON,
+      // so the renderer has no direct Node access — acceptable trade-off.
+      sandbox: false,
     },
   };
   if (saved?.x != null && saved?.y != null) {
@@ -214,6 +217,8 @@ app.on("ready", async () => {
       }
     });
 
+    // Clear cached CSS/JS so dev changes always take effect
+    await session.defaultSession.clearCache();
     // Load the UI from the Python server
     await mainWindow.loadURL(`http://127.0.0.1:${port}/ui/`);
     sendToRenderer("server-ready", { port });

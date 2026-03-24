@@ -6,9 +6,10 @@ CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT UNIQUE NOT NULL,
   timezone TEXT NOT NULL DEFAULT 'UTC',
-  cadence TEXT NOT NULL DEFAULT 'weekly' CHECK (cadence IN ('daily', 'weekly', 'off')),
   digest_day SMALLINT NOT NULL DEFAULT 1, -- 0=Sun, 1=Mon, ..., 6=Sat
-  preferred_hour SMALLINT NOT NULL DEFAULT 7 CHECK (preferred_hour BETWEEN 0 AND 23),
+  preferred_hour SMALLINT NOT NULL DEFAULT 6 CHECK (preferred_hour BETWEEN 0 AND 23),
+  daily_papers BOOLEAN NOT NULL DEFAULT true,
+  weekly_digest BOOLEAN NOT NULL DEFAULT true,
   experiment_reports BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_email_at TIMESTAMPTZ,
@@ -37,7 +38,7 @@ CREATE TABLE events (
 );
 
 CREATE INDEX idx_events_pending ON events (user_id, emailed) WHERE NOT emailed;
-CREATE INDEX idx_users_cadence ON users (cadence) WHERE cadence != 'off';
+CREATE INDEX idx_users_email_enabled ON users (preferred_hour) WHERE daily_papers OR weekly_digest;
 
 -- Row-level security: users only see their own data
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;

@@ -150,10 +150,8 @@ def _experiments_section(state: State, updates: list[dict] | None = None) -> str
     lines = ["## Lab"]
     for proj in projects.values():
         runs = proj.get("runs", {})
-        kept = sum(1 for r in runs.values()
-                   if (r.get("decision") or r.get("status", "")) == "keep")
-        discarded = sum(1 for r in runs.values()
-                        if (r.get("decision") or r.get("status", "")) == "discard")
+        best_count = sum(1 for r in runs.values()
+                        if (r.get("decision") or "") == "best")
 
         # Session status
         sessions = proj.get("sessions", {})
@@ -161,10 +159,8 @@ def _experiments_section(state: State, updates: list[dict] | None = None) -> str
         has_active_run = any(r.get("status") == "running" for r in runs.values())
 
         parts = [f"{len(runs)} runs"]
-        if kept:
-            parts.append(f"{kept} kept")
-        if discarded:
-            parts.append(f"{discarded} discarded")
+        if best_count:
+            parts.append(f"{best_count} best")
 
         line = f"- {proj.get('name', '?')}: {', '.join(parts)}"
 

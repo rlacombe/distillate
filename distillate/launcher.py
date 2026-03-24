@@ -509,7 +509,7 @@ def _generate_run_context(project_path: Path) -> Path | None:
     # Auto-close orphaned "running" entries — these are announcements
     # whose run never completed (agent crashed, restarted, or moved on).
     resolved_ids = {r["id"] for r in runs
-                    if r.get("status") in ("keep", "discard", "crash")
+                    if r.get("status") in ("best", "completed", "keep", "discard", "crash")
                     and "id" in r}
     orphans = [r for r in runs
                if r.get("status") == "running" and r.get("id") not in resolved_ids]
@@ -581,8 +581,8 @@ def _generate_run_context(project_path: Path) -> Path | None:
             lines.append(f"**Reasoning:** {reasoning}")
         lines.append("")
 
-        # Track best metric (from kept runs)
-        if status == "keep":
+        # Track best metric (from non-crash runs)
+        if status != "crash":
             for k, v in results.items():
                 if isinstance(v, (int, float)):
                     if best_metric_val is None or v > best_metric_val:
@@ -590,10 +590,10 @@ def _generate_run_context(project_path: Path) -> Path | None:
                         best_metric_name = k
                         best_run_id = run_id
 
-    # --- Key learnings from kept runs ---
+    # --- Key learnings from non-crash runs ---
     learnings: list[str] = []
     for run in recent:
-        if run.get("status") != "keep":
+        if run.get("status") in ("crash", "running"):
             continue
         reasoning = run.get("reasoning", "")
         if reasoning:
@@ -618,11 +618,11 @@ def _generate_run_context(project_path: Path) -> Path | None:
     # --- Infer key metric and optimization direction ---
     key_metric, key_direction = _infer_key_metric(runs)
     if key_metric:
-        # Find best value among kept runs
+        # Find best value among non-crash runs
         best_val = None
         best_rid = None
         for run in recent:
-            if run.get("status") != "keep":
+            if run.get("status") in ("crash", "running"):
                 continue
             val = run.get("results", {}).get(key_metric)
             if not isinstance(val, (int, float)):
@@ -736,7 +736,7 @@ def _build_launch_prompt(
         "- Use the MCP tools (start_run, conclude_run, save_enrichment) — do NOT write to runs.jsonl manually.",
         "- Every run MUST produce at least one numeric metric in results.",
         "- One configuration per run. No sweep scripts.",
-        "- Commit after every run: git add -A && git commit -m '<change>: <metric>=<value>' && git push",
+        "- Commit after every run. conclude_run returns is_best — use: git add -A && git commit -m '[best] <change>: <metric>=<value>' (or without [best] prefix) && git push",
     ]
 
     if project:
@@ -1113,10 +1113,10 @@ def should_continue(project: dict) -> bool:
         return False
 
     runs = project.get("runs", {})
-    # Collect best metric values from kept runs
+    # Collect best metric values from non-crash runs
     best: dict[str, float] = {}
     for run in runs.values():
-        if run.get("status") != "keep" and run.get("decision") != "keep":
+        if run.get("decision") == "crash" or run.get("status") == "failed":
             continue
         for k, v in run.get("results", {}).items():
             if not isinstance(v, (int, float)):
@@ -1376,12 +1376,12 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
     finally:
         release_lock()
 
-    # Find best metric across all kept runs
+    # Find best metric across all non-crash runs
     best_metric = None
     updated_proj = state.get_project(project_id)
     if updated_proj:
         for run in updated_proj.get("runs", {}).values():
-            if run.get("decision") != "keep" and run.get("status") != "keep":
+            if run.get("decision") == "crash" or run.get("status") == "failed":
                 continue
             for k, v in run.get("results", {}).items():
                 if isinstance(v, (int, float)):
@@ -1395,7 +1395,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
             proj_data = state.get_project(project_id) or {}
             runs_all = proj_data.get("runs", {})
             kept = sum(1 for r in runs_all.values()
-                       if (r.get("decision") or r.get("status", "")) == "keep")
+                       if (r.get("decision") or "") == "best")
             best_str = ""
             if best_metric:
                 k, v = next(iter(best_metric.items()))
@@ -1411,6 +1411,14 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
             )
     except Exception:
         log.debug("Cloud email send failed (non-critical)", exc_info=True)
+
+    # Push updated state to cloud (non-blocking)
+    try:
+        from distillate.cloud_sync import cloud_sync_available, push_state
+        if cloud_sync_available() and new_runs > 0:
+            push_state(state)
+    except Exception:
+        log.debug("Cloud push after session failed (non-critical)", exc_info=True)
 
     return {
         "new_runs": new_runs,

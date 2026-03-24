@@ -24,7 +24,7 @@ if not STATE_PATH.exists() and (Path.cwd() / "state.json").exists():
     STATE_PATH = Path.cwd() / "state.json"
 LOCK_PATH = STATE_PATH.with_suffix(".lock")
 
-_CURRENT_SCHEMA_VERSION = 1
+_CURRENT_SCHEMA_VERSION = 2
 
 _DEFAULT_STATE = {
     "schema_version": _CURRENT_SCHEMA_VERSION,
@@ -42,11 +42,157 @@ def _migrate_0_to_1(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-_MIGRATIONS: Dict[int, Any] = {0: _migrate_0_to_1}
+def _migrate_1_to_2(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace keep/discard decisions with best/completed.
+
+    For each project, walk runs chronologically and mark frontier-improving
+    runs as ``best`` and all others as ``completed``.
+    """
+    from distillate.experiments import infer_key_metric_name, _is_lower_better
+
+    import json as _json
+    import re as _re
+
+    projects = data.get("projects", {})
+    total_runs = sum(len(p.get("runs", {})) for p in projects.values())
+    processed = 0
+    total_best = 0
+
+    log.info("Migrating %d projects (%d runs) to best/completed schema...",
+             len(projects), total_runs)
+
+    for _pid, proj in projects.items():
+        runs = proj.get("runs", {})
+        if not runs:
+            continue
+
+        proj_name = proj.get("name", _pid)
+        key_metric = infer_key_metric_name(proj)
+
+        # Read runs.jsonl to get (1) original statuses and (2) file
+        # order — the append order IS the true chronological sequence.
+        # Timestamps can be wrong (midnight sessions, backfills) but
+        # file order is always correct.
+        original_statuses: Dict[str, str] = {}  # run_name → keep/discard/crash
+        file_order: List[str] = []  # run names in chronological order
+        proj_path = proj.get("path", "")
+        if proj_path:
+            runs_file = Path(proj_path) / ".distillate" / "runs.jsonl"
+            if runs_file.exists():
+                try:
+                    for line in runs_file.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = _json.loads(line)
+                        except (ValueError, _json.JSONDecodeError):
+                            continue
+                        rid = entry.get("id", "")
+                        st = entry.get("status", "")
+                        if st in ("keep", "discard", "crash"):
+                            original_statuses[rid] = st
+                            # First terminal entry per run = chronological position
+                            if rid not in [n for n in file_order]:
+                                file_order.append(rid)
+                except OSError:
+                    pass
+
+        # Build name→state_id map for lookup
+        name_to_sid: Dict[str, str] = {}
+        for sid, r in runs.items():
+            name_to_sid[r.get("name", sid)] = sid
+
+        # Walk in runs.jsonl file order (true chronological).
+        # Runs only in state.json (no runs.jsonl) get appended at the end.
+        seen_names: set = set()
+        ordered_sids: List[str] = []
+        for run_name in file_order:
+            sid = name_to_sid.get(run_name)
+            if sid and sid not in seen_names:
+                ordered_sids.append(sid)
+                seen_names.add(sid)
+        # Append any state-only runs (sorted by timestamp as fallback)
+        for sid in sorted(
+            runs.keys(),
+            key=lambda s: runs[s].get("started_at", ""),
+        ):
+            if sid not in seen_names:
+                ordered_sids.append(sid)
+                seen_names.add(sid)
+
+        frontier_val = None
+        lower_better = _is_lower_better(key_metric) if key_metric else False
+        proj_best = 0
+
+        for sid in ordered_sids:
+            run = runs[sid]
+            run_name = run.get("name", sid)
+            decision = run.get("decision", "")
+            status = run.get("status", "")
+            orig = original_statuses.get(run_name, "")
+
+            # Crash / failed stays crash
+            if decision == "crash" or status == "failed" or orig == "crash":
+                run["decision"] = "crash"
+                processed += 1
+                continue
+
+            # Only process terminal runs
+            if decision not in ("keep", "discard", "best", "completed", "") \
+                    and status != "completed":
+                processed += 1
+                continue
+
+            # Only old "keep" runs can be "best". Discards were
+            # rejected by the agent (e.g. didn't meet accuracy threshold)
+            # and never participate in the frontier.
+            if orig == "discard":
+                run["decision"] = "completed"
+                processed += 1
+                continue
+
+            val = run.get("results", {}).get(key_metric) if key_metric else None
+            if isinstance(val, (int, float)):
+                improved = False
+                if frontier_val is None:
+                    improved = True
+                elif lower_better and val < frontier_val:
+                    improved = True
+                elif not lower_better and val > frontier_val:
+                    improved = True
+
+                if improved:
+                    run["decision"] = "best"
+                    frontier_val = val
+                    proj_best += 1
+                else:
+                    run["decision"] = "completed"
+            else:
+                run["decision"] = "completed"
+            processed += 1
+
+        total_best += proj_best
+        log.info("  %s: %d runs → %d best (key metric: %s)",
+                 proj_name, len(runs), proj_best, key_metric or "none")
+
+    log.info("Migration complete: %d runs processed, %d marked as best",
+             processed, total_best)
+
+    data["schema_version"] = 2
+    return data
+
+
+_MIGRATIONS: Dict[int, Any] = {0: _migrate_0_to_1, 1: _migrate_1_to_2}
+
+# Set by _run_migrations when a migration executes — consumed once by the
+# server to show a UI toast.
+last_migration_message: Optional[str] = None
 
 
 def _run_migrations(data: Dict[str, Any]) -> Dict[str, Any]:
     """Apply pending schema migrations in order."""
+    global last_migration_message
     version = data.get("schema_version", 0)
     if version > _CURRENT_SCHEMA_VERSION:
         log.warning(
@@ -54,13 +200,28 @@ def _run_migrations(data: Dict[str, Any]) -> Dict[str, Any]:
             version, _CURRENT_SCHEMA_VERSION,
         )
         return data
+    if version < _CURRENT_SCHEMA_VERSION:
+        log.info("State schema %d → %d: running migrations...",
+                 version, _CURRENT_SCHEMA_VERSION)
     while version < _CURRENT_SCHEMA_VERSION:
         migrate = _MIGRATIONS.get(version)
         if migrate is None:
             log.warning("No migration for schema version %d", version)
             break
         data = migrate(data)
+        old_version = version
         version = data.get("schema_version", version + 1)
+        if old_version == 1 and version == 2:
+            # Count best for the toast message
+            total_best = sum(
+                sum(1 for r in p.get("runs", {}).values()
+                    if r.get("decision") == "best")
+                for p in data.get("projects", {}).values()
+            )
+            last_migration_message = (
+                f"Migrated run decisions: {total_best} frontier-improving "
+                f"runs marked as best"
+            )
     return data
 
 

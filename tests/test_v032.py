@@ -140,7 +140,7 @@ class TestTagPillsHtml:
         html = _tag_pills_html(["Computer Science - Machine Learning"])
         assert "ML" in html
         assert "cs.LG" not in html  # no dotted codes
-        assert "font-size:10px" in html
+        assert "font-size:12px" in html
 
     def test_empty_tags(self):
         from distillate.digest import _tag_pills_html

@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Distillate — Your research alchemist</title>
-  <meta name="description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
-  <meta property="og:title" content="Distillate — Your research alchemist">
+  <title>Distillate — Orchestrate ML auto-research agents</title>
+  <meta name="description" content="Conjure autonomous ML experiments, distill insights from papers, transmute findings into new research. Powered by Claude Code.">
+  <meta property="og:title" content="Distillate — Orchestrate ML auto-research agents">
   <meta property="og:description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
   <meta property="og:image" content="https://distillate.dev/app-screenshot.png">
   <meta property="og:site_name" content="Distillate">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://distillate.dev">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Distillate — Your research alchemist">
+  <meta name="twitter:title" content="Distillate — Orchestrate ML auto-research agents">
   <meta name="twitter:description" content="Conjure experiments, distill insights, transmute papers into gold. Autonomous ML research powered by Claude Code.">
   <meta name="twitter:image" content="https://distillate.dev/app-screenshot.png">
   <!-- Google tag (gtag.js) -->
@@ -32,7 +32,7 @@
       --fg: #e0e0e8;
       --muted: #8888a0;
       --border: #2a2a3e;
-      --max-w: 960px;
+      --max-w: 1000px;
       --indigo: #818cf8;
       --indigo-light: #a5b4fc;
       --gold: #fbbf24;
@@ -55,7 +55,7 @@
     .container {
       max-width: var(--max-w);
       margin: 0 auto;
-      padding: 40px 0 64px;
+      padding: 56px 0 64px;
     }
 
     /* ── Hero (two-column) ────────────────────────── */
@@ -65,7 +65,7 @@
       grid-template-columns: 0.95fr 1.4fr;
       gap: 0;
       align-items: center;
-      margin-bottom: 56px;
+      margin-bottom: 72px;
       padding-top: 16px;
     }
 
@@ -326,11 +326,11 @@
 
     .card .tag {
       display: inline-block;
-      font-size: 0.72rem;
+      font-size: 0.65rem;
       font-weight: 500;
-      margin-bottom: 8px;
-      padding: 2px 8px;
-      border-radius: 4px;
+      margin-bottom: 4px;
+      padding: 1px 6px;
+      border-radius: 3px;
       font-style: italic;
     }
 
@@ -681,7 +681,7 @@
   </style>
 </head>
 <body>
-  <div class="banner" id="banner"><span class="banner-text">Research preview v0.42.0 &mdash; <a href="https://github.com/rlacombe/distillate">Try it here</a></span></div>
+  <div class="banner" id="banner"><span class="banner-text">Now with auto-experiment orchestration! Research preview &mdash; <a href="https://github.com/rlacombe/distillate">try it here</a></span></div>
   <div class="container">
 
     <!-- ── Hero ────────────────────────────────────── -->
@@ -702,18 +702,17 @@
           <h1>Distillate</h1>
         </div>
         <p class="tagline">Your research alchemist.</p>
-        <p class="subtitle">Conjure ML experiments that run themselves. Distill insights from everything you read.</p>
-        <p class="hero-badges">
-          <a href="https://pypi.org/project/distillate/"><img src="https://img.shields.io/pypi/v/distillate?color=6366f1&label=PyPI" alt="PyPI"></a>
-          <a href="https://github.com/rlacombe/distillate"><img src="https://img.shields.io/badge/v0.42.0-research%20preview-818cf8" alt="v0.42.0"></a>
-          <a href="https://github.com/rlacombe/distillate/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-34d399" alt="MIT"></a>
-        </p>
+        <p class="subtitle">Conjure ML experiments that run themselves.<br>Distill insights from everything you read.</p>
         <div class="hero-cta" id="download">
           <div class="os-toggle" id="os-toggle">
             <button data-os="mac" class="active">macOS</button>
             <button data-os="win">Windows</button>
           </div>
-          <code class="install-cmd" style="margin-bottom:12px;"><span class="os-cmd active" data-os="mac">$ pip install distillate<br><span style="opacity:0.5;">$ cd desktop &amp;&amp; npm run install:mac</span></span><span class="os-cmd" data-os="win">&gt; pip install distillate<br><span style="opacity:0.5;">&gt; cd desktop; npm run install:win</span></span></code>
+          <code class="install-cmd" style="margin-bottom:12px;"><span class="os-cmd active" data-os="mac">$ uv pip install distillate<br><span style="opacity:0.5;">$ cd desktop &amp;&amp; npm run install:mac</span></span><span class="os-cmd" data-os="win">&gt; uv pip install distillate<br><span style="opacity:0.5;">&gt; cd desktop; npm run install:win</span></span></code>
+          <p class="hero-badges" style="margin-top:8px;">
+            <a href="https://pypi.org/project/distillate/"><img src="https://img.shields.io/pypi/v/distillate?color=6366f1&label=PyPI" alt="PyPI"></a>
+            <a href="https://github.com/rlacombe/distillate/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-34d399" alt="MIT"></a>
+          </p>
           <p class="install-links"><a href="https://github.com/rlacombe/distillate">GitHub</a> &ensp;&middot;&ensp; Powered by <a href="https://claude.ai/claude-code">Claude Code</a></p>
         </div>
       </div>
@@ -808,7 +807,7 @@
         <div class="flow-step">
           <span class="step-icon">🔬</span>
           <strong>Distill insights</strong>
-          <p>Every run is tracked with metrics, diffs, and decisions. Distill the results to see what worked, what failed, and why.</p>
+          <p>Every run is tracked with metrics, diffs, and decisions. Rich lab notebooks with research insights land in your Obsidian vault.</p>
         </div>
         <div class="flow-step">
           <span class="step-icon">✨</span>
@@ -818,12 +817,62 @@
       </div>
     </div>
 
+    <!-- ── Beyond Skills ──────────────────────────── -->
+
+    <div class="section">
+      <h2><span class="section-icon">📊</span> Beyond Skills</h2>
+      <p class="section-sub">Dashboards, charts, and email updates built into the workflow.</p>
+      <div class="grid">
+        <div class="card">
+          <strong>Reading insights</strong>
+          <em class="tag tag-library">Dashboard</em>
+          <p>Track your reading velocity, top topics, engagement scores, and most-cited papers. Available in the CLI, desktop, and weekly email digest.</p>
+        </div>
+        <div class="card">
+          <strong>Lab notebooks</strong>
+          <em class="tag tag-lab">Auto-generated</em>
+          <p>Every experiment gets a rich lab notebook with run cards, metric sparklines, and AI-generated research insights &mdash; saved to your Obsidian vault.</p>
+        </div>
+        <div class="card">
+          <strong>Chart export</strong>
+          <em class="tag tag-lab">Share results</em>
+          <p>Export clean metric charts as PNG &mdash; designed for sharing on X/Twitter or dropping into a paper. One command: <code style="font-size:0.75rem;">--chart</code></p>
+        </div>
+        <div class="card">
+          <strong>Email updates</strong>
+          <em class="tag tag-library">Stay informed</em>
+          <p>Experiment reports when a session finishes, daily paper suggestions from your queue, and a weekly reading digest. Set up with <code style="font-size:0.75rem;">--email</code></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Cloud ───────────────────────────────────── -->
+
+    <div class="section">
+      <h2><span class="section-icon">☁️</span> Sync Across Devices</h2>
+      <p class="section-sub">Your library follows you. Free account, no credit card.</p>
+      <div class="grid">
+        <div class="card card-hero">
+          <strong>Cross-device sync</strong>
+          <p>Process a paper on your laptop, see it on your desktop. Create an account with <code style="font-size:0.75rem;">distillate --email</code> and your papers, experiments, and reading progress stay in sync via the Distillate cloud API.</p>
+        </div>
+        <div class="card">
+          <strong>Connector status</strong>
+          <p>Check what&rsquo;s connected at a glance with <code style="font-size:0.75rem;">--connectors</code>. Configure Zotero, email, Obsidian, and reMarkable individually with <code style="font-size:0.75rem;">--setup</code></p>
+        </div>
+        <div class="card">
+          <strong>State backup</strong>
+          <p>Export your entire library to JSON with <code style="font-size:0.75rem;">--export-state</code> and restore it anywhere. Corrupt state? Auto-backed up as <code style="font-size:0.75rem;">.bak</code> &mdash; nothing is silently lost.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Open source ─────────────────────────────── -->
 
     <div style="text-align:center; margin-bottom:32px;">
       <h2>Open-source at the core</h2>
       <p class="section-sub">The CLI powers everything. The desktop app is a window into it.</p>
-      <code class="install-cmd">$ pip install distillate</code>
+      <code class="install-cmd">$ uv pip install distillate</code>
     </div>
 
     <!-- ── Terminal Mock ───────────────────────────── -->
@@ -845,11 +894,12 @@
         <span class="dim">  🧪 Spawning research agent...</span><br>
         <span class="green">  Created distillate-xp-tiny-matmul</span><br>
         <span class="dim">  Research agent spawned — 30 min budget, will report when done.</span><br><br>
-        <span class="prompt">&gt;</span> <span class="cmd">/distill tiny-matmul</span><br><br>
-        <span class="dim">  🔬 Distilling 8 runs...</span><br>
-        <span class="gold">  Best: run-7 (loss 0.0023, -42% from baseline)</span><br>
-        <span class="dim">  Key insight: block size 64 with gradient accumulation</span><br>
-        <span class="dim">  outperforms larger batches on this scale.</span>
+        <span class="prompt">&gt;</span> <span class="cmd">/survey</span><br><br>
+        <span class="dim">  🔬 Scanning 4 experiments...</span><br>
+        <span class="green">  ✓ tiny-matmul: 8 runs, best loss 0.0023 (-42%)</span><br>
+        <span class="gold">  ⚗ sigma-classify: 3 runs, accuracy 94.2% (goal: 95%)</span><br>
+        <span class="dim">  ─ rlhf-reward: 1 run, paused</span><br>
+        <span class="dim">  ─ tokenizer-v2: no runs yet</span>
       </div>
     </div>
 

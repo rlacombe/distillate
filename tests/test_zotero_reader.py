@@ -327,9 +327,9 @@ class TestInitWizardZoteroReader:
         text = env_file.read_text()
         assert "READING_SOURCE=remarkable" in text
 
-        # Should show Step 2 (reMarkable)
+        # Should show reMarkable setup
         output = capsys.readouterr().out
-        assert "Step 2 of 6" in output
+        assert "reMarkable Setup" in output
 
 
 # ---------------------------------------------------------------------------

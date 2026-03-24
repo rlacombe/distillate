@@ -62,10 +62,14 @@ conclude_run(
 )
 ```
 
+### Every run MUST produce a metric
+
+**`results` must contain at least one numeric metric.** A run without a metric is invisible on the chart and useless for tracking progress. Always ensure your training script evaluates on the test/validation set and you capture the result in `conclude_run`. If the script crashes before producing metrics, use `status: "crash"`.
+
 ### Status policy — keep almost everything
 
-- **`keep`** — the default. Use for ALL runs that produced results, even if metrics didn't improve. Every run is part of the audit trail. Baselines, failed hypotheses, and regressions are all valuable data.
-- **`crash`** — use ONLY when the run failed with a Python exception, produced zero output, or could not complete training at all.
+- **`keep`** — the default. Use for ALL runs that produced results with metrics, even if metrics didn't improve. Every run is part of the audit trail. Baselines, failed hypotheses, and regressions are all valuable data.
+- **`crash`** — use when the run failed with a Python exception, produced zero output, produced no metrics, or could not complete training at all.
 - **Never use `discard`.** A run that didn't improve metrics is NOT a failure — it's evidence. Keep it and explain what you learned in the `reasoning` field.
 
 ### Step 2b: Update RESULTS.md
@@ -80,17 +84,22 @@ Overwrite the file each time — it should reflect the current state. Keep it un
 
 ### Step 3: Commit and push
 
+`conclude_run` returns `is_best: true` when the run improved the key metric frontier. Use it for the commit prefix:
+
 ```bash
-git add -A && git commit -m '<shortest change desc>: <metric>=<value>' && git push
+# If is_best was true:
+git add -A && git commit -m '[best] <change>: <metric>=<value>' && git push
+# Otherwise:
+git add -A && git commit -m '<change>: <metric>=<value>' && git push
 ```
 
 Your commit history IS the experiment tracker. **Each commit = one run.** Commit EVERY run — including ones that didn't improve metrics. The audit trail matters more than a clean git log. Then go back to Step 0 for the next experiment.
 
 Examples:
-- `git commit -m 'baseline CNN: f1=0.42'`
-- `git commit -m 'd_model: 64->128: loss=0.03'`
-- `git commit -m 'add dropout 0.1: val_bpb=1.12 (no improvement)'`
-- `git commit -m 'pairwise multiplication: accuracy=100% params=108'`
+- `git commit -m '[best] baseline CNN: f1=0.42'`
+- `git commit -m 'd_model 64->128: loss=0.03'`
+- `git commit -m 'add dropout 0.1: val_bpb=1.12'`
+- `git commit -m '[best] HistGBM ensemble: macro_f1=0.80'`
 
 ### Step 4: Update insights (when you learn something)
 
@@ -107,17 +116,24 @@ Call the `save_enrichment` MCP tool with your cumulative findings so far.
 ```
 save_enrichment(
   project: "<project name>",
-  key_breakthrough: "Best result so far with specific numbers (1-2 sentences)",
-  lessons_learned: ["Each insight must include specific numbers and metrics", "Explain WHY something worked, not just WHAT happened", "Be actionable — someone reading this should know what to try next"],
-  dead_ends: ["Approach that didn't work, with numbers showing it failed"],
-  trajectory: "How your strategy evolved: started with X (metric=Y), then tried Z (metric=W), discovered that..."
+  key_breakthrough: "macro_f1 improved from 0.42 to 0.76 by adding a 39-bag LDA+GNB cascade on top of the HGBM ensemble.",
+  lessons_learned: [
+    "Bagging LDA+GNB models is the main lever — 39 bags pushed F1 from 0.75 to 0.76, and each bag only adds 0.15 MB.",
+    "The cascade only cares about rank ordering, not raw probabilities — proven via 5 invariance tests.",
+    "Binary classification (sigma70 vs sigma38) underperforms multiclass by 3 points — the other 4 classes help LDA discriminate."
+  ],
+  dead_ends: [
+    "Feature engineering (extended box, DNA shape, k-mers) — all added noise, no F1 gain.",
+    "SMOTE and class weighting — marginal or harmful, base model already handles class imbalance."
+  ],
+  trajectory: "Started with standalone HGBM at 0.42. Added LDA+GNB cascade to reach 0.75. Bagging pushed to 0.76 — now at the size-constrained optimum (39 bags, 16 MB)."
 )
 ```
 
-**Format requirements:**
-- `key_breakthrough`: Name the best run, its metric value, and the key architectural/methodological choice that made it work. Include comparison to baseline.
-- `lessons_learned`: 3-6 insights. Each must have specific numbers. Bad: "Larger models work better." Good: "d_ff=29 is the minimum for grokking — below this (d_ff=28), models reliably get stuck at 42% accuracy regardless of training duration."
-- `dead_ends`: Approaches tried and abandoned, with the metric that proved they failed.
-- `trajectory`: The narrative arc from first run to current best.
+**Format rules — these appear in the desktop UI, write for scannability:**
+- `key_breakthrough`: **One sentence.** State the metric improvement and what caused it. No Greek letters, no correlation coefficients, no parenthetical asides. Bad: "macro_f1=0.7645 (39-bag LDA+GNB cascade, 15.98 MB, ~200s). 50 experiments confirmed..." Good: "macro_f1 improved from 0.42 to 0.76 by adding a 39-bag LDA+GNB cascade."
+- `lessons_learned`: 3-5 short sentences. Each starts with the finding, then gives one supporting number. No ALL CAPS. No jargon-heavy compressed notation. Write like you're explaining to a smart colleague, not writing a paper abstract.
+- `dead_ends`: One sentence each. Name the approach and why it failed.
+- `trajectory`: 2-3 sentences. The story arc from baseline to current best.
 
 **Always save insights at least once before your time budget runs out**, even if your last few runs were routine. The desktop app displays these — an experiment with no insights looks broken.

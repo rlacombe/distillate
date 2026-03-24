@@ -19,28 +19,56 @@ from distillate import config
 
 log = logging.getLogger(__name__)
 
-CLOUD_URL = os.environ.get(
-    "DISTILLATE_CLOUD_URL",
-    "https://your-project.supabase.co/functions/v1",
-)
 CLOUD_ANON_KEY = os.environ.get("DISTILLATE_CLOUD_ANON_KEY", "")
+
+
+def _supabase_url() -> str:
+    """Supabase edge functions URL for email endpoints.
+
+    Uses DISTILLATE_SUPABASE_URL if set, otherwise derives from the
+    anon key's project ref (the JWT ``ref`` claim).  Falls back to
+    the legacy DISTILLATE_CLOUD_URL for backward compat.
+    """
+    explicit = os.environ.get("DISTILLATE_SUPABASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+
+    # Derive from anon key: base64-decode the payload to get the project ref
+    if CLOUD_ANON_KEY:
+        try:
+            import base64
+            payload = CLOUD_ANON_KEY.split(".")[1]
+            # Add padding
+            payload += "=" * (4 - len(payload) % 4)
+            data = json.loads(base64.urlsafe_b64decode(payload))
+            ref = data.get("ref", "")
+            if ref:
+                return f"https://{ref}.supabase.co/functions/v1"
+        except Exception:
+            pass
+
+    # Legacy fallback
+    return os.environ.get(
+        "DISTILLATE_CLOUD_URL",
+        "https://your-project.supabase.co/functions/v1",
+    )
 
 
 def _cloud_configured() -> bool:
     """Check if cloud email is configured."""
     email = os.environ.get("DISTILLATE_EMAIL", "").strip()
-    return bool(email and CLOUD_URL and "your-project" not in CLOUD_URL)
+    url = _supabase_url()
+    return bool(email and url and "your-project" not in url)
 
 
 def _post(endpoint: str, data: dict, auth_token: str = "") -> dict | None:
-    """POST JSON to a cloud endpoint."""
-    url = f"{CLOUD_URL}/{endpoint}"
+    """POST JSON to a Supabase edge function endpoint."""
+    url = f"{_supabase_url()}/{endpoint}"
     headers = {
         "Content-Type": "application/json",
         "apikey": CLOUD_ANON_KEY,
+        "Authorization": f"Bearer {auth_token or CLOUD_ANON_KEY}",
     }
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
 
     body = json.dumps(data).encode("utf-8")
     req = request.Request(url, data=body, headers=headers, method="POST")
@@ -90,7 +118,7 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
     for proj in state.projects.values():
         runs = proj.get("runs", {})
         kept = sum(1 for r in runs.values()
-                   if (r.get("decision") or r.get("status", "")) == "keep")
+                   if (r.get("decision") or "") == "best")
 
         # Find best metric
         best = ""
@@ -133,7 +161,7 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
         tz_name = "UTC"
 
     # User preferences
-    preferred_hour = int(os.environ.get("DISTILLATE_EMAIL_HOUR", "7"))
+    preferred_hour = int(os.environ.get("DISTILLATE_EMAIL_HOUR", "6"))
     daily_papers = os.environ.get("DISTILLATE_EMAIL_DAILY_PAPERS", "true").strip().lower() in ("true", "1", "yes")
     weekly_digest = os.environ.get("DISTILLATE_EMAIL_WEEKLY_DIGEST", "true").strip().lower() in ("true", "1", "yes")
     experiment_reports = os.environ.get("DISTILLATE_EMAIL_EXPERIMENT_REPORTS", "true").strip().lower() in ("true", "1", "yes")
@@ -244,7 +272,6 @@ def send_experiment_event(
             log.debug("Chart generation failed for %s", project_name, exc_info=True)
 
     data = {
-        "auth_token": auth_token,
         "event_type": "experiment_complete",
         "payload": {
             "project_name": project_name,
@@ -276,9 +303,9 @@ def prompt_for_email_cli(state) -> str | None:
         return None
 
     print()
-    print("  Want experiment reports and paper suggestions by email?")
-    print("  You'll get a summary when experiments finish,")
-    print("  plus a weekly digest of your reading.")
+    print("  Create an account to sync your library across devices")
+    print("  and get email updates: experiment reports, daily paper")
+    print("  suggestions, and a weekly reading digest.")
     print()
     email = input("  Email (Enter to skip): ").strip()
 

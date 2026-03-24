@@ -5,9 +5,8 @@ state.lock
 *.pdf
 *.rmdoc
 *.zip
-# Claude Code — track CLAUDE.md and skills, ignore memory/settings
+# Claude Code — track skills only, ignore CLAUDE.md (dev instructions) and memory/settings
 .claude/*
-!.claude/CLAUDE.md
 !.claude/skills/
 !.claude/skills/*/
 !.claude/skills/*/SKILL.md

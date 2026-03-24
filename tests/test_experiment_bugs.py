@@ -56,7 +56,7 @@ def _make_entry(run_id, status, ts, description="", results=None, **extra):
 class TestParseRunsJsonlDedup:
     """_parse_runs_jsonl should deduplicate by run name, last entry wins."""
 
-    def test_running_then_keep_resolves_to_keep(self, tmp_path):
+    def test_running_then_keep_resolves_to_completed(self, tmp_path):
         _write_runs_jsonl(tmp_path, [
             _make_entry("run_001", "running", "2026-03-14T00:00:00Z", "Baseline"),
             _make_entry("run_001", "keep", "2026-03-14T00:10:00Z", "Baseline",
@@ -65,9 +65,9 @@ class TestParseRunsJsonlDedup:
         from distillate.experiments import _parse_runs_jsonl
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 1
-        assert runs[0]["decision"] == "keep"
+        assert runs[0]["decision"] == "completed"
 
-    def test_running_then_discard_resolves_to_discard(self, tmp_path):
+    def test_running_then_discard_resolves_to_completed(self, tmp_path):
         _write_runs_jsonl(tmp_path, [
             _make_entry("run_001", "running", "2026-03-14T00:00:00Z"),
             _make_entry("run_001", "discard", "2026-03-14T00:10:00Z",
@@ -76,9 +76,9 @@ class TestParseRunsJsonlDedup:
         from distillate.experiments import _parse_runs_jsonl
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 1
-        assert runs[0]["decision"] == "discard"
+        assert runs[0]["decision"] == "completed"
 
-    def test_running_crash_discard_resolves_to_discard(self, tmp_path):
+    def test_running_crash_discard_resolves_to_completed(self, tmp_path):
         """Multiple entries per run (running -> crash -> discard): last wins."""
         _write_runs_jsonl(tmp_path, [
             _make_entry("run_002", "running", "2026-03-14T00:15:00Z"),
@@ -89,7 +89,7 @@ class TestParseRunsJsonlDedup:
         from distillate.experiments import _parse_runs_jsonl
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 1
-        assert runs[0]["decision"] == "discard"
+        assert runs[0]["decision"] == "completed"
 
     def test_orphaned_running_stays_running(self, tmp_path):
         """A running entry with no completion should stay as running."""
@@ -102,11 +102,11 @@ class TestParseRunsJsonlDedup:
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 2
         by_name = {r["name"]: r for r in runs}
-        assert by_name["run_001"]["decision"] == "keep"
+        assert by_name["run_001"]["decision"] == "completed"
         assert by_name["run_002"]["decision"] == "running"
 
     def test_many_runs_all_resolved(self, tmp_path):
-        """13 runs each with running+discard should produce 13 discard runs."""
+        """13 runs each with running+discard should produce 13 completed runs."""
         entries = []
         for i in range(1, 14):
             entries.append(_make_entry(f"run_{i:03d}", "running",
@@ -119,8 +119,8 @@ class TestParseRunsJsonlDedup:
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 13
         for run in runs:
-            assert run["decision"] == "discard", \
-                f"Run {run['name']} should be discard, got {run.get('decision')}"
+            assert run["decision"] == "completed", \
+                f"Run {run['name']} should be completed, got {run.get('decision')}"
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ class TestRescanMergeDecision:
         state.save()
         return state, proj_dir
 
-    def test_merge_updates_decision_from_running_to_discard(self, tmp_path, monkeypatch):
+    def test_merge_updates_decision_from_running_to_completed(self, tmp_path, monkeypatch):
         """When a run goes from running to discard, the merge should update it."""
         state, proj_dir = self._setup_state_with_running_run(tmp_path, monkeypatch)
 
@@ -176,8 +176,8 @@ class TestRescanMergeDecision:
                 run_001 = rdata
                 break
         assert run_001 is not None
-        assert run_001["decision"] == "discard", \
-            f"Scanned run should be discard, got {run_001.get('decision')}"
+        assert run_001["decision"] == "completed", \
+            f"Scanned run should be completed, got {run_001.get('decision')}"
 
     def test_merge_preserves_only_empty_fields(self, tmp_path, monkeypatch):
         """The old merge logic (if v and not erun.get(k)) fails to update decision.
@@ -199,7 +199,7 @@ class TestRescanMergeDecision:
             prefix="sr",
             name="run_001",
             started_at="2026-03-14T00:00:00Z",
-            decision="discard",
+            decision="completed",
             description="Baseline",
             results={"accuracy": 0.5},
         )
@@ -228,8 +228,8 @@ class TestRescanMergeDecision:
             elif v and not stored_run2.get(k):
                 stored_run2[k] = v
 
-        assert stored_run2["decision"] == "discard", \
-            "Fixed merge should update decision to 'discard'"
+        assert stored_run2["decision"] == "completed", \
+            "Fixed merge should update decision to 'completed'"
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ class TestCurrentRunSessionAwareness:
             rr = json.loads(line)
             rid = rr.get("id", "")
             status = rr.get("status", "")
-            if status in ("keep", "discard", "crash"):
+            if status in ("best", "completed", "keep", "discard", "crash"):
                 resolved_ids.add(rid)
             if status == "running" and rid not in resolved_ids and rr.get("description"):
                 current_run = rr["description"]
@@ -291,7 +291,7 @@ class TestCurrentRunSessionAwareness:
             rr = json.loads(line)
             rid = rr.get("id", "")
             status = rr.get("status", "")
-            if status in ("keep", "discard", "crash"):
+            if status in ("best", "completed", "keep", "discard", "crash"):
                 resolved_ids.add(rid)
             if status == "running" and rid not in resolved_ids and rr.get("description"):
                 current_run = rr["description"]
@@ -330,7 +330,7 @@ class TestExperimentTotalTime:
 
             if st == "running":
                 run_starts[rid] = dt
-            elif st in ("keep", "discard", "crash"):
+            elif st in ("best", "completed", "keep", "discard", "crash"):
                 if rid in run_starts:
                     pair_secs += (dt - run_starts[rid]).total_seconds()
                     del run_starts[rid]
@@ -414,7 +414,7 @@ class TestExperimentTotalTime:
             ts = entry.get("timestamp", "")
             if st == "running":
                 active_run_start = ts
-            elif st in ("keep", "discard", "crash"):
+            elif st in ("best", "completed", "keep", "discard", "crash"):
                 active_run_start = ""
         assert active_run_start == ""
 
@@ -430,7 +430,7 @@ class TestExperimentTotalTime:
             ts = entry.get("timestamp", "")
             if st == "running":
                 active_run_start = ts
-            elif st in ("keep", "discard", "crash"):
+            elif st in ("best", "completed", "keep", "discard", "crash"):
                 active_run_start = ""
         assert active_run_start == "2026-03-14T01:00:00Z"
 
@@ -456,7 +456,7 @@ class TestKeyMetricSelection:
                 prefix="sr", name=f"run_{i:03d}",
                 results={"param_count": 1000 + i},
                 started_at=f"2026-03-14T{i:02d}:00:00Z",
-                decision="discard",
+                decision="completed",
             )
             state.add_run("proj", run["id"], run)
 
@@ -466,7 +466,7 @@ class TestKeyMetricSelection:
                 prefix="sr", name=f"run_{i:03d}",
                 results={"param_count": 1000 + i, "test_accuracy": 0.8 + i * 0.01},
                 started_at=f"2026-03-14T{i:02d}:00:00Z",
-                decision="keep",
+                decision="best",
             )
             state.add_run("proj", run["id"], run)
 
@@ -604,7 +604,7 @@ class TestOrphanAutoClose:
         runs = [json.loads(line) for line in lines if line.strip()]
 
         resolved_ids = {r["id"] for r in runs
-                        if r.get("status") in ("keep", "discard", "crash")}
+                        if r.get("status") in ("best", "completed", "keep", "discard", "crash")}
         orphans = [r for r in runs
                    if r.get("status") == "running" and r.get("id") not in resolved_ids]
 
@@ -624,7 +624,7 @@ class TestOrphanAutoClose:
         runs = [json.loads(line) for line in lines if line.strip()]
 
         resolved_ids = {r["id"] for r in runs
-                        if r.get("status") in ("keep", "discard", "crash")}
+                        if r.get("status") in ("best", "completed", "keep", "discard", "crash")}
         orphans = [r for r in runs
                    if r.get("status") == "running" and r.get("id") not in resolved_ids]
 
@@ -643,7 +643,7 @@ class TestOrphanAutoClose:
         runs = [json.loads(line) for line in lines if line.strip()]
 
         resolved_ids = {r["id"] for r in runs
-                        if r.get("status") in ("keep", "discard", "crash")}
+                        if r.get("status") in ("best", "completed", "keep", "discard", "crash")}
         orphans = [r for r in runs
                    if r.get("status") == "running" and r.get("id") not in resolved_ids]
 
@@ -861,7 +861,7 @@ class TestChartExport:
                 prefix="sr", name=f"run_{i:03d}",
                 results={"accuracy": 0.7 + i * 0.05},
                 started_at=f"2026-03-14T{i:02d}:00:00Z",
-                decision="keep",
+                decision="best",
             )
             state.add_run("proj-1", run["id"], run)
         state.save()

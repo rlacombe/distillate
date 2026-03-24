@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld("nicolas", {
 // Expose xterm terminal bridge (Terminal instance lives in preload world, renders to shared DOM)
 let _term = null;
 let _fitAddon = null;
+let _writeBuffered = null;
+let _scrollCallback = null;
 
 contextBridge.exposeInMainWorld("xtermBridge", {
   init: (containerId) => {
@@ -106,20 +108,39 @@ contextBridge.exposeInMainWorld("xtermBridge", {
     _fitAddon = new FitAddon();
     _term.loadAddon(_fitAddon);
     _term.open(container);
+
+    // Strip mouse-mode enable/disable sequences from incoming data so xterm.js
+    // never enters mouse mode — mouse events stay as text selection, not PTY input.
+    const _origWrite = _term.write.bind(_term);
+    _term.write = (data) => {
+      if (typeof data === "string") {
+        data = data.replace(/\x1b\[\?(?:1000|1002|1003|1004|1005|1006|1015|1016)[hl]/g, "");
+      }
+      _origWrite(data);
+    };
+
     _fitAddon.fit();
 
-    // Buffer writes while the user has a text selection, so incoming
-    // terminal output doesn't auto-scroll and destroy the selection.
+    // Forward scroll wheel to tmux as SGR mouse sequences (button 64=up, 65=down).
+    // xterm.js can't scroll the alternate screen buffer itself — tmux owns the scrollback.
+    container.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_scrollCallback) {
+        const button = e.deltaY > 0 ? 65 : 64;
+        const lines = Math.max(1, Math.abs(Math.round(e.deltaY / 25)));
+        _scrollCallback(button, lines);
+      }
+    }, { capture: true, passive: false });
+
+    // Buffer writes while there's a text selection so incoming output
+    // doesn't auto-scroll and destroy it.  Flush when selection is cleared.
     let _writeBuffer = [];
-    let _hasSelection = false;
 
     _term.onSelectionChange(() => {
-      _hasSelection = _term.hasSelection();
-      if (!_hasSelection && _writeBuffer.length > 0) {
-        // Selection cleared — flush buffered data
-        const flushed = _writeBuffer.join("");
+      if (!_term.hasSelection() && _writeBuffer.length > 0) {
+        _term.write(_writeBuffer.join(""));
         _writeBuffer = [];
-        _term.write(flushed);
       }
     });
 
@@ -129,7 +150,7 @@ contextBridge.exposeInMainWorld("xtermBridge", {
       if ((e.metaKey || e.ctrlKey) && e.key === "c" && _term.hasSelection()) {
         clipboard.writeText(_term.getSelection());
         _term.clearSelection();
-        return false; // prevent sending to pty
+        return false;
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "v") {
         const text = clipboard.readText();
@@ -140,7 +161,7 @@ contextBridge.exposeInMainWorld("xtermBridge", {
     });
 
     _writeBuffered = (data) => {
-      if (_hasSelection) {
+      if (_term.hasSelection()) {
         _writeBuffer.push(data);
       } else {
         _term.write(data);
@@ -153,6 +174,7 @@ contextBridge.exposeInMainWorld("xtermBridge", {
   clear: () => { if (_term) _term.clear(); },
   fit: () => { if (_fitAddon) _fitAddon.fit(); },
   onData: (callback) => { if (_term) _term.onData(callback); },
+  onScroll: (callback) => { _scrollCallback = callback; },
   getDimensions: () => {
     if (!_term) return { cols: 120, rows: 30 };
     return { cols: _term.cols, rows: _term.rows };

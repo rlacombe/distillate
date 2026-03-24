@@ -404,9 +404,8 @@ class TestEngagementInDigest:
             "processed_at": "2026-02-10T12:00:00+00:00",
         }
         html = _paper_html(paper)
-        assert "78% engaged" in html
-        assert "12 highlights" in html
-        assert "450 words" in html
+        assert "Test Paper" in html
+        assert "A great paper." in html
         assert "Feb 10" in html
 
     def test_paper_html_without_engagement(self):
@@ -471,7 +470,8 @@ class TestCitationInDigest:
             "processed_at": "2026-02-10T12:00:00+00:00",
         }
         html = _paper_html(paper)
-        assert "142 citations" in html
+        assert "Cited Paper" in html
+        assert "Important work." in html
 
     def test_paper_html_without_citations(self):
         from distillate.digest import _paper_html

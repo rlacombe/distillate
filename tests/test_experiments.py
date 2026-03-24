@@ -2324,7 +2324,7 @@ class TestRunsJsonlParsing:
         assert len(runs) == 1
         run = runs[0]
         assert run["id"].startswith("sr-")
-        assert run["decision"] == "keep"
+        assert run["decision"] == "completed"
         assert run["status"] == "completed"
         assert run["source"] == "structured"
         assert run["hyperparameters"]["d_model"] == 128
@@ -2421,8 +2421,7 @@ class TestRunsJsonlParsing:
         from distillate.experiments import _parse_runs_jsonl
         runs = _parse_runs_jsonl(tmp_path)
         assert len(runs) == 5
-        assert sum(1 for r in runs if r["decision"] == "keep") == 3
-        assert sum(1 for r in runs if r["decision"] == "discard") == 2
+        assert sum(1 for r in runs if r["decision"] == "completed") == 5
 
 
 # ---------------------------------------------------------------------------
@@ -2560,9 +2559,10 @@ class TestIngestRuns:
             "results": {"val_bpb": 0.912},
         })
         (distillate_dir / "runs.jsonl").write_text(structured + "\n", encoding="utf-8")
+        # Hook event in a different minute so timestamp dedup doesn't skip it
         hook = json.dumps({
             "type": "run_completed",
-            "ts": "2026-03-09T04:00:05Z",
+            "ts": "2026-03-09T04:05:00Z",
             "command": "python3 train.py d_model=64 lr=0.001",
             "hyperparameters": {"d_model": 64, "lr": 0.001},
             "results": {"loss": 0.045},
@@ -2777,7 +2777,7 @@ class TestDecisionNotebook:
             "runs": {
                 "sr-aaa": {
                     "id": "sr-aaa", "name": "run_001", "status": "completed",
-                    "decision": "keep", "hypothesis": "Larger model",
+                    "decision": "best", "hypothesis": "Larger model",
                     "hyperparameters": {"d_model": 128},
                     "results": {"val_bpb": 0.912},
                     "agent_reasoning": "val_bpb improved significantly",
@@ -2787,7 +2787,7 @@ class TestDecisionNotebook:
                 },
                 "sr-bbb": {
                     "id": "sr-bbb", "name": "run_002", "status": "completed",
-                    "decision": "discard", "hypothesis": "Even larger model",
+                    "decision": "completed", "hypothesis": "Even larger model",
                     "hyperparameters": {"d_model": 256},
                     "results": {"val_bpb": 0.950},
                     "agent_reasoning": "val_bpb regressed, reverting",
@@ -2813,11 +2813,10 @@ class TestDecisionNotebook:
         project = self._make_project_with_decisions()
         md = generate_notebook(project)
         assert "Decision" in md
-        assert "✓ keep" in md
-        assert "✗ discard" in md
+        assert "★ best" in md
+        assert "✓ completed" in md
         assert "⚠ crash" in md
-        assert "**1** kept" in md
-        assert "**1** discarded" in md
+        assert "**1** best" in md
         assert "**1** crashed" in md
 
     def test_md_notebook_has_reasoning(self):
@@ -2832,11 +2831,10 @@ class TestDecisionNotebook:
         project = self._make_project_with_decisions()
         html = generate_html_notebook(project)
         assert "Decision" in html
-        assert "decision-keep" in html
-        assert "decision-discard" in html
+        assert "decision-best" in html
+        assert "decision-completed" in html
         assert "decision-crash" in html
-        assert "Kept" in html
-        assert "Discarded" in html
+        assert "Best" in html
 
     def test_html_notebook_has_reasoning_block(self):
         from distillate.experiments import generate_html_notebook
@@ -2852,9 +2850,9 @@ class TestDecisionNotebook:
         assert "Metric Progression" in html
         assert "<svg" in html
         assert "polyline" in html
-        # Green for keep, red for discard
+        # Green for best, gray for completed
         assert "#3fb950" in html
-        assert "#f85149" in html
+        assert "#555555" in html
 
     def test_no_decision_column_without_decisions(self):
         """Projects without decisions should use the original status column."""
@@ -2892,27 +2890,27 @@ class TestMetricChart:
     def test_render_chart_with_decisions(self):
         from distillate.experiments import _render_metric_chart
         runs = [
-            {"results": {"val_bpb": 0.95}, "decision": "keep"},
-            {"results": {"val_bpb": 0.91}, "decision": "keep"},
-            {"results": {"val_bpb": 0.93}, "decision": "discard"},
+            {"results": {"val_bpb": 0.95}, "decision": "best"},
+            {"results": {"val_bpb": 0.91}, "decision": "best"},
+            {"results": {"val_bpb": 0.93}, "decision": "completed"},
         ]
         svg = _render_metric_chart(runs)
         assert "<svg" in svg
         assert "polyline" in svg
-        assert "#3fb950" in svg  # green for keep
-        assert "#555555" in svg  # gray for discard
+        assert "#3fb950" in svg  # green for best
+        assert "#555555" in svg  # gray for completed
 
     def test_no_chart_with_single_run(self):
         from distillate.experiments import _render_metric_chart
-        runs = [{"results": {"val_bpb": 0.95}, "decision": "keep"}]
+        runs = [{"results": {"val_bpb": 0.95}, "decision": "best"}]
         svg = _render_metric_chart(runs)
         assert svg == ""
 
     def test_no_chart_without_metrics(self):
         from distillate.experiments import _render_metric_chart
         runs = [
-            {"results": {}, "decision": "keep"},
-            {"results": {}, "decision": "discard"},
+            {"results": {}, "decision": "best"},
+            {"results": {}, "decision": "completed"},
         ]
         svg = _render_metric_chart(runs)
         assert svg == ""
@@ -2997,7 +2995,7 @@ class TestScanProjectWithIngestion:
         runs = result["runs"]
         structured_runs = [r for r in runs.values() if r.get("source") == "structured"]
         assert len(structured_runs) == 1
-        assert structured_runs[0]["decision"] == "keep"
+        assert structured_runs[0]["decision"] == "completed"
 
     def test_scan_picks_up_events_jsonl(self, tmp_path):
         distillate_dir = tmp_path / ".distillate"
@@ -3131,14 +3129,14 @@ class TestStartRun:
         result = start_run(state=state, project="test-proj",
                            description="Baseline training")
         assert result["success"] is True
-        assert result["run_id"] == "run_001"
+        assert result["run_id"].startswith("xp-")
         assert "started_at" in result
         # Verify the jsonl file was created with correct content
         runs_jsonl = proj_dir / ".distillate" / "runs.jsonl"
         assert runs_jsonl.exists()
         entries = [json.loads(l) for l in runs_jsonl.read_text().splitlines() if l.strip()]
         assert len(entries) == 1
-        assert entries[0]["id"] == "run_001"
+        assert entries[0]["id"] == result["run_id"]
         assert entries[0]["status"] == "running"
         assert entries[0]["description"] == "Baseline training"
         assert entries[0]["$schema"] == "distillate/run/v1"
@@ -3147,15 +3145,16 @@ class TestStartRun:
         state, proj_dir = _make_state_with_path(tmp_path, monkeypatch)
         from distillate.experiment_tools import start_run
         r1 = start_run(state=state, project="test-proj", description="Run 1")
-        assert r1["run_id"] == "run_001"
+        assert r1["run_id"].startswith("xp-")
         r2 = start_run(state=state, project="test-proj", description="Run 2")
-        assert r2["run_id"] == "run_002"
+        assert r2["run_id"].startswith("xp-")
+        assert r1["run_id"] != r2["run_id"]
         # Verify both entries in the file
         runs_jsonl = proj_dir / ".distillate" / "runs.jsonl"
         entries = [json.loads(l) for l in runs_jsonl.read_text().splitlines() if l.strip()]
         assert len(entries) == 2
-        assert entries[0]["id"] == "run_001"
-        assert entries[1]["id"] == "run_002"
+        assert entries[0]["id"] == r1["run_id"]
+        assert entries[1]["id"] == r2["run_id"]
 
     def test_start_run_invalid_project(self, tmp_path, monkeypatch):
         state, _ = _make_state_with_path(tmp_path, monkeypatch)
@@ -3177,13 +3176,13 @@ class TestConcludeRun:
         )
         assert result["success"] is True
         assert result["run_id"] == "run_001"
-        assert result["status"] == "keep"
+        assert result["status"] == "best"
         # Verify both entries exist in the jsonl
         runs_jsonl = proj_dir / ".distillate" / "runs.jsonl"
         entries = [json.loads(l) for l in runs_jsonl.read_text().splitlines() if l.strip()]
         assert len(entries) == 2
         concluded = entries[1]
-        assert concluded["status"] == "keep"
+        assert concluded["status"] == "best"
         assert concluded["results"] == {"accuracy": 0.95}
         assert concluded["reasoning"] == "Good convergence"
         assert "completed_at" in concluded
@@ -3191,12 +3190,13 @@ class TestConcludeRun:
     def test_conclude_run_computes_duration(self, tmp_path, monkeypatch):
         state, proj_dir = _make_state_with_path(tmp_path, monkeypatch)
         from distillate.experiment_tools import start_run, conclude_run
-        start_run(state=state, project="test-proj", description="Timed run")
+        start_result = start_run(state=state, project="test-proj", description="Timed run")
+        run_id = start_result["run_id"]
         # The start and conclude happen almost instantly, so duration_seconds
         # should be 0 or a small integer (within the same second).
         result = conclude_run(
-            state=state, project="test-proj", run_id="run_001",
-            status="keep", results={"loss": 0.01}, reasoning="Fast run",
+            state=state, project="test-proj", run_id=run_id,
+            results={"loss": 0.01}, reasoning="Fast run",
         )
         assert result["success"] is True
         # Check the jsonl entry has duration_seconds

@@ -562,12 +562,12 @@ def _campaign(args: list[str]) -> None:
         stop_reason = campaign.get("stop_reason")
         if stop_reason:
             print(f"  Stopped:  {stop_reason}")
-        # Show best metric from kept runs
+        # Show best metric from non-crash runs
         runs = proj.get("runs", {})
         best_val = None
         best_name = None
         for run in runs.values():
-            if run.get("status") != "keep" and run.get("decision") != "keep":
+            if run.get("decision") == "crash" or run.get("status") == "failed":
                 continue
             for k, v in run.get("results", {}).items():
                 if isinstance(v, (int, float)):
@@ -741,11 +741,11 @@ def _goals(args: list[str]) -> None:
         print()
         return
 
-    # Gather best values from kept runs
+    # Gather best values from non-crash runs
     runs = proj.get("runs", {})
     best: dict[str, float] = {}
     for run in runs.values():
-        if run.get("status") != "keep" and run.get("decision") != "keep":
+        if run.get("decision") == "crash" or run.get("status") == "failed":
             continue
         for k, v in run.get("results", {}).items():
             if not isinstance(v, (int, float)):
@@ -833,10 +833,10 @@ def _show_experiment(args: list[str]) -> None:
 
     # --- Goals ---
     if goals:
-        # Gather best values from kept runs
+        # Gather best values from non-crash runs
         best: dict[str, float] = {}
         for run in runs.values():
-            if run.get("status") != "keep" and run.get("decision") != "keep":
+            if run.get("decision") == "crash" or run.get("status") == "failed":
                 continue
             for k, v in run.get("results", {}).items():
                 if not isinstance(v, (int, float)):
@@ -1037,10 +1037,12 @@ def _show_runs(args: list[str]) -> None:
         dur_str = f"{dur}m" if dur else ""
 
         # Decision coloring
-        if decision == "keep":
-            dec_str = "\033[1;32mkeep\033[0m"
-        elif decision == "discard":
-            dec_str = "\033[2mdiscard\033[0m"
+        if decision == "best":
+            dec_str = "\033[1;32mbest\033[0m"
+        elif decision == "completed":
+            dec_str = "\033[2mcompleted\033[0m"
+        elif decision == "crash":
+            dec_str = "\033[33mcrash\033[0m"
         else:
             dec_str = decision
 
@@ -1119,9 +1121,16 @@ def _open_notebook(args: list[str]) -> None:
     md_path = project_path / ".distillate" / "notebook.md"
     md_path.write_text(md_content, encoding="utf-8")
 
+    # Also write to Obsidian vault if configured
+    from distillate.obsidian import write_experiment_notebook, write_experiment_html_notebook
+    obs_md = write_experiment_notebook(proj, md_content)
+    obs_html = write_experiment_html_notebook(proj, html_content)
+
     print(f"\n  Generated notebooks for {_bold(proj_name)}:")
     print(f"    HTML: {html_path}")
     print(f"    MD:   {md_path}")
+    if obs_md:
+        print(f"    Obsidian: {obs_md}")
 
     # Open in browser
     try:
@@ -1499,7 +1508,7 @@ def _format_watch_event(event: dict) -> str | None:
         status = event.get("status", "?")
         metrics_str = ", ".join(f"{k}={v}" for k, v in results.items()
                                 if isinstance(v, (int, float)))
-        color = "\033[32m" if status == "keep" else "\033[33m"
+        color = "\033[32m" if status == "best" else "\033[33m"
         return f"  {color}[{ts}]\033[0m Run {run_id}: {metrics_str} [{status}]"
 
     if etype == "session_end":
@@ -1760,7 +1769,7 @@ def _compare_projects(args: list[str]) -> None:
 
         best: dict[str, float] = {}
         for run in proj.get("runs", {}).values():
-            if run.get("decision") != "keep" and run.get("status") != "keep":
+            if run.get("decision") == "crash" or run.get("status") == "failed":
                 continue
             for k, v in run.get("results", {}).items():
                 if isinstance(v, (int, float)):

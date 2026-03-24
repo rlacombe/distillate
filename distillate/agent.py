@@ -858,7 +858,8 @@ def _show_experiment_detail(state: State, cmd: str) -> None:
                 h = hypothesis[:40] + "..." if len(hypothesis) > 40 else hypothesis
                 parts.append(f'"{h}"')
 
-            lines.append(f"  \u2022 {' \u00b7 '.join(parts)}")
+            sep = ' \u00b7 '
+            lines.append(f"  \u2022 {sep.join(parts)}")
 
         if len(runs) > 10:
             lines.append(f"  [dim]... and {len(runs) - 10} more[/dim]")

@@ -80,7 +80,7 @@ from distillate.state import State, acquire_lock, release_lock
 log = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8742
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 def _find_ui_dir():
@@ -107,11 +107,20 @@ def _find_ui_dir():
 
 def _create_app():
     """Build the FastAPI application (lazy import so PyPI installs don't need fastapi)."""
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import JSONResponse
 
     from distillate import config
     config.ensure_loaded(required=False)
+
+    # Shared state (created before lifespan so it's available everywhere)
+    _state = State()
+    _last_reload = 0.0
+    _RELOAD_TTL = 2.0  # seconds — skip re-reading disk if recently loaded
+
+    _initial_sync_done = False
 
     app = FastAPI(title="Nicolas", docs_url=None, redoc_url=None)
 
@@ -119,17 +128,48 @@ def _create_app():
     from fastapi.middleware.cors import CORSMiddleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["http://127.0.0.1", "http://localhost"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # Shared state
-    _state = State()
+    def _cached_reload():
+        """Reload state from disk at most once per _RELOAD_TTL seconds."""
+        nonlocal _last_reload
+        import time
+        now = time.monotonic()
+        if now - _last_reload >= _RELOAD_TTL:
+            _state.reload()
+            _last_reload = now
+
+    def _require_local_auth(request: Request) -> None:
+        """Guard for sensitive endpoints: require auth token or Electron origin.
+
+        Accepts the request if ANY of these hold:
+        - x-auth-token header matches DISTILLATE_AUTH_TOKEN
+        - Origin is http://127.0.0.1 or http://localhost (Electron renderer)
+        - Referer starts with http://127.0.0.1 or http://localhost
+
+        Raises 403 otherwise.
+        """
+        token = request.headers.get("x-auth-token", "")
+        expected = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+        if expected and token == expected:
+            return
+
+        origin = request.headers.get("origin", "")
+        referer = request.headers.get("referer", "")
+        trusted = ("http://127.0.0.1", "http://localhost")
+        if any(origin.startswith(t) for t in trusted):
+            return
+        if any(referer.startswith(t) for t in trusted):
+            return
+
+        raise HTTPException(status_code=403, detail="Authentication required")
 
     def _get_project_or_404(project_id: str):
         """Reload state and look up a project, raising 404 if not found."""
-        _state.reload()
+        _cached_reload()
         proj = _state.find_project(project_id)
         if not proj:
             raise HTTPException(404, detail="not_found")
@@ -139,7 +179,7 @@ def _create_app():
     async def status():
         from importlib.metadata import version
         ver = version("distillate")
-        _state.reload()
+        _cached_reload()
         processed = _state.documents_with_status("processed")
         from distillate import config
         q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
@@ -150,18 +190,15 @@ def _create_app():
         projects = _state.projects
         if projects:
             total_runs = 0
-            runs_kept = 0
-            runs_discarded = 0
+            runs_best = 0
             active_sessions = 0
             session_details = []
             for proj in projects.values():
                 for run in proj.get("runs", {}).values():
                     total_runs += 1
                     decision = run.get("decision", "")
-                    if decision == "keep":
-                        runs_kept += 1
-                    elif decision == "discard":
-                        runs_discarded += 1
+                    if decision == "best":
+                        runs_best += 1
                     if run.get("status") == "running":
                         active_sessions += 1
                 # Launcher sessions
@@ -178,8 +215,7 @@ def _create_app():
                     "total_projects": len(projects),
                     "active_sessions": active_sessions + len(session_details),
                     "total_runs": total_runs,
-                    "runs_kept": runs_kept,
-                    "runs_discarded": runs_discarded,
+                    "runs_best": runs_best,
                 }
                 if session_details:
                     experiment_stats["sessions"] = session_details
@@ -194,6 +230,14 @@ def _create_app():
         }
         if experiment_stats:
             resp["experiments"] = experiment_stats
+
+        # One-shot migration toast — consumed once
+        from distillate.state import last_migration_message
+        if last_migration_message:
+            import distillate.state as _st
+            resp["migration_message"] = last_migration_message
+            _st.last_migration_message = None
+
         return JSONResponse(resp)
 
     @app.get("/connectors")
@@ -220,7 +264,7 @@ def _create_app():
             "label": "Updates",
             "service": "Email",
             "connected": bool(email),
-            "detail": "Connected" if email else None,
+            "detail": None,
             "setup": "email",
         })
 
@@ -248,6 +292,43 @@ def _create_app():
             })
 
         return JSONResponse({"ok": True, "connectors": connectors})
+
+    @app.get("/init")
+    async def init_bundle():
+        """Return status + experiments + papers + connectors in one call.
+
+        Replaces the four parallel fetches on app startup with a single
+        round-trip, cutting initial load latency.  After the first call,
+        triggers a background cloud sync (deferred to avoid racing with
+        the initial UI load).
+        """
+        nonlocal _initial_sync_done
+        import asyncio as _aio
+        status_resp, experiments_resp, papers_resp, connectors_resp = await _aio.gather(
+            status(),
+            list_experiments(),
+            list_papers(),
+            list_connectors(),
+        )
+        # Each returns a JSONResponse — extract the bodies
+        import json as _json
+        resp = JSONResponse({
+            "ok": True,
+            "status": _json.loads(status_resp.body),
+            "experiments": _json.loads(experiments_resp.body),
+            "papers": _json.loads(papers_resp.body),
+            "connectors": _json.loads(connectors_resp.body),
+        })
+
+        # Deferred cloud sync: run once after the UI has loaded
+        if not _initial_sync_done:
+            _initial_sync_done = True
+            from distillate.cloud_sync import cloud_sync_available, sync_state
+            if cloud_sync_available():
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(_executor, sync_state, _state)
+
+        return resp
 
     @app.get("/connectors/{connector_id}")
     async def connector_detail(connector_id: str):
@@ -933,7 +1014,7 @@ def _create_app():
                     sess["status"] = "completed"
                     stopped.append(tmux_name)
                 except Exception:
-                    pass
+                    log.debug("Failed to stop session %s", tmux_name, exc_info=True)
         if stopped:
             _state.save()
         return JSONResponse({"ok": True, "stopped": stopped})
@@ -998,7 +1079,13 @@ def _create_app():
                             for k, v in run_data.items():
                                 if k == "id":
                                     continue
-                                if k in ("decision", "status", "results",
+                                if k == "decision":
+                                    # Don't overwrite "best" with "completed"
+                                    # from backward-compat parsing of old
+                                    # runs.jsonl keep/discard entries
+                                    if v and erun.get(k) != "best":
+                                        erun[k] = v
+                                elif k in ("status", "results",
                                          "agent_reasoning", "description",
                                          "hypothesis", "reasoning"):
                                     # Always take latest value for mutable fields
@@ -1016,12 +1103,12 @@ def _create_app():
         finally:
             release_lock()
 
-        # Find best metric across all kept runs
+        # Find best metric across all non-crash runs
         best_metric = None
         updated_proj = _state.get_project(proj_id)
         if updated_proj:
             for run in updated_proj.get("runs", {}).values():
-                if run.get("decision") != "keep" and run.get("status") != "keep":
+                if run.get("decision") == "crash" or run.get("status") == "failed":
                     continue
                 for k, v in run.get("results", {}).items():
                     if isinstance(v, (int, float)):
@@ -1452,10 +1539,10 @@ def _create_app():
             if not proj:
                 continue
 
-            # Find best results across kept runs
+            # Find best results across non-crash runs
             best: dict[str, float] = {}
             for run in proj.get("runs", {}).values():
-                if run.get("decision") != "keep" and run.get("status") != "keep":
+                if run.get("decision") == "crash" or run.get("status") == "failed":
                     continue
                 for k, v in run.get("results", {}).items():
                     if isinstance(v, (int, float)):
@@ -1638,6 +1725,13 @@ def _create_app():
                                                 }
                                                 yield f"data: {json.dumps(completed_evt)}\n\n"
 
+                                                # Push updated state to cloud
+                                                from distillate.cloud_sync import cloud_sync_available, push_state
+                                                if cloud_sync_available():
+                                                    loop.run_in_executor(
+                                                        _executor, push_state, _state,
+                                                    )
+
                                             # Auto-continue if goals unmet
                                             _state.reload()
                                             fresh_proj = _state.get_project(proj_id)
@@ -1681,7 +1775,7 @@ def _create_app():
                                         yield f"data: {json.dumps(run_evt)}\n\n"
 
                                         # --- Goal checker ---
-                                        if run_data.get("status") == "keep" or run_data.get("decision") == "keep":
+                                        if run_data.get("status") in ("best", "completed", "keep") or run_data.get("decision") in ("best", "completed"):
                                             _state.reload()
                                             fresh_proj = _state.get_project(proj_id)
                                             if fresh_proj and fresh_proj.get("goals"):
@@ -1794,11 +1888,67 @@ def _create_app():
     from distillate.experiments import detect_primary_metric as _detect_primary_metric
     from distillate.experiments import infer_key_metric_name as _infer_key_metric_name
 
+    def _sort_runs_chronologically(proj: dict, runs: dict) -> list:
+        """Sort runs by runs.jsonl file order (true chronological).
+
+        The append order in runs.jsonl is the ground truth for when runs
+        happened. Timestamps can be wrong (midnight sessions, backfills).
+        Runs only in state.json (no runs.jsonl) are appended at the end
+        sorted by timestamp as fallback.
+        """
+        from pathlib import Path as _P
+
+        # Build file-order index from runs.jsonl
+        file_order: dict[str, int] = {}  # run_name → position
+        proj_path = proj.get("path", "")
+        if proj_path:
+            runs_file = _P(proj_path) / ".distillate" / "runs.jsonl"
+            if runs_file.exists():
+                try:
+                    pos = 0
+                    for line in runs_file.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        rid = entry.get("id", "")
+                        st = entry.get("status", "")
+                        # Use first terminal entry position for each run
+                        if rid and rid not in file_order and st in (
+                            "best", "completed", "keep", "discard", "crash",
+                        ):
+                            file_order[rid] = pos
+                            pos += 1
+                except OSError:
+                    pass
+
+        # Build name→file_position lookup
+        name_to_pos: dict[str, int] = {}
+        for sid, r in runs.items():
+            name = r.get("name", sid)
+            if name in file_order:
+                name_to_pos[sid] = file_order[name]
+
+        fallback_start = len(file_order)
+
+        def _sort_key(sid_run):
+            sid, r = sid_run
+            if sid in name_to_pos:
+                return (0, name_to_pos[sid], "")
+            # Fallback: timestamp sort for state-only runs
+            ts = r.get("started_at", "") or r.get("completed_at", "")
+            return (1, fallback_start, ts)
+
+        return [r for _, r in sorted(runs.items(), key=_sort_key)]
+
     @app.get("/experiments/list")
     async def list_experiments():
         from distillate.launcher import refresh_session_statuses
 
-        _state.reload()
+        _cached_reload()
 
         # Refresh tmux session statuses so the UI doesn't show stale "running"
         loop = asyncio.get_event_loop()
@@ -1808,16 +1958,7 @@ def _create_app():
         if changed:
             _state.save()
 
-        # Auto-rescan projects to pick up new runs from runs.jsonl
-        for pid, p in list(_state.projects.items()):
-            try:
-                await loop.run_in_executor(
-                    _executor, _rescan_project, pid, p,
-                )
-            except Exception:
-                pass
-
-        _state.reload()
+        _cached_reload()
         projects = _state.projects
         result = []
         for proj_id, proj in projects.items():
@@ -1850,10 +1991,9 @@ def _create_app():
                 "duration_minutes": proj.get("duration_minutes", 5),
                 "added_at": proj.get("added_at", ""),
                 "last_scanned_at": proj.get("last_scanned_at", ""),
-                "runs": [_run_summary_full(r, i + 1) for i, r in enumerate(sorted(
-                    runs.values(),
-                    key=lambda r: (_extract_run_number(r.get("name", "")), r.get("started_at", "")),
-                ))],
+                "runs": [_run_summary_full(r, i + 1) for i, r in enumerate(
+                    _sort_runs_chronologically(proj, runs),
+                )],
             }
             linked_papers = proj.get("linked_papers", [])
             if linked_papers:
@@ -1912,7 +2052,7 @@ def _create_app():
                             status = rr.get("status", "")
                             # Track completed runs so we skip stale
                             # "running" announcements
-                            if status in ("keep", "discard", "crash"):
+                            if status in ("best", "completed", "keep", "discard", "crash"):
                                 resolved_ids.add(rid)
                             # Surface what the agent is currently attempting
                             if (not found_current
@@ -1924,7 +2064,7 @@ def _create_app():
                                     "timestamp", "")
                                 found_current = True
                             if (not found_learning
-                                    and status == "keep"
+                                    and status in ("best", "completed", "keep")
                                     and rr.get("reasoning")):
                                 entry["latest_learning"] = rr["reasoning"]
                                 found_learning = True
@@ -1961,7 +2101,7 @@ def _create_app():
                             if st == "running":
                                 active_run_start = ts
                                 run_starts[rid] = dt
-                            elif st in ("keep", "discard", "crash"):
+                            elif st in ("best", "completed", "keep", "discard", "crash"):
                                 active_run_start = ""
                                 if rid in run_starts:
                                     pair_secs += (
@@ -2095,7 +2235,7 @@ def _create_app():
 
     @app.get("/papers")
     async def list_papers(status: str = None):
-        _state.reload()
+        _cached_reload()
         docs = _state.documents
         promoted_set = set(_state.promoted_papers)
         results = []
@@ -2338,8 +2478,9 @@ def _create_app():
         })
 
     @app.get("/state/export")
-    async def export_state():
+    async def export_state(request: Request):
         """Return current state as JSON for backup."""
+        _require_local_auth(request)
         from distillate.state import STATE_PATH
         if not STATE_PATH.exists():
             return JSONResponse({"ok": False, "reason": "no_state"}, status_code=404)
@@ -2347,8 +2488,9 @@ def _create_app():
         return JSONResponse({"ok": True, "state": data})
 
     @app.post("/state/import")
-    async def import_state(body: dict):
+    async def import_state(request: Request, body: dict):
         """Validate and import a state backup."""
+        _require_local_auth(request)
         import shutil
         from distillate.state import STATE_PATH, _run_migrations
 

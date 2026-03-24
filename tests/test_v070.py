@@ -161,13 +161,13 @@ class TestSchemaVersioning:
         }
         STATE_PATH.write_text(json.dumps(legacy))
         s = State()
-        assert s.schema_version == 1
+        assert s.schema_version == 2  # 0 → 1 → 2
         assert s.zotero_library_version == 42
 
     def test_migration_is_idempotent(self, isolate_state):
-        from distillate.state import STATE_PATH, State
+        from distillate.state import STATE_PATH, State, _CURRENT_SCHEMA_VERSION
         data = {
-            "schema_version": 1,
+            "schema_version": _CURRENT_SCHEMA_VERSION,
             "zotero_library_version": 10,
             "last_poll_timestamp": None,
             "documents": {},
@@ -175,7 +175,7 @@ class TestSchemaVersioning:
         }
         STATE_PATH.write_text(json.dumps(data))
         s = State()
-        assert s.schema_version == 1
+        assert s.schema_version == _CURRENT_SCHEMA_VERSION
         assert s.zotero_library_version == 10
 
     def test_future_version_loads_safely(self, isolate_state):
@@ -196,7 +196,240 @@ class TestSchemaVersioning:
         s.zotero_library_version = 99
         s.save()
         raw = json.loads(STATE_PATH.read_text())
-        assert raw["schema_version"] == 1
+        assert raw["schema_version"] == 2
+
+
+# ── Migration v1→v2: best/completed decisions ──────────────────────────
+
+
+def _make_v1_project(tmp_path, name, runs_jsonl_entries, state_runs):
+    """Helper: create a project dir with runs.jsonl and state runs dict."""
+    proj_dir = tmp_path / name
+    dist_dir = proj_dir / ".distillate"
+    dist_dir.mkdir(parents=True)
+    if runs_jsonl_entries:
+        lines = [json.dumps(e) for e in runs_jsonl_entries]
+        (dist_dir / "runs.jsonl").write_text("\n".join(lines) + "\n")
+    return {
+        "name": name,
+        "path": str(proj_dir),
+        "runs": state_runs,
+        "goals": [],
+    }
+
+
+class TestMigrationV1ToV2:
+    """Test _migrate_1_to_2: keep/discard → best/completed."""
+
+    def test_higher_is_better_frontier(self, tmp_path):
+        """Runs with increasing accuracy: each improvement is 'best'."""
+        from distillate.state import _migrate_1_to_2
+
+        jsonl = [
+            {"$schema": "distillate/run/v1", "id": "r1", "status": "keep",
+             "timestamp": "2026-01-01T01:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r2", "status": "keep",
+             "timestamp": "2026-01-01T02:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r3", "status": "keep",
+             "timestamp": "2026-01-01T03:00:00Z"},
+        ]
+        runs = {
+            "sr-1": {"name": "r1", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"accuracy": 0.70}},
+            "sr-2": {"name": "r2", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T02:00:00Z",
+                     "results": {"accuracy": 0.85}},
+            "sr-3": {"name": "r3", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T03:00:00Z",
+                     "results": {"accuracy": 0.80}},
+        }
+        proj = _make_v1_project(tmp_path, "test-acc", jsonl, runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+
+        assert result["schema_version"] == 2
+        r = result["projects"]["p1"]["runs"]
+        assert r["sr-1"]["decision"] == "best"   # first run → frontier
+        assert r["sr-2"]["decision"] == "best"   # 0.85 > 0.70
+        assert r["sr-3"]["decision"] == "completed"  # 0.80 < 0.85
+
+    def test_lower_is_better_frontier(self, tmp_path):
+        """param_count: lower wins. Frontier only advances downward."""
+        from distillate.state import _migrate_1_to_2
+
+        jsonl = [
+            {"$schema": "distillate/run/v1", "id": "r1", "status": "keep",
+             "timestamp": "2026-01-01T01:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r2", "status": "keep",
+             "timestamp": "2026-01-01T02:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r3", "status": "keep",
+             "timestamp": "2026-01-01T03:00:00Z"},
+        ]
+        runs = {
+            "sr-1": {"name": "r1", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"param_count": 5000}},
+            "sr-2": {"name": "r2", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T02:00:00Z",
+                     "results": {"param_count": 3000}},
+            "sr-3": {"name": "r3", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T03:00:00Z",
+                     "results": {"param_count": 4000}},
+        }
+        proj = _make_v1_project(tmp_path, "test-params", jsonl, runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+
+        r = result["projects"]["p1"]["runs"]
+        assert r["sr-1"]["decision"] == "best"       # first → frontier at 5000
+        assert r["sr-2"]["decision"] == "best"       # 3000 < 5000
+        assert r["sr-3"]["decision"] == "completed"  # 4000 > 3000
+
+    def test_discards_never_best_but_track_frontier(self, tmp_path):
+        """Old discards → completed always, but they track the frontier
+        AFTER a keep establishes it.  Early discards before any keep
+        don't poison the frontier (the tiny-matmul run_120 bug)."""
+        from distillate.state import _migrate_1_to_2
+
+        jsonl = [
+            {"$schema": "distillate/run/v1", "id": "r1", "status": "discard",
+             "timestamp": "2026-01-01T01:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r2", "status": "keep",
+             "timestamp": "2026-01-01T02:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r3", "status": "discard",
+             "timestamp": "2026-01-01T03:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r4", "status": "keep",
+             "timestamp": "2026-01-01T04:00:00Z"},
+        ]
+        runs = {
+            "sr-1": {"name": "r1", "decision": "completed", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"param_count": 100}},  # early discard, ignored
+            "sr-2": {"name": "r2", "decision": "completed", "status": "completed",
+                     "started_at": "2026-01-01T02:00:00Z",
+                     "results": {"param_count": 5000}},  # first keep → best
+            "sr-3": {"name": "r3", "decision": "completed", "status": "completed",
+                     "started_at": "2026-01-01T03:00:00Z",
+                     "results": {"param_count": 3000}},  # discard after keep, tracks frontier
+            "sr-4": {"name": "r4", "decision": "completed", "status": "completed",
+                     "started_at": "2026-01-01T04:00:00Z",
+                     "results": {"param_count": 2000}},  # keep, < 3000 (discard-tracked) → best
+        }
+        proj = _make_v1_project(tmp_path, "test-discard", jsonl, runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+
+        r = result["projects"]["p1"]["runs"]
+        assert r["sr-1"]["decision"] == "completed"  # early discard → no frontier effect
+        assert r["sr-2"]["decision"] == "best"       # first keep → frontier at 5000
+        assert r["sr-3"]["decision"] == "completed"  # discard, but tracks frontier to 3000
+        assert r["sr-4"]["decision"] == "best"       # 2000 < 3000 (discard-tracked)
+
+    def test_crash_runs_stay_crash(self, tmp_path):
+        from distillate.state import _migrate_1_to_2
+
+        runs = {
+            "sr-1": {"name": "r1", "decision": "crash", "status": "failed",
+                     "started_at": "2026-01-01T01:00:00Z", "results": {}},
+        }
+        proj = _make_v1_project(tmp_path, "test-crash", [], runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+        assert result["projects"]["p1"]["runs"]["sr-1"]["decision"] == "crash"
+
+    def test_project_without_runs_jsonl(self, tmp_path):
+        """Projects with no runs.jsonl (e.g. arxiv-recommender):
+        all runs → completed since no original status data exists."""
+        from distillate.state import _migrate_1_to_2
+
+        runs = {
+            "sr-1": {"name": "r1", "decision": "completed", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"accuracy": 0.90}},
+        }
+        # No runs.jsonl on disk — path doesn't have .distillate/runs.jsonl
+        proj_dir = tmp_path / "no-jsonl"
+        proj_dir.mkdir()
+        proj = {
+            "name": "no-jsonl", "path": str(proj_dir),
+            "runs": runs, "goals": [],
+        }
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+
+        # Without runs.jsonl we can't tell keep from discard,
+        # but we can still compute frontier from state data
+        r = result["projects"]["p1"]["runs"]
+        assert r["sr-1"]["decision"] == "best"  # first run with metric
+
+    def test_idempotent_rerun(self, tmp_path):
+        """Running migration twice produces the same result."""
+        from distillate.state import _migrate_1_to_2
+
+        jsonl = [
+            {"$schema": "distillate/run/v1", "id": "r1", "status": "keep",
+             "timestamp": "2026-01-01T01:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "r2", "status": "keep",
+             "timestamp": "2026-01-01T02:00:00Z"},
+        ]
+        runs = {
+            "sr-1": {"name": "r1", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"f1": 0.50}},
+            "sr-2": {"name": "r2", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T02:00:00Z",
+                     "results": {"f1": 0.70}},
+        }
+        proj = _make_v1_project(tmp_path, "test-idem", jsonl, runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+
+        first = _migrate_1_to_2(data)
+        # Reset version to force re-run
+        first["schema_version"] = 1
+        second = _migrate_1_to_2(first)
+
+        r1 = first["projects"]["p1"]["runs"]
+        r2 = second["projects"]["p1"]["runs"]
+        for rid in r1:
+            assert r1[rid]["decision"] == r2[rid]["decision"], \
+                f"Run {rid}: {r1[rid]['decision']} != {r2[rid]['decision']} on re-run"
+
+    def test_empty_project_no_crash(self, tmp_path):
+        """Projects with zero runs don't crash the migration."""
+        from distillate.state import _migrate_1_to_2
+
+        proj = {"name": "empty", "path": str(tmp_path), "runs": {}, "goals": []}
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+        assert result["schema_version"] == 2
+
+    def test_run_number_sort_tiebreak(self, tmp_path):
+        """Runs with same timestamp sort by run number, not name."""
+        from distillate.state import _migrate_1_to_2
+
+        # Two runs at same timestamp: run_002 should sort after run_001
+        jsonl = [
+            {"$schema": "distillate/run/v1", "id": "run_001", "status": "keep",
+             "timestamp": "2026-01-01T01:00:00Z"},
+            {"$schema": "distillate/run/v1", "id": "run_002", "status": "keep",
+             "timestamp": "2026-01-01T01:00:00Z"},
+        ]
+        runs = {
+            "sr-1": {"name": "run_001", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"accuracy": 0.90}},
+            "sr-2": {"name": "run_002", "decision": "keep", "status": "completed",
+                     "started_at": "2026-01-01T01:00:00Z",
+                     "results": {"accuracy": 0.95}},
+        }
+        proj = _make_v1_project(tmp_path, "test-tiebreak", jsonl, runs)
+        data = {"schema_version": 1, "projects": {"p1": proj}}
+        result = _migrate_1_to_2(data)
+
+        r = result["projects"]["p1"]["runs"]
+        assert r["sr-1"]["decision"] == "best"  # run_001 first
+        assert r["sr-2"]["decision"] == "best"  # 0.95 > 0.90
 
 
 # ── Task 4: S2 TLDR fallback ────────────────────────────────────────────

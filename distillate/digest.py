@@ -318,22 +318,9 @@ def _tag_pills_html(tags: list, max_tags: int = 3) -> str:
     return " ".join(pills)
 
 
-def _reading_stats_line(papers: list, label: str) -> str:
-    """Render a compact stats line like 'Week: 3 papers · 65 pages · 3,830 h/l words'."""
-    count = len(papers)
-    total_pages = sum(d.get("page_count", 0) for d in papers)
-    words = sum(d.get("highlight_word_count", 0) for d in papers)
-
-    parts = [f"{label}: {count} paper{'s' if count != 1 else ''}"]
-    if total_pages:
-        parts.append(f"{total_pages:,} pages")
-    if words:
-        parts.append(f"{words:,} h/l words")
-    return " \u00b7 ".join(parts)
-
 
 def _reading_stats_html(state: State) -> str:
-    """Render reading stats footer with week and month lines."""
+    """Render a single-line reading stats summary."""
     now = datetime.now(timezone.utc)
     week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
     month_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
@@ -341,13 +328,25 @@ def _reading_stats_html(state: State) -> str:
     week_papers = state.documents_processed_since(week_ago.isoformat())
     month_papers = state.documents_processed_since(month_ago.isoformat())
 
-    week_line = _reading_stats_line(week_papers, "Week")
-    month_line = _reading_stats_line(month_papers, "Month")
+    # Show week stats if any, otherwise just month
+    if week_papers:
+        count = len(week_papers)
+        pages = sum(d.get("page_count", 0) for d in week_papers)
+        parts = [f"{count} paper{'s' if count != 1 else ''} this week"]
+        if pages:
+            parts.append(f"{pages:,} pages")
+        line = " · ".join(parts)
+    elif month_papers:
+        count = len(month_papers)
+        pages = sum(d.get("page_count", 0) for d in month_papers)
+        parts = [f"{count} paper{'s' if count != 1 else ''} this month"]
+        if pages:
+            parts.append(f"{pages:,} pages")
+        line = " · ".join(parts)
+    else:
+        return ""
 
-    return (
-        f'<p style="color:#999;font-size:13px;margin:24px 0 0 0;">{week_line}</p>'
-        f'<p style="color:#999;font-size:13px;margin:0;">{month_line}</p>'
-    )
+    return f'<p style="color:#999;font-size:13px;margin:24px 0 0 0;">{line}</p>'
 
 
 def _recent_topic_tags(state: State, limit: int = 5) -> list:
@@ -361,48 +360,6 @@ def _recent_topic_tags(state: State, limit: int = 5) -> list:
     # Sort by frequency, return top tags
     return [t for t, _ in sorted(tag_counts.items(), key=lambda x: -x[1])][:limit]
 
-
-def _queue_health_html(state: State) -> str:
-    """Render queue health snapshot for the suggest email."""
-    now = datetime.now(timezone.utc)
-    week_ago = (now - timedelta(days=7)).isoformat()
-
-    _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
-    queue = state.documents_with_status(_q_status)
-    total = len(queue)
-
-    oldest_days = 0
-    if queue:
-        oldest_uploaded = min(d.get("uploaded_at", "") for d in queue)
-        if oldest_uploaded:
-            try:
-                oldest_dt = datetime.fromisoformat(oldest_uploaded)
-                oldest_days = (now - oldest_dt).days
-            except (ValueError, TypeError):
-                pass
-
-    added_this_week = sum(
-        1 for d in state.documents.values()
-        if (d.get("uploaded_at") or "") >= week_ago
-        and d.get("status") in ("on_remarkable", "tracked", "processed")
-    )
-    processed_this_week = len(state.documents_processed_since(week_ago))
-
-    awaiting = len(state.documents_with_status("awaiting_pdf"))
-    awaiting_html = (
-        f' &middot; {awaiting} missing PDF{"s" if awaiting != 1 else ""}'
-        if awaiting else ""
-    )
-
-    oldest_html = f" &middot; oldest {oldest_days}d" if total else ""
-
-    return (
-        f'<p style="color:#999;font-size:13px;margin:0;">'
-        f'Queue: {total} waiting'
-        f'{oldest_html}'
-        f' &middot; +{added_this_week}/-{processed_this_week} this week'
-        f'{awaiting_html}</p>'
-    )
 
 
 def _trending_html(papers: list) -> str:
@@ -497,6 +454,37 @@ def fetch_pending_from_gist() -> dict | None:
     return None
 
 
+def send_scheduled() -> None:
+    """Called hourly by cron. Sends emails only when it's the right local hour.
+
+    Checks DIGEST_TIMEZONE (default America/Los_Angeles) and DIGEST_HOUR
+    (default 6). Sends daily suggestion every day at that hour, and weekly
+    digest on DIGEST_DAY (default monday).
+    """
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(config.DIGEST_TIMEZONE)
+    except Exception:
+        log.error("Invalid DIGEST_TIMEZONE: %s", config.DIGEST_TIMEZONE)
+        return
+
+    local_now = datetime.now(tz)
+    if local_now.hour != config.DIGEST_HOUR:
+        return
+
+    # Weekly digest on the configured day
+    if local_now.strftime("%A").lower() == config.DIGEST_DAY:
+        log.info("Scheduled: sending weekly digest (%s, %02d:00 %s)",
+                 config.DIGEST_DAY, config.DIGEST_HOUR, config.DIGEST_TIMEZONE)
+        send_weekly_digest()
+
+    # Daily suggestion every day
+    log.info("Scheduled: sending daily suggestion (%02d:00 %s)",
+             config.DIGEST_HOUR, config.DIGEST_TIMEZONE)
+    send_suggestion()
+
+
 def send_weekly_digest(days: int = 7) -> None:
     """Compile and send a digest of papers processed in the last N days."""
     config.setup_logging()
@@ -505,15 +493,19 @@ def send_weekly_digest(days: int = 7) -> None:
     _sync_tags(state)
 
     now = datetime.now(timezone.utc)
-    since = (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)).isoformat()
-    papers = state.documents_processed_since(since)
+    week_since = (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)).isoformat()
+    week_papers = state.documents_processed_since(week_since)
 
-    if not papers:
-        print(f"No papers processed in the last {days} days — digest not sent.")
+    # Fall back to 30-day window if no papers this week
+    month_since = (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)).isoformat()
+    month_papers = state.documents_processed_since(month_since)
+
+    if not week_papers and not month_papers and not state.projects:
+        print("No papers or experiments to report — digest not sent.")
         return
 
     subject = _build_subject()
-    body = _build_body(papers, state)
+    body = _build_body(week_papers, month_papers, state)
     _send_email(subject, body)
 
 
@@ -546,14 +538,9 @@ def _paper_html(p, index: int = 0):
     title = p.get("title", "Untitled")
     summary = p.get("summary", "")
     url = _paper_url(p)
-    highlight_count = p.get("highlight_count", 0)
-    engagement = p.get("engagement", 0)
-    highlight_word_count = p.get("highlight_word_count", 0)
     processed_at = p.get("processed_at", "")
 
-    # Title links to web URL (works on mobile), Obsidian link as secondary
-    from distillate import obsidian
-    citekey = p.get("metadata", {}).get("citekey", "")
+    # Title links to web URL (works on mobile)
     if url:
         title_html = (
             f'<a href="{url}" style="color:inherit;text-decoration:none;">'
@@ -561,12 +548,6 @@ def _paper_html(p, index: int = 0):
         )
     else:
         title_html = f"<strong>{title}</strong>"
-    obsidian_uri = obsidian.get_obsidian_uri(title, citekey=citekey)
-    obsidian_html = (
-        f' <a href="{obsidian_uri}" style="color:#6366f1;font-size:11px;text-decoration:none;">'
-        f'Open in Obsidian</a>'
-        if obsidian_uri else ""
-    )
 
     # Date read (e.g. "Feb 10")
     date_html = ""
@@ -580,63 +561,162 @@ def _paper_html(p, index: int = 0):
         except (ValueError, TypeError):
             pass
 
-    citation_count = p.get("metadata", {}).get("citation_count", 0)
-
-    # Stats badge: engagement + highlights + word count + citations
-    stats_parts = []
-    if engagement:
-        stats_parts.append(f"{engagement}% engaged")
-    if highlight_count:
-        stats_parts.append(
-            f'{highlight_count} highlight{"s" if highlight_count != 1 else ""}'
-        )
-    if highlight_word_count:
-        stats_parts.append(f"{highlight_word_count} words")
-    if citation_count:
-        stats_parts.append(f"{citation_count:,} citations")
-    github_repo = p.get("metadata", {}).get("github_repo", "")
-    if github_repo:
-        stars = p.get("metadata", {}).get("github_stars")
-        star_str = f" \u2605{stars:,}" if stars else ""
-        stats_parts.append(f'<a href="{github_repo}" style="color:#999;">GitHub{star_str}</a>')
-    stats_html = ""
-    if stats_parts:
-        stats_html = (
-            f' <span style="color:#999;font-size:12px;">'
-            f'({", ".join(stats_parts)})</span>'
-        )
-
-    summary_html = f" &mdash; {summary}" if summary else ""
-
     index_html = (
         f'<span style="color:#999;">[{index}]</span> '
         if index else ""
     )
 
+    # Second line: summary in gray
+    summary_html = ""
+    if summary:
+        summary_html = (
+            f'<br><span style="color:#888;font-size:13px;font-weight:normal;">'
+            f'{summary}</span>'
+        )
+
     return (
-        f"<li style='margin-bottom: 14px;'>"
-        f"{index_html}{title_html}{date_html}{obsidian_html}{stats_html}{summary_html}"
+        f"<li style='margin-bottom:14px;line-height:1.4;'>"
+        f"{index_html}{title_html}{date_html}"
+        f"{summary_html}"
         f"</li>"
     )
 
 
-def _build_body(papers, state: State):
-    count = len(papers)
+def _experiments_html(state: State) -> str:
+    """Render experiment summary: featured (with insights) + compact 'also ran' line."""
+    from pathlib import Path
+    from distillate.experiments import load_enrichment_cache
+
+    if not state.projects:
+        return ""
+
+    featured = []   # (name, run_count, kept, is_running, insight)
+    also_ran = []   # (name, run_count)
+
+    for pid, proj in state.projects.items():
+        runs = proj.get("runs", {})
+        if not runs:
+            continue
+        name = proj.get("name", pid)
+        run_count = len(runs)
+        kept = sum(1 for r in runs.values()
+                   if isinstance(r, dict) and (r.get("decision") or "") == "best")
+
+        sessions = proj.get("sessions", {})
+        is_running = any(s.get("status") == "running" for s in sessions.values())
+
+        # Try to load insight
+        insight = ""
+        project_path = Path(proj.get("path", ""))
+        if project_path.exists():
+            try:
+                cache = load_enrichment_cache(project_path)
+                enr = cache.get("enrichment", cache)
+                breakthrough = enr.get("project", {}).get("key_breakthrough", "")
+                if breakthrough:
+                    insight = re.split(r'(?<=[.!?])\s', breakthrough, maxsplit=1)[0]
+            except Exception:
+                log.debug("Failed to load enrichment cache for %s", name, exc_info=True)
+
+        if insight or is_running:
+            featured.append((name, run_count, kept, is_running, insight))
+        else:
+            also_ran.append((name, run_count))
+
+    if not featured and not also_ran:
+        return ""
+
     lines = [
-        f"<h2 style='font-size:18px;font-weight:600;margin:0 0 16px;'>Paper{'s' if count != 1 else ''} I read this week</h2>",
-        "<ul style='padding-left:18px;'>",
+        '<h2 style="font-size:18px;font-weight:600;margin:24px 0 16px;">Experiments</h2>',
     ]
 
-    for p in sorted(papers, key=lambda d: d.get("processed_at", ""), reverse=True):
-        idx = state.index_of(p.get("zotero_item_key", ""))
-        lines.append(_paper_html(p, index=idx))
+    for name, run_count, kept, is_running, insight in featured:
+        status_html = (
+            ' <span style="color:#059669;font-size:12px;">running</span>'
+            if is_running else ""
+        )
+        lines.append(
+            f'<div style="margin-bottom:16px;">'
+            f'<strong>{name}</strong>{status_html}'
+            f'<br><span style="color:#666;font-size:13px;">'
+            f'{run_count} run{"s" if run_count != 1 else ""}'
+            f'{f" · {kept} kept" if kept else ""}'
+            f'</span>'
+        )
+        if insight:
+            lines.append(
+                f'<br><span style="color:#666;font-size:13px;font-style:italic;">'
+                f'{insight}</span>'
+            )
+        lines.append('</div>')
 
-    lines.append("</ul>")
+    if also_ran:
+        parts = [f"{name} · {rc} runs" for name, rc in also_ran]
+        lines.append(
+            f'<p style="color:#999;font-size:13px;margin:0;">'
+            f'Also ran: {" — ".join(parts)}</p>'
+        )
+
+    return "\n".join(lines)
+
+
+def _build_body(week_papers, month_papers, state: State):
+    lines = []
+
+    if week_papers:
+        count = len(week_papers)
+        lines.append(
+            f"<h2 style='font-size:18px;font-weight:600;margin:0 0 16px;'>"
+            f"Paper{'s' if count != 1 else ''} I read this week</h2>"
+        )
+        lines.append("<ul style='padding-left:18px;'>")
+        for p in sorted(week_papers, key=lambda d: d.get("processed_at", ""), reverse=True):
+            idx = state.index_of(p.get("zotero_item_key", ""))
+            lines.append(_paper_html(p, index=idx))
+        lines.append("</ul>")
+    else:
+        lines.append(
+            '<h2 style="font-size:18px;font-weight:600;margin:0 0 8px;">Quiet week</h2>'
+        )
+        # Suggest 3 papers from the queue instead of dumping month history
+        _q_status = "tracked" if config.is_zotero_reader() else "on_remarkable"
+        queue = state.documents_with_status(_q_status)
+        if queue:
+            # Pick 3 most recently added
+            picks = sorted(queue, key=lambda d: d.get("uploaded_at", ""), reverse=True)[:3]
+            lines.append(
+                '<p style="color:#666;font-size:14px;margin:0 0 16px;">'
+                'A few papers waiting in your queue:</p>'
+            )
+            lines.append("<ul style='padding-left:18px;'>")
+            for p in picks:
+                idx = state.index_of(p.get("zotero_item_key", ""))
+                title = p.get("title", "Untitled")
+                url = _paper_url(p)
+                title_html = (
+                    f'<a href="{url}" style="color:inherit;text-decoration:none;">'
+                    f'<strong>{title}</strong></a>'
+                    if url else f"<strong>{title}</strong>"
+                )
+                idx_html = f'<span style="color:#999;">[{idx}]</span> ' if idx else ""
+                lines.append(
+                    f"<li style='margin-bottom:10px;line-height:1.4;'>"
+                    f"{idx_html}{title_html}</li>"
+                )
+            lines.append("</ul>")
+        else:
+            lines.append(
+                '<p style="color:#666;font-size:14px;margin:0 0 16px;">'
+                'No papers read recently.</p>'
+            )
+
     lines.append(_reading_stats_html(state))
-    lines.append(_queue_health_html(state))
-    trending = _fetch_trending_for_email(state, limit=3)
-    if trending:
-        lines.append(_trending_html(trending))
+
+    # Experiments section
+    exp_html = _experiments_html(state)
+    if exp_html:
+        lines.append(exp_html)
+
     return _wrap_email("\n".join(lines))
 
 
@@ -848,7 +928,6 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
 
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
-    lines.append(_queue_health_html(state))
     trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))
@@ -887,7 +966,6 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
 
     lines.append("</ul>")
     lines.append(_reading_stats_html(state))
-    lines.append(_queue_health_html(state))
     trending = _fetch_trending_for_email(state, limit=3)
     if trending:
         lines.append(_trending_html(trending))

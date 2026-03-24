@@ -35,11 +35,11 @@ The user provides an experiment name or project ID (e.g. "tiny-matmul").
    - **Dead ends**: approaches tried and abandoned
    - **Trajectory**: how the agent's strategy evolved
 
-6. **Save enrichment** — call `mcp__distillate__save_enrichment` with the project name and structured insights:
-   - `key_breakthrough`: the single most impactful discovery
-   - `lessons_learned`: list of 3-5 actionable insights
-   - `dead_ends`: list of approaches tried and abandoned
-   - `trajectory`: narrative of how the strategy evolved
+6. **Save enrichment** — call `mcp__distillate__save_enrichment` with the project name and structured insights. **These appear in the desktop UI — write for scannability, not for a paper:**
+   - `key_breakthrough`: **One sentence.** State the metric improvement and what caused it. No Greek letters, no parenthetical asides, no compressed notation.
+   - `lessons_learned`: 3-5 **short sentences**. Each starts with the finding, then one supporting number. No ALL CAPS. Write like you're explaining to a smart colleague.
+   - `dead_ends`: One sentence each — name the approach and why it failed.
+   - `trajectory`: 2-3 sentences — the story arc from baseline to current best.
    - `run_insights`: dict of per-run insights (keyed by run ID)
 
    This writes to `.distillate/llm_enrichment.json` and the insights immediately appear in the desktop Control Panel.

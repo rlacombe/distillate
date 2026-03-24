@@ -625,7 +625,7 @@ def scan_project(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 # Valid status values in runs.jsonl
-_STRUCTURED_STATUSES = {"keep", "discard", "crash", "running"}
+_STRUCTURED_STATUSES = {"best", "completed", "keep", "discard", "crash", "running"}
 
 # Regex to fix invalid JSON escapes written by LLM agents (e.g. \! \' \`)
 _INVALID_JSON_ESCAPE_RE = re.compile(r'\\([^"\\/bfnrtu])')
@@ -667,8 +667,13 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                     continue
 
                 status = entry.get("status", "completed")
-                # Map keep/discard/crash to internal status + decision
-                decision = status if status in _STRUCTURED_STATUSES else None
+                # Map old keep/discard → completed; new best/completed pass through
+                if status in ("keep", "discard"):
+                    decision = "completed"
+                elif status in _STRUCTURED_STATUSES:
+                    decision = status
+                else:
+                    decision = None
                 internal_status = "completed"
                 if status == "crash":
                     internal_status = "failed"
@@ -676,6 +681,8 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                     internal_status = "running"
 
                 ts = entry.get("timestamp", "")
+                started = entry.get("started_at", "") or ts
+                completed = entry.get("completed_at", "") or ts
                 duration_secs = entry.get("duration_seconds", 0)
                 duration_mins = int(duration_secs / 60) if duration_secs else 0
 
@@ -684,8 +691,8 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
                     name=run_id,
                     hyperparameters=entry.get("hyperparameters", {}),
                     results=entry.get("results", {}),
-                    started_at=ts,
-                    completed_at=ts,
+                    started_at=started,
+                    completed_at=completed,
                     duration_minutes=duration_mins,
                     source="structured",
                     decision=decision,
@@ -703,7 +710,7 @@ def _parse_runs_jsonl(path: Path) -> list[dict]:
 
     # Deduplicate by run name: prefer terminal status, then latest timestamp
     seen: dict[str, int] = {}
-    _terminal = {"keep", "discard", "crash"}
+    _terminal = {"best", "completed", "keep", "discard", "crash"}
     for i, run in enumerate(runs):
         name = run["name"]
         if name not in seen:
@@ -863,7 +870,7 @@ def backfill_runs_from_events(project_path: Path) -> int:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     entry = json.loads(_repair_json_line(line))
-                if entry.get("status") in ("keep", "discard", "crash"):
+                if entry.get("status") in ("best", "completed", "keep", "discard", "crash"):
                     ts = entry.get("timestamp", "")
                     if ts:
                         existing_timestamps.add(ts[:16])  # match to minute
@@ -912,7 +919,7 @@ def backfill_runs_from_events(project_path: Path) -> int:
             "$schema": "distillate/run/v1",
             "id": run_id,
             "timestamp": ts,
-            "status": "keep",
+            "status": "completed",
             "description": f"Backfilled from {script_name}" if script_name else "Backfilled from training event",
             "hyperparameters": event.get("hyperparameters", {}),
             "results": metrics,
@@ -939,7 +946,7 @@ def backfill_runs_from_events(project_path: Path) -> int:
                 continue
             rid = entry.get("id", "")
             status = entry.get("status", "")
-            if status in ("keep", "discard", "crash"):
+            if status in ("best", "completed", "keep", "discard", "crash"):
                 terminal_ids.add(rid)
             elif status == "running" and rid:
                 running_entries[rid] = entry
@@ -1961,10 +1968,9 @@ def generate_notebook(project: dict, section: str = "main",
         completed = sum(1 for r in runs if r.get("status") == "completed")
         running = sum(1 for r in runs if r.get("status") == "running")
         failed = sum(1 for r in runs if r.get("status") == "failed")
-        kept = sum(1 for r in runs if r.get("decision") == "keep")
-        discarded = sum(1 for r in runs if r.get("decision") == "discard")
+        best_count = sum(1 for r in runs if r.get("decision") == "best")
         crashed = sum(1 for r in runs if r.get("decision") == "crash")
-        has_decisions = kept + discarded + crashed > 0
+        has_decisions = best_count + crashed > 0
 
         parts.append("")
         parts.append("## Experiment Timeline")
@@ -1972,8 +1978,7 @@ def generate_notebook(project: dict, section: str = "main",
         if has_decisions:
             parts.append(
                 f"> **{len(runs)}** experiments | "
-                f"**{kept}** kept | "
-                f"**{discarded}** discarded | "
+                f"**{best_count}** best | "
                 f"**{crashed}** crashed"
             )
         else:
@@ -1998,7 +2003,7 @@ def generate_notebook(project: dict, section: str = "main",
             display_name = _enrich(run, "name") or run.get("name", "?")
             if has_decisions:
                 decision = run.get("decision", "")
-                decision_md = {"keep": "✓", "discard": "✗", "crash": "⚠"}.get(decision, "-")
+                decision_md = {"best": "★", "completed": "✓", "crash": "⚠"}.get(decision, "-")
                 parts.append(
                     f"| {i} | {display_name} | {decision_md} {decision} | "
                     f"{duration} | {key_metric} |"
@@ -2413,8 +2418,8 @@ details.run-card summary:hover { background: rgba(99,102,241,0.04); border-radiu
 .section-header h2 { border-bottom: none; margin-bottom: 0; flex: 1; }
 .section-header .toolbar { margin-bottom: 0; }
 .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.75rem; text-align: center; }
-.decision-keep { color: var(--green); font-weight: 600; }
-.decision-discard { color: #888; font-weight: 600; }
+.decision-best { color: var(--green); font-weight: 600; }
+.decision-completed { color: #888; font-weight: 600; }
 .decision-crash { color: var(--yellow); font-weight: 600; }
 .reasoning-block { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 0.85rem; }
 .reasoning-block .reasoning-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; }
@@ -2434,10 +2439,10 @@ def _h(text: str) -> str:
 
 def _decision_icon(decision: str | None) -> str:
     """Return an HTML-styled decision indicator."""
-    if decision == "keep":
-        return '<span class="decision-keep">&#10003; keep</span>'
-    if decision == "discard":
-        return '<span class="decision-discard">&#10007; discard</span>'
+    if decision == "best":
+        return '<span class="decision-best">&#9733; best</span>'
+    if decision == "completed":
+        return '<span class="decision-completed">&#10003; completed</span>'
     if decision == "crash":
         return '<span class="decision-crash">&#9888; crash</span>'
     return '<span style="color:var(--text-dim)">&mdash;</span>'
@@ -2550,7 +2555,7 @@ def _render_metric_chart(runs: list[dict],
                f'stroke-width="2"/>')
 
     # Decision markers with tooltips
-    colors = {"keep": "#3fb950", "discard": "#555555", "crash": "#d29922"}
+    colors = {"best": "#3fb950", "completed": "#555555", "crash": "#d29922"}
     for idx, val, decision in points:
         color = colors.get(decision, "#8b949e")
         cx, cy = _x(idx), _y(val)
@@ -2629,8 +2634,8 @@ def generate_html_notebook(project: dict,
         # Find best value from kept runs (or all runs if no decisions)
         lower_better = _is_lower_better(key_metric_name)
         best_val = None
-        kept_runs = [r for r in runs if r.get("decision") == "keep"]
-        search_runs = kept_runs if kept_runs else runs
+        non_crash_runs = [r for r in runs if r.get("decision") != "crash"]
+        search_runs = non_crash_runs if non_crash_runs else runs
         for r in search_runs:
             v = r.get("results", {}).get(key_metric_name)
             if isinstance(v, (int, float)):
@@ -2677,10 +2682,9 @@ def generate_html_notebook(project: dict,
     # --- Stats bar ---
     completed = sum(1 for r in runs if r.get("status") == "completed")
     running = sum(1 for r in runs if r.get("status") == "running")
-    kept = sum(1 for r in runs if r.get("decision") == "keep")
-    discarded = sum(1 for r in runs if r.get("decision") == "discard")
+    best_count = sum(1 for r in runs if r.get("decision") == "best")
     crashed = sum(1 for r in runs if r.get("decision") == "crash")
-    has_decisions = kept + discarded + crashed > 0
+    has_decisions = best_count + crashed > 0
     unique_configs = len({
         tuple(sorted(r.get("hyperparameters", {}).items()))
         for r in runs if r.get("hyperparameters")
@@ -2690,9 +2694,7 @@ def generate_html_notebook(project: dict,
                  '<div class="stat-label">Experiments</div></div>')
     if has_decisions:
         parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--green)">'
-                     f'{kept}</div><div class="stat-label">Kept</div></div>')
-        parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--red)">'
-                     f'{discarded}</div><div class="stat-label">Discarded</div></div>')
+                     f'{best_count}</div><div class="stat-label">Best</div></div>')
         if crashed:
             parts.append(f'<div class="stat"><div class="stat-value" style="color:var(--yellow)">'
                          f'{crashed}</div><div class="stat-label">Crashed</div></div>')

@@ -87,11 +87,12 @@ This ensures training stops **gracefully** — all metrics up to that point are 
 
 If a run exceeds the budget despite the check (e.g. a single epoch takes too long), kill the process, log `status: "crash"`, and move on immediately.
 
-### Status policy — keep almost everything
+### Run status
 
-- **`keep`** — the default. Use for ALL runs that produced results, even if metrics didn't improve. Every run is part of the audit trail. Baselines, failed hypotheses, and regressions are all valuable data.
-- **`crash`** — use ONLY when the run failed with a Python exception, produced zero output, or could not complete training at all.
-- **Never use `discard`.** A run that didn't improve metrics is NOT a failure — it's evidence. Keep it and explain what you learned in the `reasoning` field.
+Call `conclude_run` with your results — it auto-detects whether the run is `best` (frontier-improving) or `completed`. You don't need to pass a status unless the run crashed.
+
+- **`crash`** — pass `status: "crash"` ONLY when the run failed with a Python exception, produced zero output, or could not complete training at all.
+- For all other runs, omit `status`. The tool compares against the key metric frontier and returns `is_best: true/false`.
 
 Create the `.distillate/` directory if it doesn't exist. This enables live experiment tracking and cross-session awareness.
 

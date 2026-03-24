@@ -14,7 +14,7 @@ Deno.serve(async (req) => {
   }
 
   const body = await req.json();
-  const { email, timezone, cadence, digest_day, preferred_hour, experiment_reports, daily_papers, weekly_digest, resend_verification, snapshot } = body;
+  const { email, timezone, digest_day, preferred_hour, experiment_reports, daily_papers, weekly_digest, resend_verification, snapshot } = body;
 
   if (!email) {
     return new Response(JSON.stringify({ ok: false, reason: "email required" }), {
@@ -38,7 +38,6 @@ Deno.serve(async (req) => {
   // Upsert user (creates account on first call)
   const userPayload: Record<string, unknown> = { email };
   if (timezone) userPayload.timezone = timezone;
-  if (cadence) userPayload.cadence = cadence;
   if (digest_day !== undefined) userPayload.digest_day = digest_day;
   if (preferred_hour !== undefined) userPayload.preferred_hour = preferred_hour;
   if (experiment_reports !== undefined) userPayload.experiment_reports = experiment_reports;
