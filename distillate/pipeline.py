@@ -5,7 +5,6 @@ engagement scoring, and promotion logic.
 """
 
 import logging
-import re
 import tempfile
 from pathlib import Path
 
@@ -782,8 +781,6 @@ def run_sync() -> None:
     from distillate import config
     from distillate import notify
     from distillate import obsidian
-    from distillate import renderer
-    from distillate import summarizer
     from distillate import zotero_client
     from distillate.state import State, acquire_lock, release_lock
 

@@ -65,6 +65,7 @@ Chat:
 import asyncio
 import json
 import logging
+import os
 import sys
 
 from concurrent.futures import ThreadPoolExecutor
@@ -72,7 +73,6 @@ from datetime import datetime, timezone
 
 from distillate.agent_sdk import NicolasClient, _classify_error
 from distillate.server_helpers import (
-    _summarize_tool_result,
     _parse_stream_json,
 )
 from distillate.state import State, acquire_lock, release_lock
@@ -107,7 +107,6 @@ def _find_ui_dir():
 
 def _create_app():
     """Build the FastAPI application (lazy import so PyPI installs don't need fastapi)."""
-    from contextlib import asynccontextmanager
 
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import JSONResponse
@@ -1030,7 +1029,6 @@ def _create_app():
         from distillate.experiments import (
             backfill_runs_from_events,
             scan_project,
-            slugify,
         )
 
         proj_path = Path(proj.get("path", ""))

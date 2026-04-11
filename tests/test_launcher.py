@@ -2,11 +2,9 @@
 
 import importlib.util
 import json
-import os
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

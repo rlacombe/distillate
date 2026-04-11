@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.42.0 — 2026-03-22
+## 0.7.0 — 2026-04-11
 
 Distillate is now an autonomous research platform. Describe a hypothesis, and an AI agent runs experiments for you — training models, tuning hyperparameters, and reporting results. A desktop GUI lets you watch the frontier improve in real time, steer the agent, and compare runs across projects.
 

@@ -199,7 +199,7 @@ def _schedule() -> None:
         print("  Automatic scheduling on Windows uses Task Scheduler.")
         print()
         print("  Open Task Scheduler and create a task that runs:")
-        print(f"    distillate --sync")
+        print("    distillate --sync")
         print()
     else:
         _schedule_linux()
@@ -1083,7 +1083,7 @@ def _init_wizard() -> None:
                     print(f"  Warning: You have {n_papers} tracked paper(s) in state.json.")
                     print("  A full re-setup will NOT erase your papers, but if you")
                     print("  want to back them up first, run:")
-                    print(f"    distillate --export-state ~/distillate-backup.json")
+                    print("    distillate --export-state ~/distillate-backup.json")
                     print()
                     proceed = input("  Continue with full re-setup? [Y/n]: ").strip().lower()
                     if proceed and proceed != "y":

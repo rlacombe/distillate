@@ -571,7 +571,6 @@ class TestRefreshMetadataProgress:
 
         # Simpler test: verify the output format directly
         # We test the pattern "N papers checked, M updated"
-        from distillate.commands import _refresh_metadata
         # The function uses lazy imports that are hard to fully mock.
         # Instead verify the format string exists in the source.
         import inspect

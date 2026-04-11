@@ -7,9 +7,7 @@ Terminal formatting helpers used by other modules also live here.
 import logging
 import os
 import sys
-from pathlib import Path
 
-import requests
 
 log = logging.getLogger("distillate")
 

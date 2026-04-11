@@ -51,7 +51,6 @@ def _migrate_1_to_2(data: Dict[str, Any]) -> Dict[str, Any]:
     from distillate.experiments import infer_key_metric_name, _is_lower_better
 
     import json as _json
-    import re as _re
 
     projects = data.get("projects", {})
     total_runs = sum(len(p.get("runs", {})) for p in projects.values())

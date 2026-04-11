@@ -10,8 +10,7 @@ No account creation needed — the first sync auto-registers the user.
 import json
 import logging
 import os
-import time
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib import error as urllib_error
 from urllib import request
 

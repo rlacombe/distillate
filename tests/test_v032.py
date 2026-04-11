@@ -756,7 +756,7 @@ class TestPenColorMap:
     """Verify pen color mapping covers all common colors."""
 
     def test_all_basic_colors_mapped(self):
-        from distillate.renderer import _ensure_rmscene, _PEN_COLOR_MAP
+        from distillate.renderer import _ensure_rmscene
         _ensure_rmscene()
         from distillate.renderer import _PEN_COLOR_MAP as loaded_map
         for color in [si.PenColor.BLACK, si.PenColor.GRAY, si.PenColor.BLUE,

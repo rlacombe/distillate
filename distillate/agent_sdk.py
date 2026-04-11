@@ -90,7 +90,6 @@ class NicolasClient:
         from claude_agent_sdk import (
             AssistantMessage,
             ResultMessage,
-            StreamEvent,
             SystemMessage,
             TextBlock,
             ToolResultBlock,

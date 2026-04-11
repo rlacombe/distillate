@@ -14,7 +14,6 @@ import os
 
 import requests
 
-from distillate import config
 from distillate.state import State
 
 log = logging.getLogger(__name__)

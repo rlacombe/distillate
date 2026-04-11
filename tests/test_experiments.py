@@ -3,12 +3,8 @@
 import json
 import os
 import subprocess
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -1428,7 +1424,6 @@ class TestLLMEnrichment:
             def __init__(self, **kwargs):
                 self.messages = FakeMessages()
 
-        import distillate.experiments
         monkeypatch.setattr("anthropic.Anthropic", FakeClient)
         # Ensure anthropic is "importable" by pre-importing mock
         import types

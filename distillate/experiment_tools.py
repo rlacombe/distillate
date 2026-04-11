@@ -1580,7 +1580,6 @@ def add_project_tool(*, state, path: str, name: str = "",
 def rename_project_tool(*, state, identifier: str, new_name: str) -> dict:
     """Rename a tracked ML project."""
     from distillate.experiments import slugify
-    from distillate.obsidian import write_experiment_notebook
 
     proj, err = _resolve_project(state, identifier)
     if err:
@@ -2581,7 +2580,6 @@ def init_experiment_tool(*, state, path: str, goal: str,
     import subprocess
     from pathlib import Path as _Path
 
-    from distillate import config
     from distillate.experiments import slugify
     from distillate.launcher import _install_hooks_into
     from distillate.state import acquire_lock, release_lock
@@ -3156,7 +3154,6 @@ def suggest_from_literature(*, state, project: str,
     """Suggest experiment steering based on recent paper reads."""
     from datetime import datetime, timedelta, timezone
 
-    from distillate import config
     from distillate.tools import (
         _extract_highlights_from_note,
         _read_note_content,
@@ -3240,7 +3237,6 @@ def suggest_from_literature(*, state, project: str,
 def extract_baselines(*, state, papers: list[str],
                       metrics: list[str] | None = None) -> dict:
     """Extract reported metric baselines from papers."""
-    from distillate import config
     from distillate.tools import (
         _extract_highlights_from_note,
         _find_papers_from_state,

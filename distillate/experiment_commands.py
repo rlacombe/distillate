@@ -141,7 +141,7 @@ def _install_hooks(args: list[str]) -> None:
     if claude_md_src.exists():
         claude_md_dst = project_path / "CLAUDE.md"
         shutil.copy2(claude_md_src, claude_md_dst)
-        print(f"  Installed CLAUDE.md (experiment protocol)")
+        print("  Installed CLAUDE.md (experiment protocol)")
 
     # 3. Merge hook config into .claude/settings.json
     hooks_src = Path(__file__).parent / "autoresearch" / "hooks.json"
@@ -272,10 +272,10 @@ def _new_experiment(args: list[str]) -> None:
     try:
         result = scaffold_experiment(template_name, target_path, name=name)
         print(f"\n  Scaffolded experiment at {result}")
-        print(f"  - PROMPT.md copied from template")
-        print(f"  - .distillate/ created with REPORTING.md")
-        print(f"  - Claude Code hooks installed")
-        print(f"  - git initialized")
+        print("  - PROMPT.md copied from template")
+        print("  - .distillate/ created with REPORTING.md")
+        print("  - Claude Code hooks installed")
+        print("  - git initialized")
 
         # Register in state
         state = State()
@@ -290,7 +290,7 @@ def _new_experiment(args: list[str]) -> None:
             state.save()
             print(f"  - Registered as project '{project_id}'")
 
-        print(f"\n  Launch it:")
+        print("\n  Launch it:")
         print(f"    distillate --launch {project_id}")
 
     except (FileNotFoundError, FileExistsError) as e:
@@ -342,9 +342,9 @@ def _launch_experiment(args: list[str]) -> None:
         print(f"  Model: {model} | Max turns: {turns}")
         if host:
             print(f"  Host: {host}")
-        print(f"\n  Attach to session:")
+        print("\n  Attach to session:")
         print(f"    distillate --attach {query}")
-        print(f"\n  Stop session:")
+        print("\n  Stop session:")
         print(f"    distillate --stop {query}")
 
     except (FileNotFoundError, RuntimeError) as e:
@@ -520,7 +520,7 @@ def _campaign(args: list[str]) -> None:
     import threading
     from datetime import datetime, timezone
 
-    from distillate.cli import _bold, _dim
+    from distillate.cli import _bold
     from distillate.launcher import run_campaign, should_continue
     from distillate.state import State
 
@@ -660,7 +660,7 @@ def _campaign(args: list[str]) -> None:
     print()
     print(f"  Starting campaign for {_bold(proj_name)}")
     print(f"  Budget: {max_sessions} sessions, model: {model}")
-    print(f"  Press Ctrl+C to pause\n")
+    print("  Press Ctrl+C to pause\n")
 
     try:
         result = run_campaign(
@@ -788,7 +788,6 @@ def _goals(args: list[str]) -> None:
 
 def _show_experiment(args: list[str]) -> None:
     """Show detailed experiment dashboard."""
-    from datetime import datetime
 
     from distillate.experiments import load_enrichment_cache
     from distillate.launcher import refresh_session_statuses
@@ -1135,7 +1134,7 @@ def _open_notebook(args: list[str]) -> None:
     # Open in browser
     try:
         webbrowser.open(f"file://{html_path}")
-        print(f"\n  Opened in browser.")
+        print("\n  Opened in browser.")
     except Exception:
         print(f"\n  Open manually: file://{html_path}")
     print()
@@ -1185,9 +1184,9 @@ def _continue_experiment(args: list[str]) -> None:
         tmux_name = session_data["tmux_session"]
         print(f"\n  Continuation session launched: {tmux_name}")
         print(f"  Model: {model} | Max turns: {turns}")
-        print(f"\n  Attach:")
+        print("\n  Attach:")
         print(f"    distillate --attach {query}")
-        print(f"\n  Stop:")
+        print("\n  Stop:")
         print(f"    distillate --stop {query}")
 
     except (FileNotFoundError, RuntimeError) as e:
@@ -1253,9 +1252,9 @@ def _sweep_experiment(args: list[str]) -> None:
             tmux_name = s["tmux_session"]
             print(f"    {tmux_name}")
 
-        print(f"\n  Attach to any:")
+        print("\n  Attach to any:")
         print(f"    distillate --attach {query}")
-        print(f"\n  Stop all:")
+        print("\n  Stop all:")
         print(f"    distillate --stop {query}")
 
     except (FileNotFoundError, RuntimeError) as e:
@@ -1865,7 +1864,7 @@ def _github(args: list[str]) -> None:
 
 def _create_experiment(args: list[str]) -> None:
     """Create experiment from scratch (non-interactive CLI wizard)."""
-    from distillate.experiment_tools import _parse_goals_from_text, init_experiment_tool
+    from distillate.experiment_tools import init_experiment_tool
     from distillate.state import State
 
     if not args or args[0].startswith("-"):
@@ -1903,7 +1902,7 @@ def _create_experiment(args: list[str]) -> None:
         print(f"  Project registered: {result.get('project_id', '')}")
         if result.get("goals_set"):
             print(f"  Goals: {result['goals_set']}")
-        print(f"\n  Launch it:")
+        print("\n  Launch it:")
         print(f"    distillate --launch {result.get('project_id', name)}")
     else:
         print(f"  Error: {result.get('error', 'unknown')}")
@@ -1953,7 +1952,7 @@ def _parallel_campaign(args: list[str]) -> None:
     for p in resolved:
         print(f"    - {_bold(p.get('name', p['id']))}")
     print(f"  Budget: {budget} sessions each, model: {model}")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     # Set campaign state for each project
     now = datetime.now(timezone.utc).isoformat()
@@ -2011,7 +2010,7 @@ def _parallel_campaign(args: list[str]) -> None:
 
     signal.signal(signal.SIGINT, old_handler)
 
-    print(f"\n  Parallel campaigns finished:")
+    print("\n  Parallel campaigns finished:")
     for proj in resolved:
         r = results.get(proj["id"], {})
         reason = r.get("stop_reason", "unknown")

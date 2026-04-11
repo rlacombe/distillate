@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from distillate.cli import _bold, _dim, _opt
+from distillate.cli import _bold, _dim
 
 log = logging.getLogger("distillate")
 
@@ -1121,7 +1121,7 @@ def _suggest() -> None:
     from distillate.state import State, acquire_lock, release_lock
 
     if not config.is_zotero_reader():
-        from distillate import remarkable_client
+        pass
 
     config.setup_logging()
 
