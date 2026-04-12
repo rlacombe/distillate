@@ -1,4 +1,5 @@
 .env
+.env.bak*
 .DS_Store
 state.json
 state.lock
