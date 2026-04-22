@@ -1,25 +1,27 @@
 {
   "name": "distillate",
-  "version": "0.7.0",
+  "version": "0.42.0",
   "description": "Distillate — a research alchemist on your desktop",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "start:app": "electron-builder --mac --dir -c.compression=store && open dist/mac-arm64/Distillate.app",
-    "postinstall": "electron-builder install-app-deps && bash scripts/patch-electron.sh",
+    "postinstall": "node scripts/rebuild-native.js && bash scripts/patch-electron.sh && chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper || true",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac --dir",
     "install:mac": "bash scripts/install.sh",
     "dmg": "bash scripts/build-dmg.sh",
     "build:win": "electron-builder --win",
     "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "author": "Romain Lacombe",
   "license": "MIT",
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "electron": "^34.0.0",
-    "electron-builder": "^25.0.0"
+    "electron-builder": "^25.0.0",
+    "jsdom": "^29.0.2"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -45,7 +47,19 @@
       "icon": "resources/icon.icns",
       "target": [
         "dir"
-      ]
+      ],
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "PDF Document",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "com.adobe.pdf"
+            ]
+          }
+        ]
+      }
     },
     "win": {
       "icon": "resources/icon.ico",

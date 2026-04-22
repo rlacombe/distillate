@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "distillate"
-version = "0.7.0"
+version = "0.8.0-dev.1"
 description = "Design, launch, and track autonomous research experiments — with a paper library built in"
 readme = "README.md"
 license = "MIT"
@@ -26,17 +26,24 @@ classifiers = [
 dependencies = [
     "python-dotenv",
     "requests",
-    "rmscene>=0.7.0",
+    "keyring>=25.0",
     "pymupdf>=1.24.0",
     "anthropic>=0.40.0",
     "resend>=2.0.0",
     "rich>=13.0",
     "claude-agent-sdk>=0.1.49",
     "mcp>=1.0.0",
+    "huggingface_hub>=0.20.0",
 ]
 
 [project.optional-dependencies]
 desktop = ["fastapi", "uvicorn[standard]", "websockets", "matplotlib"]
+cloud = []
+dev = ["pytest", "pytest-timeout"]
+# reMarkable tablet integration — read papers on-device and extract highlights
+# from .rmscene v6 bundles. Requires an installed rmapi binary. Optional;
+# default reading path is Zotero (works on any device).
+remarkable = ["rmscene>=0.7.0"]
 
 [project.urls]
 Homepage = "https://distillate.dev"
@@ -47,24 +54,42 @@ Changelog = "https://github.com/rlacombe/distillate/blob/main/CHANGELOG.md"
 [project.scripts]
 distillate = "distillate.main:_main_wrapper"
 distillate-mcp = "distillate.mcp_server:main"
+distillate-run = "distillate.run:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["distillate"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "distillate/autoresearch/REPORTING.md" = "distillate/autoresearch/REPORTING.md"
+"distillate/autoresearch/AGENTS.md" = "distillate/autoresearch/AGENTS.md"
+"distillate/autoresearch/GEMINI.md" = "distillate/autoresearch/GEMINI.md"
 "distillate/autoresearch/hooks.json" = "distillate/autoresearch/hooks.json"
 "distillate/autoresearch/skills/experiment/SKILL.md" = "distillate/autoresearch/skills/experiment/SKILL.md"
 "desktop/renderer/index.html" = "distillate/ui/index.html"
-"desktop/renderer/app.js" = "distillate/ui/app.js"
 "desktop/renderer/styles.css" = "distillate/ui/styles.css"
+"desktop/renderer/marked.min.js" = "distillate/ui/marked.min.js"
+"desktop/renderer/browser-shim.js" = "distillate/ui/browser-shim.js"
+"desktop/renderer/core.js" = "distillate/ui/core.js"
+"desktop/renderer/chat.js" = "distillate/ui/chat.js"
+"desktop/renderer/layout.js" = "distillate/ui/layout.js"
+"desktop/renderer/charts.js" = "distillate/ui/charts.js"
+"desktop/renderer/papers.js" = "distillate/ui/papers.js"
+"desktop/renderer/integrations.js" = "distillate/ui/integrations.js"
+"desktop/renderer/experiments.js" = "distillate/ui/experiments.js"
+"desktop/renderer/experiment-detail.js" = "distillate/ui/experiment-detail.js"
+"desktop/renderer/experiment-wizard.js" = "distillate/ui/experiment-wizard.js"
+"desktop/renderer/results.js" = "distillate/ui/results.js"
+"desktop/renderer/agents-ui.js" = "distillate/ui/agents-ui.js"
+"desktop/renderer/workspaces.js" = "distillate/ui/workspaces.js"
+"desktop/renderer/canvas.js" = "distillate/ui/canvas.js"
+"desktop/renderer/vault-ui.js" = "distillate/ui/vault-ui.js"
+"desktop/renderer/icons/obsidian.svg" = "distillate/ui/icons/obsidian.svg"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.ruff.lint]
-ignore = [
-    "F841",  # unused local variables
-    "E741",  # ambiguous variable name (e.g. `l`)
-    "E402",  # module-level import not at top of file
+timeout = 30
+timeout_method = "thread"
+markers = [
+    "slow: marks tests as slow (subprocess, network, live server) — run with pytest -m slow",
+    "e2e: marks Playwright end-to-end tests — run with pytest -m e2e",
 ]

@@ -359,6 +359,44 @@ CLAUDE_FAST_MODEL=claude-sonnet-4-5-20250929</code></pre>
 
     <p>Without <code>ANTHROPIC_API_KEY</code> set, sync pipeline AI features (summaries, suggestions) use abstracts as fallback. The Nicolas agent uses Claude Code instead &mdash; no API key needed.</p>
 
+    <!-- 4b. Email Configuration -->
+    <h2>Email Configuration</h2>
+
+    <p>Distillate sends three types of email: daily paper suggestions, weekly reading digests, and experiment reports. All emails are rendered and sent from the cloud (Supabase edge functions), which provides the canonical dark/light template that adapts to your email client's theme.</p>
+
+    <h3>How it works</h3>
+
+    <p>When you register your email (desktop app &rarr; Control Panel &rarr; Updates), your reading state is synced to the cloud. A scheduled function runs hourly and sends emails at your preferred time in your timezone. The email template auto-switches between dark and light mode based on your email client:</p>
+
+    <ul>
+      <li><strong>Superhuman, Apple Mail, iOS Mail</strong> &mdash; respects your theme preference (dark or light)</li>
+      <li><strong>Gmail</strong> &mdash; always shows the dark version (Gmail ignores <code>prefers-color-scheme</code> CSS)</li>
+      <li><strong>Outlook</strong> &mdash; shows the dark version on macOS, light on Windows</li>
+    </ul>
+
+    <h3>Email preferences</h3>
+
+<pre><code># In your .env file:
+DISTILLATE_EMAIL=you@example.com
+DISTILLATE_EMAIL_HOUR=6              # Send at 6am local time (0-23)
+DISTILLATE_EMAIL_DAILY_PAPERS=true   # Daily paper suggestions
+DISTILLATE_EMAIL_WEEKLY_DIGEST=true  # Weekly reading digest
+DISTILLATE_EMAIL_EXPERIMENT_REPORTS=true  # Experiment completion emails</code></pre>
+
+    <h3>Legacy local email rendering</h3>
+
+    <p>Before cloud sync existed, emails were rendered and sent locally via the Resend API. This path is now deprecated but still available as a fallback. Set the following flag to use it:</p>
+
+<pre><code># In your .env file (default: false &mdash; uses cloud):
+DISTILLATE_LOCAL_EMAIL=true</code></pre>
+
+    <p>When enabled, <code>send_suggestion()</code> and <code>send_weekly_digest()</code> render HTML locally and send directly via your <code>RESEND_API_KEY</code>. The local template does not have the same dark/light auto-switching as the cloud template. This option exists for users who prefer not to sync their reading state to the cloud.</p>
+
+    <div class="gotcha">
+      <strong>Requires RESEND_API_KEY</strong>
+      Local email sending requires your own Resend API key. The cloud path uses Distillate's shared key &mdash; no setup needed beyond registering your email.
+    </div>
+
     <!-- 5. Storage Management -->
     <h2>Storage Management</h2>
 

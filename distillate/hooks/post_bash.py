@@ -252,20 +252,51 @@ def _check_running_entry(project_root: Path) -> None:
         pass
 
 
-_RUN_TIME_WARN_MINUTES = 10  # Warn after this many minutes on a single run
+_budget_cache: dict = {}  # {mtime: parsed_dict}
+
+
+def _read_budget(project_root: Path) -> dict:
+    """Read .distillate/budget.json with mtime-based caching."""
+    budget_path = project_root / ".distillate" / "budget.json"
+    try:
+        mtime = budget_path.stat().st_mtime
+        if _budget_cache.get("_path") == str(budget_path) and _budget_cache.get("_mtime") == mtime:
+            return _budget_cache.get("_data", {})
+        data = json.loads(budget_path.read_text(encoding="utf-8"))
+        _budget_cache.update({"_path": str(budget_path), "_mtime": mtime, "_data": data})
+        return data
+    except (OSError, json.JSONDecodeError):
+        # Fall back to env vars
+        run_budget = int(os.environ.get("DISTILLATE_RUN_BUDGET_SECONDS", 300))
+        sess_budget_str = os.environ.get("DISTILLATE_SESSION_BUDGET_SECONDS")
+        return {
+            "run_budget_seconds": run_budget,
+            "session_budget_seconds": int(sess_budget_str) if sess_budget_str else None,
+            "session_started_at": None,
+        }
+
+
+def _fmt_remaining(secs: float) -> str:
+    """Format remaining seconds as '4m 30s' or '1h 12m'."""
+    s = int(abs(secs))
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}h {(s % 3600) // 60}m"
+
+
+def _fmt_deadline(started: datetime, budget_secs: float) -> str:
+    """Format absolute deadline as local HH:MM."""
+    deadline = started + __import__("datetime").timedelta(seconds=budget_secs)
+    local = deadline.astimezone()
+    return local.strftime("%H:%M")
 
 
 def _check_run_elapsed(project_root: Path) -> None:
-    """Print a warning if the current run has been going too long.
-
-    Reads the last entry in runs.jsonl. If it has status="running" and
-    its timestamp is older than _RUN_TIME_WARN_MINUTES, print a nudge.
-    """
+    """Warn if current run is approaching or exceeding its budget."""
     runs_file = project_root / ".distillate" / "runs.jsonl"
     if not runs_file.exists():
         return
     try:
-        # Read last non-empty line
         lines = runs_file.read_text(encoding="utf-8").strip().splitlines()
         if not lines:
             return
@@ -275,23 +306,61 @@ def _check_run_elapsed(project_root: Path) -> None:
         ts_str = last.get("timestamp", "")
         if not ts_str:
             return
-        # Parse ISO timestamp
+
         started = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        elapsed_min = elapsed / 60
-        if elapsed_min > 30:
+
+        budget = _read_budget(project_root)
+        run_budget = budget.get("run_budget_seconds", 300)
+
+        remaining = run_budget - elapsed
+        deadline = _fmt_deadline(started, run_budget)
+        if remaining <= 0:
             print(
-                f"\n*** CRITICAL: Run {last.get('id', '?')} has been going "
-                f"for {int(elapsed_min)} min. STOP IMMEDIATELY. Log whatever "
-                f"results you have (even partial), commit, and start the next "
-                f"run. ***"
+                f"\n*** 🔴 BUDGET EXCEEDED: Run {last.get('id', '?')} is "
+                f"{_fmt_remaining(remaining)} over its {run_budget}s budget "
+                f"(deadline was {deadline}). "
+                f"Wrap up NOW — log results (even partial), commit, "
+                f"and move to the next run. ***"
             )
-        elif elapsed_min > _RUN_TIME_WARN_MINUTES:
+        elif elapsed >= run_budget * 0.8:
             print(
-                f"\n*** TIME WARNING: You have been on run {last.get('id', '?')} "
-                f"for {int(elapsed_min)} minutes. Wrap up this run NOW — "
-                f"log results (even partial), commit, and move on to the next "
-                f"experiment. ***"
+                f"\n*** ⏰ TIME WARNING: Run {last.get('id', '?')} — "
+                f"{_fmt_remaining(remaining)} left (deadline {deadline}). "
+                f"Start wrapping up this run. ***"
+            )
+    except Exception:
+        pass
+
+
+def _check_session_elapsed(project_root: Path) -> None:
+    """Warn if session is approaching or exceeding its budget."""
+    try:
+        budget = _read_budget(project_root)
+        session_budget = budget.get("session_budget_seconds")
+        if not session_budget:
+            return
+
+        session_started = budget.get("session_started_at")
+        if not session_started:
+            return
+
+        started = datetime.fromisoformat(session_started.replace("Z", "+00:00"))
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        remaining = session_budget - elapsed
+        deadline = _fmt_deadline(started, session_budget)
+
+        if remaining <= 0:
+            print(
+                f"\n*** 🔴 SESSION BUDGET EXPIRED: "
+                f"{_fmt_remaining(elapsed)} elapsed of {_fmt_remaining(session_budget)} total "
+                f"(deadline was {deadline}). "
+                f"Finish current work and commit immediately. ***"
+            )
+        elif elapsed >= session_budget * 0.9:
+            print(
+                f"\n*** ⏰ SESSION WARNING: {_fmt_remaining(remaining)} "
+                f"remaining (deadline {deadline}). Plan your final commits. ***"
             )
     except Exception:
         pass
@@ -393,8 +462,9 @@ def main() -> None:
             except OSError:
                 pass
 
-        # Time-elapsed warning: nudge agent if current run is taking too long
+        # Time budget warnings: nudge agent based on actual budget from budget.json
         _check_run_elapsed(project_root)
+        _check_session_elapsed(project_root)
 
     except Exception:
         pass  # Never block the agent

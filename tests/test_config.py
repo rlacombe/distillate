@@ -1,3 +1,4 @@
+# Covers: distillate/config.py
 """Tests for config module: env loading, defaults, save_to_env, ensure_loaded."""
 
 import os
@@ -193,6 +194,7 @@ class TestValidateOptional:
         monkeypatch.setattr(config, "OUTPUT_PATH", "")
         monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "sk-valid")
         monkeypatch.setattr(config, "RESEND_API_KEY", "re_valid")
+        monkeypatch.setattr(config, "EXPERIMENTS_ROOT", str(tmp_path))
 
         with caplog.at_level(logging.WARNING):
             config._validate_optional()
@@ -206,6 +208,7 @@ class TestValidateOptional:
         monkeypatch.setattr(config, "OUTPUT_PATH", "")
         monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
         monkeypatch.setattr(config, "RESEND_API_KEY", "")
+        monkeypatch.setattr(config, "EXPERIMENTS_ROOT", "")
 
         with caplog.at_level(logging.WARNING):
             config._validate_optional()
@@ -224,3 +227,108 @@ class TestConfigDir:
         from distillate.config import CONFIG_DIR
 
         assert CONFIG_DIR.exists()
+
+
+# ---------------------------------------------------------------------------
+# Migrated from test_v016.py
+# ---------------------------------------------------------------------------
+
+class TestEnvPermissions:
+    def test_new_env_gets_0600(self, tmp_path, monkeypatch):
+        from distillate import config
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr(config, "ENV_PATH", env_file)
+
+        config.save_to_env("SECRET_KEY", "sk-test123")
+        assert env_file.stat().st_mode & 0o777 == 0o600
+
+    def test_existing_env_gets_0600_on_update(self, tmp_path, monkeypatch):
+        from distillate import config
+        env_file = tmp_path / ".env"
+        env_file.write_text("OLD=val\n")
+        env_file.chmod(0o644)  # start with world-readable
+        monkeypatch.setattr(config, "ENV_PATH", env_file)
+
+        config.save_to_env("NEW", "val")
+        assert env_file.stat().st_mode & 0o777 == 0o600
+
+    def test_repeated_saves_keep_0600(self, tmp_path, monkeypatch):
+        from distillate import config
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr(config, "ENV_PATH", env_file)
+
+        config.save_to_env("K1", "v1")
+        config.save_to_env("K2", "v2")
+        config.save_to_env("K1", "v1_updated")
+        assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+class TestVerboseFlag:
+    def test_verbose_default_is_false(self):
+        from distillate import config
+        # Reset to default
+        config.VERBOSE = False
+        assert config.VERBOSE is False
+
+    def test_verbose_sets_console_to_info(self, monkeypatch):
+        import logging
+        import distillate.config as config_mod
+        monkeypatch.setattr(config_mod, "VERBOSE", True)
+        monkeypatch.setattr(config_mod, "LOG_LEVEL", "INFO")
+        monkeypatch.setattr(config_mod, "_logging_configured", False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+        config_mod.setup_logging()
+
+        root = logging.getLogger()
+        console_handlers = [
+            h for h in root.handlers if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert any(h.level == logging.INFO for h in console_handlers)
+
+        # Clean up
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        config_mod._logging_configured = False
+
+    def test_not_verbose_sets_console_to_warning(self, monkeypatch):
+        import logging
+        import distillate.config as config_mod
+        monkeypatch.setattr(config_mod, "VERBOSE", False)
+        monkeypatch.setattr(config_mod, "LOG_LEVEL", "INFO")
+        monkeypatch.setattr(config_mod, "_logging_configured", False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+        config_mod.setup_logging()
+
+        root = logging.getLogger()
+        console_handlers = [
+            h for h in root.handlers if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert any(h.level == logging.WARNING for h in console_handlers)
+
+        # Clean up
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        config_mod._logging_configured = False
+
+
+class TestSetupLogging:
+    def test_setup_logging_idempotent(self, monkeypatch):
+        import logging
+        from distillate import config
+        monkeypatch.setattr(config, "_logging_configured", False)
+
+        root = logging.getLogger()
+
+        config.setup_logging()
+        after_first = len(root.handlers)
+
+        config.setup_logging()  # second call should be no-op
+        after_second = len(root.handlers)
+
+        assert after_second == after_first
+        # Reset for other tests
+        monkeypatch.setattr(config, "_logging_configured", False)

@@ -1,3 +1,4 @@
+# Covers: distillate/zotero_client.py, distillate/obsidian.py
 """Tests for citekey rename on metadata sync."""
 
 import pytest
@@ -30,42 +31,42 @@ class TestRenamePaperFiles:
         """Both .md and .pdf are renamed when citekey changes."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        pdf_dir = saved / "pdf"
-        saved.mkdir(parents=True)
+        notes_dir = obs_env / "Papers" / "Notes"
+        pdf_dir = notes_dir / "pdf"
+        notes_dir.mkdir(parents=True)
         pdf_dir.mkdir(parents=True)
-        (saved / "amodei_machines.md").write_text("# Note")
+        (notes_dir / "amodei_machines.md").write_text("# Note")
         (pdf_dir / "amodei_machines.pdf").write_bytes(b"PDF")
 
         result = obsidian.rename_paper("Machines", "amodei_machines", "amodei_machines_2025")
 
         assert result is True
-        assert (saved / "amodei_machines_2025.md").exists()
+        assert (notes_dir / "amodei_machines_2025.md").exists()
         assert (pdf_dir / "amodei_machines_2025.pdf").exists()
-        assert not (saved / "amodei_machines.md").exists()
+        assert not (notes_dir / "amodei_machines.md").exists()
         assert not (pdf_dir / "amodei_machines.pdf").exists()
 
     def test_skip_when_target_exists(self, obs_env):
         """Don't overwrite if target file already exists."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        saved.mkdir(parents=True)
-        (saved / "old_key.md").write_text("old content")
-        (saved / "new_key.md").write_text("new content")
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True)
+        (notes_dir / "old_key.md").write_text("old content")
+        (notes_dir / "new_key.md").write_text("new content")
 
         result = obsidian.rename_paper("Paper", "old_key", "new_key")
 
         assert result is False
-        assert (saved / "old_key.md").read_text() == "old content"
-        assert (saved / "new_key.md").read_text() == "new content"
+        assert (notes_dir / "old_key.md").read_text() == "old content"
+        assert (notes_dir / "new_key.md").read_text() == "new content"
 
     def test_missing_source_no_crash(self, obs_env):
         """Missing source files are silently skipped."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        saved.mkdir(parents=True)
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True)
 
         result = obsidian.rename_paper("Paper", "nonexistent", "new_key")
 
@@ -75,15 +76,15 @@ class TestRenamePaperFiles:
         """Empty old citekey falls back to sanitized title."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        saved.mkdir(parents=True)
-        (saved / "My Great Paper.md").write_text("# Note")
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True)
+        (notes_dir / "My Great Paper.md").write_text("# Note")
 
         result = obsidian.rename_paper("My Great Paper", "", "smith_great_2025")
 
         assert result is True
-        assert (saved / "smith_great_2025.md").exists()
-        assert not (saved / "My Great Paper.md").exists()
+        assert (notes_dir / "smith_great_2025.md").exists()
+        assert not (notes_dir / "My Great Paper.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -92,16 +93,16 @@ class TestRenamePaperFiles:
 
 class TestRenamePaperLog:
     def test_updates_reading_log_wikilinks(self, obs_env):
-        """Wikilinks in Distillate Log.md are updated."""
+        """Wikilinks in Papers Log.md are updated."""
         from distillate import obsidian
 
-        obs_env.mkdir(parents=True, exist_ok=True)
-        (obs_env / "Saved").mkdir(parents=True)
-        (obs_env / "Saved" / "old_key.md").write_text("# Note")
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "old_key.md").write_text("# Note")
 
-        log_path = obs_env / "Distillate Log.md"
+        log_path = obs_env / "Papers Log.md"
         log_path.write_text(
-            "# Distillate Log\n\n"
+            "# Papers Log\n\n"
             "- 2026-02-17 — [[old_key|Paper Title]] — Summary\n"
         )
 
@@ -115,11 +116,11 @@ class TestRenamePaperLog:
         """Missing reading log file is silently ignored."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        saved.mkdir(parents=True)
-        (saved / "old_key.md").write_text("# Note")
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True)
+        (notes_dir / "old_key.md").write_text("# Note")
 
-        # No Distillate Log.md — should not crash
+        # No Papers Log.md — should not crash
         result = obsidian.rename_paper("Paper", "old_key", "new_key")
         assert result is True
 
@@ -133,9 +134,9 @@ class TestFrontmatterCitekeyUpdate:
         """Citekey and pdf frontmatter fields are set on update."""
         from distillate import obsidian
 
-        saved = obs_env / "Saved"
-        saved.mkdir(parents=True)
-        note_path = saved / "smith_great_2025.md"
+        notes_dir = obs_env / "Papers" / "Notes"
+        notes_dir.mkdir(parents=True)
+        note_path = notes_dir / "smith_great_2025.md"
         note_path.write_text(
             '---\ntitle: "Great Paper"\ncitekey: "smith_great"\npdf: "[[smith_great.pdf]]"\n---\n\nBody\n'
         )
@@ -242,3 +243,104 @@ class TestUpdateLinkedAttachmentPath:
 
         result = zotero_client.update_linked_attachment_path("PARENT1", "new.pdf", "/new/path")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Migrated from test_v020.py — citekey-based note naming
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def obs_env_v020(tmp_path, monkeypatch):
+    """Set up obsidian / output environment for tests (from test_v020.py)."""
+    from distillate import config
+
+    monkeypatch.setattr(config, "OBSIDIAN_VAULT_PATH", "")
+    monkeypatch.setattr(config, "OUTPUT_PATH", str(tmp_path))
+    monkeypatch.setattr(config, "PDF_SUBFOLDER", "pdf")
+    return tmp_path
+
+
+class TestCitekeyNaming:
+    def test_note_uses_citekey_as_filename(self, obs_env_v020):
+        """When citekey is provided, note filename should use it."""
+        from distillate import obsidian
+
+        result = obsidian.create_paper_note(
+            title="Attention Is All You Need",
+            authors=["Vaswani, A."],
+            date_added="2026-01-01T00:00:00",
+            zotero_item_key="K1",
+            citekey="vaswani2017attention",
+        )
+        assert result is not None
+        assert result.name == "vaswani2017attention.md"
+        assert result.exists()
+
+    def test_note_falls_back_to_title(self, obs_env_v020):
+        """Without citekey, note filename uses sanitized title."""
+        from distillate import obsidian
+
+        result = obsidian.create_paper_note(
+            title="My Paper Title",
+            authors=["Author A"],
+            date_added="2026-01-01T00:00:00",
+            zotero_item_key="K1",
+        )
+        assert result is not None
+        assert result.name == "My Paper Title.md"
+
+    def test_frontmatter_includes_citekey_and_aliases(self, obs_env_v020):
+        """Citekey, year, and aliases appear in frontmatter."""
+        from distillate import obsidian
+
+        result = obsidian.create_paper_note(
+            title="Attention Is All You Need",
+            authors=["Vaswani, A."],
+            date_added="2026-01-01T00:00:00",
+            zotero_item_key="K1",
+            citekey="vaswani2017attention",
+            publication_date="2017-06-12",
+        )
+        content = result.read_text()
+        assert 'citekey: "vaswani2017attention"' in content
+        assert "year: 2017" in content
+        assert 'aliases:' in content
+        assert '"Attention Is All You Need"' in content
+
+    def test_annotated_pdf_uses_citekey(self, obs_env_v020):
+        """save_annotated_pdf uses citekey for filename."""
+        from distillate import obsidian
+
+        result = obsidian.save_annotated_pdf(
+            "Some Title", b"fake-pdf", citekey="author2024paper",
+        )
+        assert result is not None
+        assert result.name == "author2024paper.pdf"
+
+    def test_delete_paper_note_with_citekey(self, obs_env_v020):
+        """delete_paper_note finds note by citekey."""
+        from distillate import obsidian
+
+        # Create note with citekey
+        result = obsidian.create_paper_note(
+            title="My Paper",
+            authors=["A"],
+            date_added="2026-01-01T00:00:00",
+            zotero_item_key="K1",
+            citekey="my2026paper",
+        )
+        assert result.exists()
+
+        obsidian.delete_paper_note("My Paper", citekey="my2026paper")
+        assert not result.exists()
+
+    def test_obsidian_uri_uses_citekey(self, monkeypatch):
+        """get_obsidian_uri uses citekey in file path."""
+        from distillate import obsidian, config
+
+        monkeypatch.setattr(config, "OBSIDIAN_VAULT_NAME", "MyVault")
+        monkeypatch.setattr(config, "OBSIDIAN_PAPERS_FOLDER", "Distillate")
+
+        uri = obsidian.get_obsidian_uri("Some Title", citekey="author2024")
+        assert "author2024" in uri
+        assert "Some%20Title" not in uri

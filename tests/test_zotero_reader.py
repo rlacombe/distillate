@@ -1,3 +1,4 @@
+# Covers: distillate/zotero_client.py
 """Tests for Zotero reader mode (READING_SOURCE=zotero)."""
 
 import json
@@ -266,6 +267,7 @@ class TestInitWizardZoteroReader:
             "",                 # PDF subfolder (default pdf)
             "",                 # Keep PDFs (default 1)
             "",                 # Skip Anthropic
+            "",                 # Skip HuggingFace
             "",                 # Skip Resend
             "",                 # Skip newsletter
             "n",                # Skip experiments
@@ -309,6 +311,7 @@ class TestInitWizardZoteroReader:
             "",                 # PDF subfolder
             "",                 # Keep PDFs
             "",                 # Skip Anthropic
+            "",                 # Skip HuggingFace
             "",                 # Skip Resend
             "",                 # Skip newsletter
             "n",                # Skip experiments
@@ -350,7 +353,7 @@ class TestAgentModeAwareness:
         from distillate import config
         monkeypatch.setattr(config, "READING_SOURCE", "remarkable")
 
-        from distillate.agent import _build_system_prompt
+        from distillate.agent_core import build_system_prompt as _build_system_prompt
         prompt = _build_system_prompt(self._mock_state())
         assert "reMarkable" in prompt
 
@@ -358,7 +361,7 @@ class TestAgentModeAwareness:
         from distillate import config
         monkeypatch.setattr(config, "READING_SOURCE", "zotero")
 
-        from distillate.agent import _build_system_prompt
+        from distillate.agent_core import build_system_prompt as _build_system_prompt
         prompt = _build_system_prompt(self._mock_state())
         assert "Zotero app" in prompt
         assert "reMarkable" not in prompt
@@ -430,3 +433,64 @@ class TestToolsModeAwareness:
         })
         result = get_reading_stats(state=state)
         assert result["queue_size"] == 1  # only "tracked" counted
+
+
+class TestHandleBackoffReturn:
+    def test_returns_true_when_backoff_header_present(self, monkeypatch):
+        """_handle_backoff returns True when it sleeps."""
+        import time
+        from distillate.zotero_client import _handle_backoff
+
+        monkeypatch.setattr(time, "sleep", lambda x: None)
+
+        resp = MagicMock()
+        resp.headers = {"Retry-After": "5"}
+        assert _handle_backoff(resp) is True
+
+    def test_returns_false_when_no_header(self):
+        """_handle_backoff returns False when no backoff needed."""
+        from distillate.zotero_client import _handle_backoff
+
+        resp = MagicMock()
+        resp.headers = {}
+        assert _handle_backoff(resp) is False
+
+
+class TestAnnotationCreateBeforeDelete:
+    def test_create_runs_before_delete(self, monkeypatch):
+        """New annotations are created before old ones are deleted."""
+        from distillate import zotero_client, config
+
+        monkeypatch.setattr(config, "ZOTERO_API_KEY", "fake")
+        monkeypatch.setattr(config, "ZOTERO_USER_ID", "123")
+
+        call_order = []
+
+        existing = [{"key": "OLD1", "version": 1, "data": {"tags": [{"tag": "distillate"}]}}]
+
+        def fake_get(path, **kw):
+            r = MagicMock(); r.status_code = 200; r.json.return_value = existing; return r
+
+        def fake_post(path, **kw):
+            call_order.append("create")
+            r = MagicMock(); r.status_code = 200
+            r.json.return_value = {"successful": {"0": {"key": "NEW1"}}}; return r
+
+        def fake_delete(path, **kw):
+            call_order.append("delete"); r = MagicMock(); r.status_code = 204; return r
+
+        monkeypatch.setattr(zotero_client, "_get", fake_get)
+        monkeypatch.setattr(zotero_client, "_post", fake_post)
+        monkeypatch.setattr(zotero_client, "_delete", fake_delete)
+
+        highlights = [{
+            "text": "test",
+            "color": "#ffd400",
+            "page_label": "1",
+            "sort_index": "00000|000000|00000",
+            "page_index": 0,
+            "rects": [[0, 0, 100, 10]],
+        }]
+
+        zotero_client.create_highlight_annotations("ATT1", highlights)
+        assert call_order == ["create", "delete"]

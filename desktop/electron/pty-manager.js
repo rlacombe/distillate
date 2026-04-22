@@ -31,7 +31,20 @@ class PtyManager {
     console.log(`[pty] spawning: tmux attach-session -t ${sessionName} (${finalCols}x${finalRows})`);
     console.log(`[pty] PATH includes /usr/local/bin: ${env.PATH.includes("/usr/local/bin")}`);
 
-    const proc = pty.spawn("tmux", ["attach-session", "-t", sessionName], {
+    const tmuxBin = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
+      .find((p) => require("fs").existsSync(p)) || "tmux";
+    // Attach directly. No bash wrapper, no pre-attach setup commands:
+    //   - launcher.py already sets `status off` (globally + per-session) and
+    //     `mouse on` (per-session) at session-create time.
+    //   - `escape-time 0` is a tmux server setting that persists for the
+    //     server's lifetime; launcher.py sets it too.
+    // Chaining setup commands before attach had two bad effects on a busy
+    // tmux server (Claude Code streaming in the pane): each extra client
+    // connection cost ~300–400 ms, and attach-session didn't emit its first
+    // PTY byte until all of them completed. The pane redraw then arrived
+    // as a burst of small chunks that xterm painted row-by-row — visible
+    // as "view scrolls through history a couple seconds after clicking."
+    const proc = pty.spawn(tmuxBin, ["attach-session", "-t", sessionName], {
       name: "xterm-256color",
       cols: finalCols,
       rows: finalRows,
@@ -77,7 +90,7 @@ class PtyManager {
     const entry = this.#terminals.get(projectId);
     if (entry) {
       try {
-        entry.process.resize(cols, rows);
+        entry.process.resize(Math.max(cols || 80, 20), Math.max(rows || 24, 5));
       } catch {
         // Ignore resize errors on dead processes
       }

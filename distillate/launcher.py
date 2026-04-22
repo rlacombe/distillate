@@ -23,6 +23,59 @@ from distillate.config import CONFIG_DIR
 log = logging.getLogger(__name__)
 
 
+def write_budget_json(
+    project_path: Path,
+    project: dict | None = None,
+    *,
+    session_started_at: str | None = None,
+) -> Path:
+    """Write .distillate/budget.json — the single source of truth for time budgets.
+
+    Called at launch, continuation, and mid-session budget adjustment.
+    Returns the path to the written file.
+
+    Two budgets per run:
+      - ``train_budget_seconds`` — visible cap for the training subprocess.
+        ``distillate-run`` enforces this with SIGTERM+SIGKILL.
+      - ``wrap_budget_seconds`` — grace window after training kill for the
+        agent to call conclude_run, commit, and push. Floor 60s, scales as
+        10% of train so longer runs get proportionally larger wrap windows.
+
+    ``run_budget_seconds`` is kept equal to ``train_budget_seconds`` for
+    back-compat with existing readers (post_bash hook, _compute_time_info).
+    """
+    project = project or {}
+    train_budget = (project.get("duration_minutes") or 5) * 60
+    wrap_budget = max(60, int(train_budget * 0.1))
+    session_budget = project.get("session_budget_seconds")
+
+    budget_dir = project_path / ".distillate"
+    budget_dir.mkdir(exist_ok=True)
+    budget_path = budget_dir / "budget.json"
+
+    # Read existing file so we don't clobber keys written by other helpers
+    # (e.g. the compute block written by write_compute_budget for HF Jobs).
+    existing: dict = {}
+    if budget_path.is_file():
+        try:
+            existing = json.loads(budget_path.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict):
+                existing = {}
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+
+    existing.update({
+        "run_budget_seconds": train_budget,
+        "train_budget_seconds": train_budget,
+        "wrap_budget_seconds": wrap_budget,
+        "session_budget_seconds": session_budget,
+        "session_started_at": session_started_at or datetime.now(timezone.utc).isoformat(),
+    })
+
+    budget_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    return budget_path
+
+
 def _ensure_path():
     """Augment PATH so tmux/claude are found from minimal-PATH environments (Electron)."""
     extra = ["/usr/local/bin", "/opt/homebrew/bin",
@@ -145,6 +198,12 @@ def scaffold_experiment(
     template: str,
     target: Path,
     name: str | None = None,
+    *,
+    compute: str = "local",
+    modal_gpu: str = "",
+    modal_budget_usd: float = 0.0,
+    gpu_type: str = "",
+    budget_usd: float = 0.0,
 ) -> Path:
     """Create a new experiment directory from a template.
 
@@ -153,6 +212,12 @@ def scaffold_experiment(
     - Creates .distillate/ with REPORTING.md
     - Installs Claude Code hooks (.claude/settings.json)
     - Creates .claude/settings.local.json with safe Bash permissions
+
+    When ``compute == "modal"``, also writes the Modal budget block into
+    ``.distillate/budget.json`` so the per-experiment watcher and the UI
+    can read the $ cap. The agent's training script is responsible for
+    actually *using* Modal; the scaffold only records the intent.
+
     Returns experiment path.
     """
     tmpl_dir = templates_dir() / template
@@ -209,6 +274,19 @@ def scaffold_experiment(
                 },
             },
         }
+        # Add HuggingFace MCP server when HF_TOKEN is available, OR when the
+        # experiment is explicitly configured for HF Jobs compute.
+        from distillate import auth as _auth, secrets as _secrets
+        hf_token = _auth.hf_token_for("hub") or os.environ.get("HF_TOKEN", "").strip()
+        if hf_token or compute == "hfjobs":
+            mcp_config["mcpServers"]["huggingface"] = {
+                "command": "npx",
+                "args": ["-y", "@huggingface/mcp-server"],
+                # Token will be in the env at runtime (injected by _spawn_local);
+                # write a placeholder so the entry is present even if the token
+                # isn't available at scaffold time.
+                "env": {"HF_TOKEN": hf_token or "${HF_TOKEN}"},
+            }
         mcp_json.write_text(
             json.dumps(mcp_config, indent=2) + "\n",
             encoding="utf-8",
@@ -240,9 +318,19 @@ def scaffold_experiment(
                     "mcp__distillate__start_run",
                     "mcp__distillate__conclude_run",
                     "mcp__distillate__save_enrichment",
-                    "mcp__distillate__scan_project",
                     "mcp__distillate__annotate_run",
-                ],
+                    # HuggingFace Jobs
+                    "mcp__distillate__submit_hf_job",
+                    "mcp__distillate__check_hf_job",
+                    "mcp__distillate__cancel_hf_job",
+                    "mcp__distillate__list_hf_jobs",
+                ] + ([
+                    # HuggingFace MCP server tools (when HF_TOKEN configured)
+                    "mcp__huggingface__search_models",
+                    "mcp__huggingface__search_datasets",
+                    "mcp__huggingface__search_papers",
+                    "mcp__huggingface__search_spaces",
+                ] if os.environ.get("HF_TOKEN", "").strip() else []),
             },
         }
         settings_local.write_text(
@@ -250,11 +338,27 @@ def scaffold_experiment(
             encoding="utf-8",
         )
 
+    # Record compute intent into .distillate/budget.json (done last so any
+    # earlier failure leaves no stale block behind).
+    if compute == "modal":
+        from distillate.budget import write_modal_config
+        write_modal_config(
+            cwd=target, gpu=modal_gpu, budget_usd=modal_budget_usd,
+        )
+    elif compute == "hfjobs":
+        from distillate.budget import write_compute_budget
+        write_compute_budget(
+            cwd=target,
+            provider="hfjobs",
+            gpu_type=gpu_type or "a100-large",
+            budget_usd=budget_usd or 25.0,
+        )
+
     return target
 
 
-def _install_hooks_into(project_path: Path) -> None:
-    """Install Claude Code hooks into a project (shared with main.py --install-hooks)."""
+def _install_hooks_into(project_path: Path, agent_type: str = "claude") -> None:
+    """Install CLI hooks into a project (shared with main.py --install-hooks)."""
     hooks_src = Path(__file__).parent / "autoresearch" / "hooks.json"
     if not hooks_src.exists():
         return
@@ -266,9 +370,9 @@ def _install_hooks_into(project_path: Path) -> None:
     raw = raw.replace("python3 -m distillate.", f"{python_bin} -m distillate.")
     hook_config = json.loads(raw)
 
-    claude_dir = project_path / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    settings_file = claude_dir / "settings.json"
+    agent_dir = project_path / f".{agent_type}"
+    agent_dir.mkdir(exist_ok=True)
+    settings_file = agent_dir / "settings.json"
 
     existing: dict = {}
     if settings_file.exists():
@@ -297,17 +401,34 @@ def _install_hooks_into(project_path: Path) -> None:
     )
 
 
-def _refresh_protocol_files(project_path: Path) -> None:
+def _refresh_protocol_files(project_path: Path, agent_type: str = "claude") -> None:
     """Refresh protocol files and MCP config in the experiment project.
 
     Called on every session launch so running experiments always pick up
-    protocol updates and have MCP tools available.
+    protocol updates and have MCP tools available.  The *agent_type*
+    determines which protocol file is copied (CLAUDE.md, PI.md, etc.).
     """
-    autoresearch = Path(__file__).parent / "autoresearch"
+    from distillate.agents import get_agent
 
+    autoresearch = Path(__file__).parent / "autoresearch"
+    agent = get_agent(agent_type)
+    context_file = agent.get("context_file", "CLAUDE.md")
+
+    # Copy the agent-specific protocol file
+    protocol_src = autoresearch / context_file
+    if protocol_src.exists():
+        # Claude uses CLAUDE.md; others use their own file name
+        dest_name = context_file
+        shutil.copy2(protocol_src, project_path / dest_name)
+        # Also write as CLAUDE.md for backward compat (Claude Code reads it)
+        if dest_name != "CLAUDE.md" and agent.get("mcp"):
+            shutil.copy2(protocol_src, project_path / "CLAUDE.md")
+
+    # Always copy CLAUDE.md as fallback if it exists and wasn't already copied
     claude_md_src = autoresearch / "CLAUDE.md"
-    if claude_md_src.exists():
-        shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
+    if context_file != "CLAUDE.md" and claude_md_src.exists():
+        if not (project_path / "CLAUDE.md").exists():
+            shutil.copy2(claude_md_src, project_path / "CLAUDE.md")
 
     distillate_dir = project_path / ".distillate"
     distillate_dir.mkdir(exist_ok=True)
@@ -327,6 +448,14 @@ def _refresh_protocol_files(project_path: Path) -> None:
             },
         },
     }
+    # Add HuggingFace MCP server when HF_TOKEN is configured
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if hf_token:
+        mcp_config["mcpServers"]["huggingface"] = {
+            "command": "npx",
+            "args": ["-y", "@huggingface/mcp-server"],
+            "env": {"HF_TOKEN": hf_token},
+        }
     mcp_json.write_text(
         json.dumps(mcp_config, indent=2) + "\n",
         encoding="utf-8",
@@ -358,9 +487,19 @@ def _refresh_protocol_files(project_path: Path) -> None:
                 "mcp__distillate__start_run",
                 "mcp__distillate__conclude_run",
                 "mcp__distillate__save_enrichment",
-                "mcp__distillate__scan_project",
                 "mcp__distillate__annotate_run",
-            ],
+                # HuggingFace Jobs (active when HF compute configured)
+                "mcp__distillate__submit_hf_job",
+                "mcp__distillate__check_hf_job",
+                "mcp__distillate__cancel_hf_job",
+                "mcp__distillate__list_hf_jobs",
+            ] + ([
+                # HuggingFace MCP server tools
+                "mcp__huggingface__search_models",
+                "mcp__huggingface__search_datasets",
+                "mcp__huggingface__search_papers",
+                "mcp__huggingface__search_spaces",
+            ] if hf_token else []),
         },
     }
     settings_local.write_text(
@@ -712,6 +851,49 @@ def _infer_key_metric(runs: list[dict]) -> tuple[str, str]:
     return (best, direction)
 
 
+def _resolve_linked_paper_lines(project: dict | None) -> list[str]:
+    """Return bullet lines describing papers linked to the project's parent
+    workspace. Returns an empty list if the project has no workspace, no
+    papers are linked, or any lookup fails.
+    """
+    if not project:
+        return []
+    ws_id = project.get("workspace_id") or ""
+    if not ws_id:
+        return []
+    try:
+        from distillate.state import State
+        st = State()
+        ws = st.get_workspace(ws_id)
+        if not ws:
+            return []
+        citekeys = ws.get("linked_papers") or []
+        if not citekeys:
+            return []
+        out: list[str] = []
+        for ck in citekeys[:12]:
+            doc = st.find_by_citekey(ck)
+            if not doc:
+                out.append(f"- @{ck}")
+                continue
+            title = (doc.get("title") or "").strip()
+            meta = doc.get("metadata") or {}
+            author = (meta.get("author") or meta.get("creators") or "") if isinstance(meta, dict) else ""
+            if isinstance(author, list) and author:
+                author = author[0]
+            year = meta.get("year") or meta.get("date") or "" if isinstance(meta, dict) else ""
+            bits = [f"@{ck}"]
+            if title:
+                bits.append(f"— {title}")
+            attr = ", ".join(s for s in (str(author), str(year)) if s)
+            if attr:
+                bits.append(f"({attr})")
+            out.append("- " + " ".join(bits))
+        return out
+    except Exception:
+        return []
+
+
 def _build_launch_prompt(
     project: dict | None,
     project_path: Path,
@@ -724,11 +906,9 @@ def _build_launch_prompt(
         "",
         "## Instructions",
         "",
-        "1. Read CLAUDE.md — it contains the experiment protocol (how to log runs, commit, etc.)",
+        "1. Read CLAUDE.md — it contains the full experiment protocol",
         "2. Read PROMPT.md — it contains the experiment specification (what to build, dataset, constraints)",
-        "3. Read .distillate/context.md — it contains your prior run history and learnings"
-        if context_path else "",
-        "4. Follow the protocol precisely: Plan → Train → Record → Commit, one run at a time",
+        "3. Follow the protocol precisely: Plan → Train → Record → Commit, one run at a time",
         "",
         "## Key rules",
         "",
@@ -737,6 +917,16 @@ def _build_launch_prompt(
         "- Every run MUST produce at least one numeric metric in results.",
         "- One configuration per run. No sweep scripts.",
         "- Commit after every run. conclude_run returns is_best — use: git add -A && git commit -m '[best] <change>: <metric>=<value>' (or without [best] prefix) && git push",
+        "",
+        "## Pre-registration contract",
+        "",
+        "Before ANY training script, call start_run() — it is required by the tool surface:",
+        "  start_run(project, description, hypothesis, prediction, predicted_metric,",
+        "            predicted_value: float, confidence: int 0–100, rationale)",
+        "It returns run_id (required by conclude_run) and run_number (use in all prose).",
+        "After training, call conclude_run(project, run_id, results, reasoning, outcome,",
+        "                                  verdict, belief_update).",
+        "conclude_run without a prior start_run fails. This order is enforced by the tool surface.",
     ]
 
     if project:
@@ -765,10 +955,54 @@ def _build_launch_prompt(
                 lines.append(f"- Key metric: {key_metric} = {best_val} ({direction})")
             lines.append(f"- Time budget per run: {duration} minutes")
 
-    lines.append("")
-    lines.append("Start by reading the files above, then begin your next experiment run.")
+    # Linked papers — fetch from the parent workspace (project). These are
+    # seed references the experimentalist should treat as authoritative
+    # context for the experiment's subject matter. Best-effort: if state or
+    # the workspace can't be resolved, we just skip the section rather than
+    # fail the launch.
+    paper_lines = _resolve_linked_paper_lines(project)
+    if paper_lines:
+        lines.append("")
+        lines.append("## Linked Papers")
+        lines.append("")
+        lines.append(
+            "The parent project has the following papers linked — treat "
+            "them as seed references for this experiment:"
+        )
+        lines.extend(paper_lines)
 
-    return "\n".join(l for l in lines if l is not None)
+    # Prior run context — inlined so it is a prompt prefix, not a file the
+    # agent must remember to read (Reflexion mechanism, not convention).
+    if context_path and context_path.exists():
+        try:
+            context_text = context_path.read_text(encoding="utf-8").strip()
+            if context_text:
+                lines.append("")
+                lines.append("## Prior Run Context")
+                lines.append("")
+                lines.append(context_text)
+        except OSError:
+            pass
+
+    # Steering instructions — single-shot: inlined then deleted so the
+    # next session starts clean.
+    steering_path = project_path / ".distillate" / "steering.md"
+    if steering_path.exists():
+        try:
+            steering_text = steering_path.read_text(encoding="utf-8").strip()
+            if steering_text:
+                lines.append("")
+                lines.append("## Steering Instructions")
+                lines.append("")
+                lines.append(steering_text)
+            steering_path.unlink()
+        except OSError:
+            pass
+
+    lines.append("")
+    lines.append("Begin your next experiment run. Start with Step 0: pre-register your approach via start_run().")
+
+    return "\n".join(line for line in lines if line is not None)
 
 
 def _build_claude_command(
@@ -803,6 +1037,72 @@ def _build_claude_command(
     return " ".join(parts)
 
 
+def create_sister_project(
+    parent_path: Path,
+    parent_project: dict,
+    agent_type: str,
+    state,
+) -> dict:
+    """Create a sister project: same experiment, different agent.
+
+    Copies PROMPT.md and experiment config from the parent, creates a new
+    project directory alongside it, registers in state with ``sister_of``
+    pointing to the parent.
+
+    Returns the new project dict from state.
+    """
+    from distillate.experiments import slugify
+
+    parent_name = parent_project.get("name", parent_path.name)
+    sister_name = f"{parent_name}-{agent_type}"
+    sister_slug = slugify(sister_name)
+    sister_path = parent_path.parent / sister_slug
+
+    # Create directory and copy PROMPT.md
+    sister_path.mkdir(parents=True, exist_ok=True)
+    prompt_src = parent_path / "PROMPT.md"
+    if prompt_src.exists():
+        shutil.copy2(prompt_src, sister_path / "PROMPT.md")
+
+    # Copy data files if they exist
+    for fname in ("data", "dataset", "train_data", "test_data"):
+        src = parent_path / fname
+        if src.exists():
+            if src.is_dir():
+                shutil.copytree(src, sister_path / fname, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, sister_path / fname)
+
+    # Git init
+    subprocess.run(["git", "init"], capture_output=True, cwd=sister_path)
+
+    # Create .distillate directory
+    (sister_path / ".distillate").mkdir(exist_ok=True)
+
+    # Register in state
+    parent_id = parent_project.get("id", "")
+    state.add_experiment(
+        experiment_id=sister_slug,
+        name=sister_name,
+        path=str(sister_path),
+        description=parent_project.get("description", ""),
+        goals=parent_project.get("goals", []),
+        agent_type=agent_type,
+        session_budget_seconds=parent_project.get("session_budget_seconds"),
+        sister_of=parent_id,
+    )
+    # Copy key metric config
+    key_metric = parent_project.get("key_metric_name", "")
+    if key_metric:
+        state.update_experiment(sister_slug, key_metric_name=key_metric)
+    duration = parent_project.get("duration_minutes")
+    if duration:
+        state.update_experiment(sister_slug, duration_minutes=duration)
+    state.save()
+
+    return state.get_experiment(sister_slug)
+
+
 def launch_experiment(
     project_path: Path,
     *,
@@ -812,12 +1112,13 @@ def launch_experiment(
     project: dict | None = None,
     prompt_override: str | None = None,
     max_turns: int = 100,
+    agent_type: str | None = None,
 ) -> dict:
-    """Launch a Claude Code session for the experiment.
+    """Launch an experiment agent session.
 
     1. Verify PROMPT.md exists
     2. Ensure hooks installed (always)
-    3. Build claude command
+    3. Build agent command (Claude, Codex, Gemini, or Pi)
     4. Spawn tmux session (local or via SSH)
     5. Return session dict for state tracking
 
@@ -861,11 +1162,31 @@ def launch_experiment(
     if not prompt.exists():
         raise FileNotFoundError(f"No PROMPT.md found in {project_path}")
 
-    # Ensure hooks are always installed
-    _install_hooks_into(project_path)
+    # Resolve agent type: explicit param > project field > default
+    if agent_type is None:
+        agent_type = (project.get("agent_type", "claude") if project else "claude")
 
-    # Refresh protocol files (CLAUDE.md, REPORTING.md) from latest source
-    _refresh_protocol_files(project_path)
+    # Ensure hooks are always installed
+    if agent_type in ("claude", "gemini"):
+        _install_hooks_into(project_path, agent_type=agent_type)
+        # Install HTTP status hooks pointing at the local Distillate server so
+        # Stop/Notification/UserPromptSubmit events drive sidebar status dots
+        # for this Experimentalist session. Only experiments get these — not
+        # workspace coding sessions. No-op when the server port isn't set
+        # (e.g. CLI or test contexts).
+        try:
+            from distillate.claude_hooks import get_server_port, write_hook_config
+            _port = get_server_port()
+            if _port:
+                write_hook_config(project_path, _port, agent_type=agent_type)
+        except Exception as _hook_err:
+            log.warning(
+                "Failed to write %s HTTP hook config for %s: %s",
+                agent_type, project_path, _hook_err,
+            )
+
+    # Refresh protocol files for the correct agent type
+    _refresh_protocol_files(project_path, agent_type=agent_type)
 
     # Generate run context from prior runs (if any)
     context_path = _generate_run_context(project_path)
@@ -874,12 +1195,28 @@ def launch_experiment(
     if not prompt_override:
         prompt_override = _build_launch_prompt(project, project_path, context_path)
 
-    # Build command
-    cmd = _build_claude_command(
-        prompt, model=model, effort=effort,
-        has_context=context_path is not None,
-        prompt_override=prompt_override,
+    # Resume prior conversation if the last session ended cleanly.
+    resume_id = ""
+    last_id_path = project_path / ".distillate" / "last_session_id"
+    if last_id_path.exists() and agent_type in ("claude", ""):
+        try:
+            resume_id = last_id_path.read_text(encoding="utf-8").strip()
+            last_id_path.unlink()
+        except OSError:
+            resume_id = ""
+
+    # Build command using the agent registry
+    from distillate.agents import build_agent_command, get_pi_env
+    cmd = build_agent_command(
+        agent_type, prompt_override,
+        model=model, effort=effort,
+        resume_id=resume_id,
     )
+
+    # Extra env vars for agent-specific backends (e.g. Pi + HF Inference)
+    extra_env: dict[str, str] = {}
+    if agent_type == "pi" or agent_type.startswith("pi-"):
+        extra_env.update(get_pi_env(model))
 
     # Determine session name
     proj_name = project.get("name", project_path.name) if project else project_path.name
@@ -895,26 +1232,120 @@ def launch_experiment(
     log_dir.mkdir(exist_ok=True)
     session_log = log_dir / f"{session_id}.jsonl"
 
-    # Spawn tmux session (interactive claude — no tee needed)
+    # Cloud GPU provisioning (if compute config is set)
+    compute = (project.get("compute") if project else None) or {}
+    cloud_provider = compute.get("provider", "")
+    pod_info = None
+    if cloud_provider in ("hfjobs", "huggingface"):
+        # HF Jobs: agent runs locally, dispatches training as HF Jobs via MCP tools.
+        # No pod provisioning needed — inject HF_TOKEN + compute markers.
+        from distillate import auth as _auth, config as _config
+        hf_token = _auth.hf_token_for("jobs") or os.environ.get("HF_TOKEN", "")
+        if hf_token:
+            extra_env["HF_TOKEN"] = hf_token
+        if _config.HF_NAMESPACE:
+            extra_env["HF_NAMESPACE"] = _config.HF_NAMESPACE
+        # DISTILLATE_COMPUTE tells the agent unambiguously to use HF Jobs
+        extra_env["DISTILLATE_COMPUTE"] = "hfjobs"
+        gpu_flavor = compute.get("gpu_type", _config.HF_DEFAULT_GPU_FLAVOR)
+        extra_env["DISTILLATE_GPU_FLAVOR"] = gpu_flavor
+        budget_usd = float(compute.get("budget_usd", 25.0))
+        log.info(
+            "HF Jobs compute: gpu=%s budget=$%.2f path=%s",
+            gpu_flavor, budget_usd, project_path,
+        )
+        # Write compute budget so MCP tools can enforce the $ cap
+        from distillate.budget import write_compute_budget
+        try:
+            write_compute_budget(
+                cwd=project_path,
+                provider="hfjobs",
+                gpu_type=compute.get("gpu_type", "a100-large"),
+                budget_usd=budget_usd,
+            )
+        except Exception as e:
+            log.warning("Failed to write HF Jobs budget config for %s: %s", project_path, e)
+    elif cloud_provider and not host:
+        from distillate.compute import get_provider
+        provider = get_provider(cloud_provider)
+        pod_info = provider.create_pod(
+            gpu_type=compute.get("gpu_type", "RTX_4090"),
+            gpu_count=compute.get("gpu_count", 1),
+            name=f"distillate-{tmux_name}",
+        )
+        host = pod_info.host
+        # Sync project to pod
+        _sync_to_pod(project_path, pod_info)
+
+    # Write budget.json — single source of truth for time budgets
+    write_budget_json(project_path, project)
+    run_budget = (project.get("duration_minutes") or 5) * 60 if project else 300
+    session_budget = project.get("session_budget_seconds") if project else None
+
+    # Spawn tmux session (interactive agent — no tee needed)
     if host:
-        _spawn_ssh(tmux_name, host, str(project_path), cmd)
+        _spawn_ssh(tmux_name, host, str(project_path), cmd,
+                   run_budget=run_budget, session_budget=session_budget)
     else:
-        _spawn_local(tmux_name, project_path, cmd)
+        _spawn_local(tmux_name, project_path, cmd,
+                     run_budget=run_budget, session_budget=session_budget,
+                     extra_env=extra_env)
 
     now = datetime.now(timezone.utc).isoformat()
-    return {
+    session_data = {
         "session_id": session_id,
         "tmux_session": tmux_name,
         "started_at": now,
         "status": "running",
         "host": host,
         "model": model,
+        "agent_type": agent_type,
         "runs_at_start": runs_at_start,
         "session_log": str(session_log),
     }
+    if pod_info:
+        session_data["pod_id"] = pod_info.id
+        session_data["gpu_type"] = pod_info.gpu_type
+        session_data["cost_per_hour"] = pod_info.cost_per_hour
+    return session_data
 
 
-def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
+def _sync_to_pod(project_path: Path, pod_info) -> None:
+    """Sync local project to a cloud pod via rsync over SSH."""
+    import subprocess as _sp
+
+    dest = f"{pod_info.ssh_user}@{pod_info.host}:{project_path.name}/"
+    ssh_opts = f"ssh -p {pod_info.ssh_port} -o StrictHostKeyChecking=no"
+
+    # Check if there's a GitHub repo we can clone instead
+    git_remote = _sp.run(
+        ["git", "remote", "get-url", "origin"],
+        capture_output=True, text=True, cwd=project_path,
+    )
+    if git_remote.returncode == 0 and git_remote.stdout.strip():
+        # Clone from GitHub (faster, avoids large file transfers)
+        repo_url = git_remote.stdout.strip()
+        _sp.run(
+            ["ssh", "-p", str(pod_info.ssh_port),
+             "-o", "StrictHostKeyChecking=no",
+             f"{pod_info.ssh_user}@{pod_info.host}",
+             f"git clone {repo_url} {project_path.name}"],
+            capture_output=True, text=True, timeout=120,
+        )
+    else:
+        # rsync local files
+        _sp.run(
+            ["rsync", "-avz", "--exclude", ".git",
+             "-e", ssh_opts,
+             str(project_path) + "/", dest],
+            capture_output=True, text=True, timeout=300,
+        )
+
+
+def _spawn_local(session_name: str, work_dir: Path, command: str,
+                  *, run_budget: int = 300,
+                  session_budget: int | None = None,
+                  extra_env: dict[str, str] | None = None) -> int:
     """Spawn a local tmux session. Returns tmux server PID."""
     # Prepend PATH setup into the command so claude/python3 are found
     # regardless of how tmux was started (Electron has minimal PATH,
@@ -927,7 +1358,14 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Source bash login profile for SSO auth, then run the command
     bash_profile = Path.home() / ".bash_profile"
     source_line = f"source {shlex.quote(str(bash_profile))} >/dev/null 2>&1; " if bash_profile.exists() else ""
-    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; export DISTILLATE_SESSION=1; unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
+    budget_exports = f"export DISTILLATE_RUN_BUDGET_SECONDS={run_budget}; "
+    if session_budget is not None:
+        budget_exports += f"export DISTILLATE_SESSION_BUDGET_SECONDS={session_budget}; "
+    # Agent-specific env vars (e.g. HF Inference Providers for Pi)
+    agent_exports = ""
+    if extra_env:
+        agent_exports = " ".join(f"export {k}={shlex.quote(v)};" for k, v in extra_env.items()) + " "
+    full_command = f'{source_line}export PATH="{extra_paths}:$PATH"; export DISTILLATE_SESSION=1; {budget_exports}{agent_exports}unset CLAUDECODE; unset ANTHROPIC_API_KEY; {command}'
 
     print(f"[launch] tmux new-session -d -s {session_name} -c {work_dir}")
     print(f"[launch] command: {full_command}")
@@ -935,10 +1373,23 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
     # Set tmux options before creating the session to avoid green bar flash
     # -g sets global defaults that apply to new sessions
     subprocess.run(["tmux", "set-option", "-g", "status", "off"], capture_output=True)
+    # escape-time 0 removes tmux's ~500 ms delay on ESC — set once on the
+    # server so the desktop PTY attach doesn't need its own setup round-trip.
+    subprocess.run(["tmux", "set-option", "-g", "escape-time", "0"], capture_output=True)
+    # window-size latest: size the window to the most recently active client
+    # instead of the smallest attached one. Prevents a stale 80-col client
+    # (or the initial detached 80×24 default) from pinning the pane narrow
+    # and clipping agent output on the real viewer.
+    subprocess.run(["tmux", "set-option", "-g", "window-size", "latest"], capture_output=True)
 
     result = subprocess.run(
         [
             "tmux", "new-session", "-d",
+            # -x/-y set the initial detached window size. Without this tmux
+            # defaults to 80×24, the agent renders its first frames wrapped
+            # at 80 cols, and those frames stay baked into scrollback even
+            # after the desktop PTY attaches at a wider size.
+            "-x", "220", "-y", "50",
             "-s", session_name,
             "-c", str(work_dir),
             full_command,
@@ -977,9 +1428,13 @@ def _spawn_local(session_name: str, work_dir: Path, command: str) -> int:
 
 def _spawn_ssh(
     session_name: str, host: str, remote_dir: str, command: str,
+    *, run_budget: int = 300, session_budget: int | None = None,
 ) -> None:
     """Spawn a remote tmux session via SSH."""
-    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+    budget_exports = f"export DISTILLATE_RUN_BUDGET_SECONDS={run_budget} && "
+    if session_budget is not None:
+        budget_exports += f"export DISTILLATE_SESSION_BUDGET_SECONDS={session_budget} && "
+    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && {budget_exports}tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
@@ -1003,14 +1458,52 @@ def session_status(session_name: str, host: str | None = None) -> str:
     return "completed"
 
 
-def capture_pane(session_name: str, lines: int = 200) -> str:
-    """Capture the last N lines of output from a tmux session pane."""
+def get_detailed_agent_status(session_name: str, host: str | None = None) -> dict:
+    """Check tmux for detailed agent status (working/idle/waiting)."""
+    info = {"status": "unknown", "bell": False}
+    if host:
+        # Remote status check is more expensive, skip for now or implement minimally
+        return info
+
+    try:
+        # Check bell flag and pane title
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", session_name, "#{pane_title}|#{pane_bell_flag}"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0 and result.stdout:
+            parts = result.stdout.rstrip("\n").split("|")
+            title = parts[0]
+            bell = parts[1] == "1" if len(parts) > 1 else False
+            
+            from distillate.experiment_tools.workspace_tools import _detect_spinner
+            spinner = _detect_spinner(title)
+            
+            if bell:
+                info["status"] = "waiting"
+                info["bell"] = True
+            elif spinner == "working":
+                info["status"] = "working"
+            elif spinner == "idle_or_waiting":
+                info["status"] = "idle"
+            else:
+                info["status"] = "unknown"
+    except Exception:
+        pass
+    return info
+
+
+def capture_pane(session_name: str, lines: int = 200, *, escapes: bool = True) -> str:
+    """Capture the last N lines of output from a tmux session pane.
+
+    With *escapes=True* (default), includes ANSI escape sequences so the
+    output can be replayed into an xterm.js instance with colors intact.
+    """
     _ensure_path()
-    result = subprocess.run(
-        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", str(-lines)],
-        capture_output=True,
-        text=True,
-    )
+    cmd = ["tmux", "capture-pane", "-t", session_name, "-p", "-S", str(-lines)]
+    if escapes:
+        cmd.insert(3, "-e")  # include escape sequences
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         return ""
     return result.stdout
@@ -1240,12 +1733,25 @@ def launch_continuation(
         with open(context_path, "a", encoding="utf-8") as f:
             f.write("\n".join(extra) + "\n")
 
-    return launch_experiment(
+    result = launch_experiment(
         project_path,
         model=model,
         max_turns=max_turns,
         project=project,
     )
+
+    # Rewrite budget.json with the original session start time so the
+    # session-level budget tracks cumulative time across restarts.
+    sessions = project.get("sessions", {})
+    earliest_start = None
+    for sess in sessions.values():
+        sa = sess.get("started_at", "")
+        if sa and (earliest_start is None or sa < earliest_start):
+            earliest_start = sa
+    if earliest_start:
+        write_budget_json(project_path, project, session_started_at=earliest_start)
+
+    return result
 
 
 def launch_sweep(
@@ -1317,8 +1823,18 @@ def launch_sweep(
 def write_steering(project_path: Path, text: str) -> Path:
     """Write steering instructions to .distillate/steering.md.
 
-    Already read by ``_build_claude_command()`` via
-    ``$(cat ... .distillate/steering.md 2>/dev/null)``.
+    This is the durable-record primitive. Two readers consume it:
+
+    - ``_build_launch_prompt()`` on session start — inlines the text into
+      the launch prompt and unlinks the file (single-shot).
+    - ``distillate.hooks.post_bash`` inside a running session — prints the
+      text as a ``*** USER INSTRUCTION ***`` banner on the next tool use,
+      then unlinks.
+
+    Live sessions also receive the steering via
+    :func:`inject_steering_to_tmux` (called from ``steer_experiment_tool``)
+    for immediate delivery; the file is the fallback path.
+
     Returns the path written.
     """
     project_path = Path(project_path).resolve()
@@ -1331,17 +1847,114 @@ def write_steering(project_path: Path, text: str) -> Path:
     return steering_path
 
 
-def _rescan_after_session(project_id: str, state) -> dict | None:
+def inject_into_tmux(
+    tmux_name: str,
+    text: str = "",
+    *,
+    keys: list[str] | None = None,
+    host: str | None = None,
+) -> dict:
+    """Send literal text and/or named keys to a tmux pane.
+
+    ``text`` is typed literally via ``send-keys -l`` so special characters
+    are not interpreted.  ``keys`` are named keys sent without ``-l`` so
+    tmux interprets names like ``Enter``, ``Escape``, ``Space``.
+
+    When ``text`` is non-empty and ``keys`` is None, ``["Enter"]`` is used
+    so the message is submitted automatically — same as the old
+    ``inject_steering_to_tmux`` behaviour.  Pass ``keys=[]`` to type text
+    without submitting.
+
+    Works whether the agent is idle or mid-execution: if Claude Code is
+    running a tool the keystrokes buffer in the PTY and are processed when
+    the agent returns to its input prompt.
+
+    Returns ``{"ok": bool, "session": str, "error": str | None}``.
+    """
+    import time
+
+    if not tmux_name:
+        return {"ok": False, "session": tmux_name, "error": "empty session name"}
+
+    if text and keys is None:
+        keys = ["Enter"]
+    elif keys is None:
+        keys = []
+
+    try:
+        if host:
+            if text:
+                subprocess.run(
+                    ["ssh", host,
+                     f"tmux send-keys -t {shlex.quote(tmux_name)} -l "
+                     f"{shlex.quote(text)}"],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(0.2)
+            for key in keys:
+                subprocess.run(
+                    ["ssh", host,
+                     f"tmux send-keys -t {shlex.quote(tmux_name)} "
+                     f"{shlex.quote(key)}"],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(0.1)
+            return {"ok": True, "session": tmux_name, "error": None}
+
+        if text:
+            r = subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_name, "-l", text],
+                capture_output=True, timeout=3,
+            )
+            if r.returncode != 0:
+                err = f"send-keys -l rc={r.returncode}: {r.stderr.decode().strip()}"
+                log.warning("inject_into_tmux text failed for %s: %s", tmux_name, err)
+                return {"ok": False, "session": tmux_name, "error": err}
+            time.sleep(0.2)
+
+        for key in keys:
+            r = subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_name, key],
+                capture_output=True, timeout=3,
+            )
+            if r.returncode != 0:
+                err = f"send-keys {key!r} rc={r.returncode}: {r.stderr.decode().strip()}"
+                log.warning("inject_into_tmux key failed for %s: %s", tmux_name, err)
+                return {"ok": False, "session": tmux_name, "error": err}
+            time.sleep(0.1)
+
+        return {"ok": True, "session": tmux_name, "error": None}
+
+    except Exception as exc:
+        log.exception("inject_into_tmux failed for %s", tmux_name)
+        return {"ok": False, "session": tmux_name, "error": str(exc)}
+
+
+def inject_steering_to_tmux(
+    tmux_name: str, text: str, host: str | None = None
+) -> bool:
+    """Backward-compat wrapper around :func:`inject_into_tmux`."""
+    return inject_into_tmux(tmux_name, text, host=host)["ok"]
+
+
+def send_key_to_tmux(
+    tmux_name: str, key: str, host: str | None = None
+) -> bool:
+    """Backward-compat wrapper around :func:`inject_into_tmux`."""
+    return inject_into_tmux(tmux_name, keys=[key], host=host)["ok"]
+
+
+def _rescan_after_session(experiment_id: str, state) -> dict | None:
     """Rescan a project after a session completes, adding new runs to state.
 
     Shared by ``run_campaign()`` (CLI foreground) and server SSE loop.
     Returns ``{"new_runs": int, "total_runs": int, "best_metric": dict|None}``
     or None on failure.
     """
-    from distillate.experiments import scan_project
+    from distillate.experiments import scan_experiment
     from distillate.state import acquire_lock, release_lock
 
-    proj = state.get_project(project_id)
+    proj = state.get_experiment(experiment_id)
     if not proj:
         return None
 
@@ -1349,14 +1962,14 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
     if not proj_path.is_dir():
         return None
 
-    result = scan_project(proj_path)
+    result = scan_experiment(proj_path)
     if "error" in result:
         return None
 
     acquire_lock()
     try:
         state.reload()
-        existing = state.get_project(project_id)
+        existing = state.get_experiment(experiment_id)
         if not existing:
             return None
         old_runs = existing.get("runs", {})
@@ -1365,10 +1978,10 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
         new_runs = 0
         for run_id, run_data in result.get("runs", {}).items():
             if run_data["name"] not in existing_names:
-                state.add_run(project_id, run_id, run_data)
+                state.add_run(experiment_id, run_id, run_data)
                 new_runs += 1
-        state.update_project(
-            project_id,
+        state.update_experiment(
+            experiment_id,
             last_scanned_at=datetime.now(timezone.utc).isoformat(),
             last_commit_hash=result.get("head_hash", ""),
         )
@@ -1378,7 +1991,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
 
     # Find best metric across all non-crash runs
     best_metric = None
-    updated_proj = state.get_project(project_id)
+    updated_proj = state.get_experiment(experiment_id)
     if updated_proj:
         for run in updated_proj.get("runs", {}).values():
             if run.get("decision") == "crash" or run.get("status") == "failed":
@@ -1392,7 +2005,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
     try:
         from distillate.cloud_email import send_experiment_event, _cloud_configured
         if _cloud_configured() and new_runs > 0:
-            proj_data = state.get_project(project_id) or {}
+            proj_data = state.get_experiment(experiment_id) or {}
             runs_all = proj_data.get("runs", {})
             kept = sum(1 for r in runs_all.values()
                        if (r.get("decision") or "") == "best")
@@ -1402,7 +2015,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
                 best_str = f"{k}={v}"
             send_experiment_event(
                 state,
-                project_name=proj_data.get("name", project_id),
+                project_name=proj_data.get("name", experiment_id),
                 runs=len(runs_all),
                 kept=kept,
                 best_metric=best_str,
@@ -1428,7 +2041,7 @@ def _rescan_after_session(project_id: str, state) -> dict | None:
 
 
 def run_campaign(
-    project_id: str,
+    experiment_id: str,
     state,
     *,
     max_sessions: int = 10,
@@ -1457,7 +2070,7 @@ def run_campaign(
         if on_event:
             on_event(event)
         # Also append to events.jsonl
-        proj = state.get_project(project_id)
+        proj = state.get_experiment(experiment_id)
         if proj:
             proj_path = Path(proj.get("path", ""))
             events_file = proj_path / ".distillate" / "events.jsonl"
@@ -1470,7 +2083,7 @@ def run_campaign(
 
     while not stop_flag.is_set():
         state.reload()
-        proj = state.get_project(project_id)
+        proj = state.get_experiment(experiment_id)
         if not proj:
             break
 
@@ -1485,7 +2098,7 @@ def run_campaign(
             _emit({
                 "type": "campaign_completed",
                 "ts": datetime.now(timezone.utc).isoformat(),
-                "project_id": project_id,
+                "experiment_id": experiment_id,
                 "sessions_launched": total,
                 "stop_reason": "budget_exhausted",
             })
@@ -1496,7 +2109,7 @@ def run_campaign(
             _emit({
                 "type": "goal_reached",
                 "ts": datetime.now(timezone.utc).isoformat(),
-                "project_id": project_id,
+                "experiment_id": experiment_id,
                 "sessions_launched": total,
             })
             return {"sessions_launched": sessions_launched, "stop_reason": "goal_reached"}
@@ -1511,7 +2124,7 @@ def run_campaign(
                 proj_path, proj, model=model, max_turns=max_turns,
             )
         except Exception:
-            log.exception("Campaign launch failed for %s", project_id)
+            log.exception("Campaign launch failed for %s", experiment_id)
             time.sleep(30)
             continue
 
@@ -1521,12 +2134,12 @@ def run_campaign(
         acquire_lock()
         try:
             state.reload()
-            state.add_session(project_id, session_data["session_id"], session_data)
-            p = state.get_project(project_id)
+            state.add_session(experiment_id, session_data["session_id"], session_data)
+            p = state.get_experiment(experiment_id)
             c = dict(p.get("campaign", {}))
             c["sessions_launched"] = c.get("sessions_launched", 0) + 1
             c["current_session_id"] = session_data["session_id"]
-            state.update_project(project_id, campaign=c)
+            state.update_experiment(experiment_id, campaign=c)
             state.save()
         finally:
             release_lock()
@@ -1534,7 +2147,7 @@ def run_campaign(
         _emit({
             "type": "campaign_run_started",
             "ts": datetime.now(timezone.utc).isoformat(),
-            "project_id": project_id,
+            "experiment_id": experiment_id,
             "session_id": session_data["session_id"],
             "sessions_launched": c["sessions_launched"],
             "budget_remaining": max_sessions - c["sessions_launched"],
@@ -1545,7 +2158,7 @@ def run_campaign(
         while not stop_flag.is_set():
             time.sleep(poll_interval)
             state.reload()
-            p = state.get_project(project_id)
+            p = state.get_experiment(experiment_id)
             c = p.get("campaign", {}) if p else {}
             if c.get("status") not in ("running", None):
                 return {"sessions_launched": sessions_launched, "stop_reason": "user_stopped"}
@@ -1556,9 +2169,9 @@ def run_campaign(
             if actual != "running":
                 # Rescan
                 try:
-                    _rescan_after_session(project_id, state)
+                    _rescan_after_session(experiment_id, state)
                 except Exception:
-                    log.exception("Campaign rescan failed for %s", project_id)
+                    log.exception("Campaign rescan failed for %s", experiment_id)
                 break
 
         # Small delay before next iteration
@@ -1594,9 +2207,10 @@ def refresh_session_statuses(state) -> int:
                 tmux_name, created = line.split(":", 1)
                 if not tmux_name.startswith("distillate-"):
                     continue
-                # Match to a project
-                for proj_id, proj in state.projects.items():
-                    if tmux_name.startswith(f"distillate-{proj_id}"):
+                # Match to a project — require exact `distillate-<proj_id>-NNN`
+                # so e.g. tinymatmul-t4 doesn't also register under tinymatmul.
+                for proj_id, proj in state.experiments.items():
+                    if re.match(rf"^distillate-{re.escape(proj_id)}-\d+$", tmux_name):
                         sessions = proj.get("sessions", {})
                         # Check if already tracked
                         already = any(
@@ -1618,7 +2232,7 @@ def refresh_session_statuses(state) -> int:
                                 "started_at": started,
                                 "discovered": True,
                             }
-                            state.update_project(proj_id, sessions=sessions)
+                            state.update_experiment(proj_id, sessions=sessions)
                             changed += 1
                             log.info("Discovered untracked session: %s → %s",
                                      tmux_name, proj_id)
@@ -1627,13 +2241,35 @@ def refresh_session_statuses(state) -> int:
         log.debug("tmux discovery failed (non-critical)", exc_info=True)
 
     # Check known sessions
-    for proj_id, proj in state.projects.items():
+    for proj_id, proj in state.experiments.items():
         sessions = proj.get("sessions", {})
         for sess_id, sess in sessions.items():
             if sess.get("status") != "running":
                 continue
             tmux_name = sess.get("tmux_session", "")
             host = sess.get("host")
+            
+            # Detailed status check — preserve user-requested graceful stop
+            detailed = get_detailed_agent_status(tmux_name, host)
+            if sess.get("agent_status") != "stopping":
+                sess["agent_status"] = detailed["status"]
+            if detailed.get("bell"):
+                sess["attention_needed"] = True
+            else:
+                sess.pop("attention_needed", None)
+
+            # Graceful stop + idle → agent finished its run and is waiting
+            # at the prompt. Kill the session so on_stop fires and the UI
+            # exits the "Finishing run…" state. No C-c needed since it's idle.
+            if sess.get("agent_status") == "stopping" and detailed.get("status") == "idle":
+                try:
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", tmux_name],
+                        capture_output=True, timeout=3,
+                    )
+                except Exception:
+                    pass
+
             actual = session_status(tmux_name, host)
             if actual != "running":
                 sess["status"] = "completed"

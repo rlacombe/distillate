@@ -1,8 +1,16 @@
+# Covers: distillate/integrations/remarkable/promote.py
 """Tests for auto-promote: stat_document, smart demotion, and Sonnet suggestions."""
 
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _legacy_remarkable_mode(monkeypatch):
+    """Promote/demote is a reMarkable-path feature; force that mode."""
+    monkeypatch.setattr("distillate.config.READING_SOURCE", "remarkable")
 
 
 # ---------------------------------------------------------------------------
@@ -20,12 +28,12 @@ class TestStatDocument:
     )
 
     def test_parses_current_page_and_modified(self):
-        from distillate.remarkable_client import stat_document
+        from distillate.integrations.remarkable.client import stat_document
 
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=self.SAMPLE_STAT_OUTPUT, stderr=""
         )
-        with patch("distillate.remarkable_client._run", return_value=fake_result):
+        with patch("distillate.integrations.remarkable.client._run", return_value=fake_result):
             info = stat_document("Papers", "My Paper")
 
         assert info is not None
@@ -33,7 +41,7 @@ class TestStatDocument:
         assert "2026-02-07" in info["modified_client"]
 
     def test_current_page_zero(self):
-        from distillate.remarkable_client import stat_document
+        from distillate.integrations.remarkable.client import stat_document
 
         output = (
             "ModifiedClient: 2026-02-07 08:30:00.000000000 +0000 UTC\n"
@@ -42,37 +50,37 @@ class TestStatDocument:
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=output, stderr=""
         )
-        with patch("distillate.remarkable_client._run", return_value=fake_result):
+        with patch("distillate.integrations.remarkable.client._run", return_value=fake_result):
             info = stat_document("Papers", "My Paper")
 
         assert info is not None
         assert info["current_page"] == 0
 
     def test_returns_none_on_failure(self):
-        from distillate.remarkable_client import stat_document
+        from distillate.integrations.remarkable.client import stat_document
 
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="not found"
         )
-        with patch("distillate.remarkable_client._run", return_value=fake_result):
+        with patch("distillate.integrations.remarkable.client._run", return_value=fake_result):
             info = stat_document("Papers", "Missing Doc")
 
         assert info is None
 
     def test_returns_empty_dict_on_unparseable_output(self):
-        from distillate.remarkable_client import stat_document
+        from distillate.integrations.remarkable.client import stat_document
 
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="SomeOtherField: value\n", stderr=""
         )
-        with patch("distillate.remarkable_client._run", return_value=fake_result):
+        with patch("distillate.integrations.remarkable.client._run", return_value=fake_result):
             info = stat_document("Papers", "Weird Doc")
 
         assert info == {}
         assert info is not None  # command succeeded, should not be None
 
     def test_handles_non_numeric_current_page(self):
-        from distillate.remarkable_client import stat_document
+        from distillate.integrations.remarkable.client import stat_document
 
         output = (
             "ModifiedClient: 2026-02-07 08:30:00.000000000 +0000 UTC\n"
@@ -81,7 +89,7 @@ class TestStatDocument:
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=output, stderr=""
         )
-        with patch("distillate.remarkable_client._run", return_value=fake_result):
+        with patch("distillate.integrations.remarkable.client._run", return_value=fake_result):
             info = stat_document("Papers", "Bad Page")
 
         # Should still return modified_client, but no current_page
@@ -95,7 +103,7 @@ class TestRmapiTimeout:
 
     def test_timeout_raises_runtime_error(self):
         import pytest
-        from distillate.remarkable_client import _run
+        from distillate.integrations.remarkable.client import _run
 
         with patch("shutil.which", return_value="/usr/bin/rmapi"), \
              patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="rmapi", timeout=120)):
@@ -137,9 +145,9 @@ class TestPromoteSmartDemotion:
 
     def _run_suggest(self, state, rm_mock, summarizer_mock):
         """Run _suggest() with mocked dependencies."""
-        with patch("distillate.remarkable_client.list_folder", rm_mock.list_folder), \
-             patch("distillate.remarkable_client.stat_document", rm_mock.stat_document), \
-             patch("distillate.remarkable_client.move_document", rm_mock.move_document), \
+        with patch("distillate.integrations.remarkable.client.list_folder", rm_mock.list_folder), \
+             patch("distillate.integrations.remarkable.client.stat_document", rm_mock.stat_document), \
+             patch("distillate.integrations.remarkable.client.move_document", rm_mock.move_document), \
              patch("distillate.summarizer.suggest_papers", summarizer_mock.suggest_papers), \
              patch("distillate.state.State", return_value=state), \
              patch("distillate.state.acquire_lock", return_value=True), \
@@ -294,9 +302,9 @@ class TestPromotedAtTimestamp:
         summarizer = MagicMock()
         summarizer.suggest_papers.return_value = "1. Paper A — great paper"
 
-        with patch("distillate.remarkable_client.list_folder", rm.list_folder), \
-             patch("distillate.remarkable_client.stat_document", rm.stat_document), \
-             patch("distillate.remarkable_client.move_document", rm.move_document), \
+        with patch("distillate.integrations.remarkable.client.list_folder", rm.list_folder), \
+             patch("distillate.integrations.remarkable.client.stat_document", rm.stat_document), \
+             patch("distillate.integrations.remarkable.client.move_document", rm.move_document), \
              patch("distillate.summarizer.suggest_papers", summarizer.suggest_papers), \
              patch("distillate.state.State", return_value=state), \
              patch("distillate.state.acquire_lock", return_value=True), \
@@ -310,3 +318,58 @@ class TestPromotedAtTimestamp:
             _suggest()
 
         assert "promoted_at" in doc_a
+
+
+# ---------------------------------------------------------------------------
+# Migrated from test_v032.py
+# ---------------------------------------------------------------------------
+
+
+class TestUploadPathLeak:
+    """upload_pdf_bytes() should rename docs when rmapi uses temp path."""
+
+    @patch("distillate.integrations.remarkable.client._run")
+    @patch("distillate.integrations.remarkable.client.list_folder")
+    def test_no_rename_when_name_correct(self, mock_list, mock_run):
+        """Normal case: doc name is correct, no rename needed."""
+        from distillate.integrations.remarkable.client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_list.return_value = ["My Paper"]
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args_list[0][0][0][0] == "put"
+
+    @patch("distillate.integrations.remarkable.client._run")
+    @patch("distillate.integrations.remarkable.client.list_folder")
+    def test_rename_when_temp_path_leaked(self, mock_list, mock_run):
+        r"""Windows path leak: doc named 'C:\Users\...\tmpXXXX\My Paper'."""
+        from distillate.integrations.remarkable.client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_list.return_value = [r"C:\Users\foo\Temp\tmp123\My Paper"]
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        assert mock_run.call_count == 2
+        mv_args = mock_run.call_args_list[1][0][0]
+        assert mv_args[0] == "mv"
+        assert mv_args[1] == r"/Distillate/Inbox/C:\Users\foo\Temp\tmp123\My Paper"
+        assert mv_args[2] == "/Distillate/Inbox/My Paper"
+
+    @patch("distillate.integrations.remarkable.client._run")
+    @patch("distillate.integrations.remarkable.client.list_folder")
+    def test_skip_when_already_exists(self, mock_list, mock_run):
+        """Already-existing doc should skip without rename."""
+        from distillate.integrations.remarkable.client import upload_pdf_bytes
+
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="entry already exists",
+        )
+
+        upload_pdf_bytes(b"%PDF-1.4 test", "Distillate/Inbox", "My Paper")
+
+        assert mock_run.call_count == 1
+        mock_list.assert_not_called()

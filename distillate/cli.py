@@ -197,7 +197,7 @@ def main():
         return
 
     if "--register" in sys.argv:
-        from distillate.remarkable_auth import register_interactive
+        from distillate.integrations.remarkable.auth import register_interactive
         register_interactive()
         return
 
@@ -213,7 +213,7 @@ def main():
         idx = sys.argv.index("--setup")
         if idx + 1 >= len(sys.argv):
             print("Usage: distillate --setup <connector>")
-            print("Connectors: zotero, email, remarkable, obsidian")
+            print("Connectors: zotero, email, remarkable, obsidian, huggingface")
             sys.exit(1)
         wizard._setup_single(sys.argv[idx + 1])
         return
@@ -428,7 +428,7 @@ def main():
 
     if "--compare" in sys.argv:
         idx = sys.argv.index("--compare")
-        commands._compare_projects(sys.argv[idx + 1:])
+        commands._compare_experiments(sys.argv[idx + 1:])
         return
 
     if "--github" in sys.argv:
@@ -453,19 +453,7 @@ def main():
         print("Run 'distillate --help' for available commands.")
         sys.exit(1)
 
-    # Positional args (not flags) → single-turn agent query
-    positional = [a for a in sys.argv[1:] if not a.startswith("-")]
-    if positional:
-        from distillate.agent import run_chat
-        run_chat(positional)
-        return
-
-    # No flags, no positional args → agent (TTY) or sync (non-TTY / --sync)
-    if "--sync" not in sys.argv and sys.stdin.isatty() and sys.stdout.isatty():
-        from distillate.agent import run_chat
-        run_chat()
-        return
-
+    # No flags → run sync pipeline
     pipeline.run_sync()
 
 

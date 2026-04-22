@@ -3,6 +3,10 @@
     "distillate": {
       "command": "python3",
       "args": ["-m", "distillate.mcp_server"]
+    },
+    "huggingface": {
+      "command": "npx",
+      "args": ["-y", "@huggingface/mcp-server"]
     }
   }
 }

@@ -239,6 +239,7 @@ def suggest_papers(
     return _call_claude(prompt, max_tokens=300, model=config.CLAUDE_SMART_MODEL)
 
 
+
 def _call_claude(prompt: str, max_tokens: int = 400, model: Optional[str] = None) -> Optional[str]:
     """Call Claude API and return the response text, or None on failure."""
     try:

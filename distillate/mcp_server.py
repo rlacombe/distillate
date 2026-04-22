@@ -7,13 +7,14 @@ Configure in Claude Code:
     .mcp.json: {"mcpServers": {"distillate": {"command": "python3", "args": ["-m", "distillate.mcp_server"]}}}
 """
 
+import asyncio
 import json
 import logging
 
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
-from distillate.agent_core import TOOL_SCHEMAS, execute_tool
+from distillate.agent_core import NICOLAS_TOOL_SCHEMAS, execute_tool
 from distillate.state import State
 
 log = logging.getLogger(__name__)
@@ -31,21 +32,28 @@ async def list_tools() -> list[Tool]:
             description=schema.get("description", ""),
             inputSchema=schema.get("input_schema", {}),
         )
-        for schema in TOOL_SCHEMAS
+        for schema in NICOLAS_TOOL_SCHEMAS
     ]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Execute a Distillate tool and return JSON result."""
+    """Execute a Distillate tool and return JSON result.
+
+    The lab_repl tool may run long (sub-LLM calls, recursive delegation),
+    so it runs in a thread to avoid blocking the MCP event loop.
+    """
     _state.reload()
-    result = execute_tool(name, arguments, _state)
+    # Run blocking tools in a thread to avoid stalling the MCP event loop.
+    _THREADED_TOOLS = {"lab_repl", "distillate_repl", "distillate_search"}
+    if name in _THREADED_TOOLS:
+        result = await asyncio.to_thread(execute_tool, name, arguments, _state)
+    else:
+        result = execute_tool(name, arguments, _state)
     return [TextContent(type="text", text=json.dumps(result, default=str))]
 
 
 def main():
-    import asyncio
-
     from mcp.server.stdio import stdio_server
 
     async def _run():

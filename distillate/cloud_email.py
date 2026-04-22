@@ -10,7 +10,6 @@ No account creation needed — the first sync auto-registers the user.
 import json
 import logging
 import os
-from datetime import datetime
 from urllib import error as urllib_error
 from urllib import request
 
@@ -112,9 +111,42 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
         if isinstance(hl, list) and hl:
             recent_highlights.append(str(hl[0])[:150])
 
+    # Score queued papers for daily email suggestions (algorithmic, no AI)
+    # Factors: tag overlap with reading interests, citation count, queue age
+    top_tag_set = set(t.lower() for t in top_tags[:10])
+    scored_papers = []
+    for doc in queue:
+        meta = doc.get("metadata", {})
+        doc_tags = meta.get("tags", [])
+        tag_overlap = sum(1 for t in doc_tags if t.lower() in top_tag_set)
+        citations = meta.get("citation_count", 0) or 0
+        # Queue age: older papers get a boost so they don't languish
+        days_in_queue = 0
+        uploaded = doc.get("uploaded_at", "")
+        if uploaded:
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(uploaded)
+                days_in_queue = (datetime.now(timezone.utc) - dt).days
+            except (ValueError, TypeError):
+                pass
+        age_boost = min(days_in_queue / 30, 1.0)  # cap at 1.0 after 30 days
+        citation_boost = min(citations / 100, 1.0)
+        score = round(tag_overlap * 2 + citation_boost + age_boost, 2)
+        if score > 0:
+            scored_papers.append({
+                "title": doc.get("title", ""),
+                "tags": doc_tags[:3],
+                "authors": (doc.get("authors") or [])[:2],
+                "year": (meta.get("date") or "")[:4],
+                "score": score,
+            })
+    scored_papers.sort(key=lambda p: p["score"], reverse=True)
+    queued_papers = scored_papers[:10]
+
     # Experiments summary
     experiments = []
-    for proj in state.projects.values():
+    for proj in state.experiments.values():
         runs = proj.get("runs", {})
         kept = sum(1 for r in runs.values()
                    if (r.get("decision") or "") == "best")
@@ -178,6 +210,7 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
             "papers_queued": len(queue),
             "reading_tags": top_tags,
             "recent_highlights": recent_highlights,
+            "queued_papers": queued_papers,
             "experiments": experiments,
         },
     }
@@ -187,7 +220,8 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
         # Save auth token for event calls
         token = result.get("auth_token", "")
         if token:
-            config.save_to_env("DISTILLATE_AUTH_TOKEN", token)
+            from distillate import secrets as _secrets
+            _secrets.set("DISTILLATE_AUTH_TOKEN", token)
         log.info("Cloud snapshot synced for %s", email)
     return result
 
@@ -195,7 +229,7 @@ def sync_snapshot(state, resend_verification: bool = False) -> dict | None:
 def send_experiment_event(
     state,
     project_name: str,
-    project_id: str = "",
+    experiment_id: str = "",
     runs: int = 0,
     kept: int = 0,
     best_metric: str = "",
@@ -215,10 +249,10 @@ def send_experiment_event(
         return False
 
     chart_b64 = ""
-    proj = state.projects.get(project_id, {}) if project_id else {}
+    proj = state.experiments.get(experiment_id, {}) if experiment_id else {}
 
     # Pull research insights from enrichment cache
-    if project_id and not insight:
+    if experiment_id and not insight:
         try:
             from distillate.experiments import load_enrichment_cache
             project_path = Path(proj.get("path", ""))
@@ -241,7 +275,7 @@ def send_experiment_event(
             log.debug("Failed to load insights for %s", project_name, exc_info=True)
 
     # Generate chart PNG (no title — email header has it)
-    if project_id:
+    if experiment_id:
         try:
             from distillate.experiments import generate_export_chart, infer_key_metric_name, _is_lower_better
             run_list = list(proj.get("runs", {}).values())

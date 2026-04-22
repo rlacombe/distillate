@@ -44,7 +44,7 @@ __all__ = [
     "_queue_sessions",
     "_list_templates",
     "_save_template",
-    "_compare_projects",
+    "_compare_experiments",
     "_github",
     "_create_experiment",
     "_parallel_campaign",
@@ -53,7 +53,7 @@ __all__ = [
 
 def _resolve_project_or_bail(query, state):
     """Look up a project by name/ID/index, printing an error if not found."""
-    proj = state.find_project(query)
+    proj = state.find_experiment(query)
     if not proj:
         print(f"  No project found matching '{query}'.")
     return proj
@@ -80,7 +80,7 @@ def _scan_projects() -> None:
         print("Experiments not enabled. Set EXPERIMENTS_ENABLED=true in your .env")
         return
 
-    projects = state.projects
+    projects = state.experiments
     if not projects:
         print("No projects tracked yet. Use the agent to scan a project:")
         print('  distillate "scan project at ~/Code/Research/my-project"')
@@ -89,14 +89,14 @@ def _scan_projects() -> None:
     from distillate.experiments import (
         generate_notebook,
         load_enrichment_cache,
-        update_project,
+        update_experiment,
     )
     from distillate.obsidian import write_experiment_notebook
 
     updated = 0
     for proj_id, proj in projects.items():
         print(f"  Scanning {proj.get('name', proj_id)}...")
-        if update_project(proj, state):
+        if update_experiment(proj, state):
             proj_path = proj.get("path", "")
             enrichment = load_enrichment_cache(Path(proj_path)) if proj_path else {}
             notebook_md = generate_notebook(proj, enrichment=enrichment)
@@ -136,46 +136,48 @@ def _install_hooks(args: list[str]) -> None:
         shutil.copy2(reporting_src, reporting_dst)
         print(f"  Copied REPORTING.md to {reporting_dst}")
 
-    # 2b. Install CLAUDE.md (consolidated protocol)
-    claude_md_src = Path(__file__).parent / "autoresearch" / "CLAUDE.md"
-    if claude_md_src.exists():
-        claude_md_dst = project_path / "CLAUDE.md"
-        shutil.copy2(claude_md_src, claude_md_dst)
-        print("  Installed CLAUDE.md (experiment protocol)")
+    # 2b. Install agent-specific protocol files
+    autoresearch = Path(__file__).parent / "autoresearch"
+    for context_file in ("CLAUDE.md", "GEMINI.md", "PI.md"):
+        src = autoresearch / context_file
+        if src.exists():
+            shutil.copy2(src, project_path / context_file)
+            print(f"  Installed {context_file} (experiment protocol)")
 
-    # 3. Merge hook config into .claude/settings.json
-    hooks_src = Path(__file__).parent / "autoresearch" / "hooks.json"
+    # 3. Merge hook config into agent settings
+    hooks_src = autoresearch / "hooks.json"
     if not hooks_src.exists():
         print("  Warning: hooks.json template not found")
         return
 
     hook_config = json_mod.loads(hooks_src.read_text(encoding="utf-8"))
 
-    claude_dir = project_path / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    settings_file = claude_dir / "settings.json"
+    for agent_type in ("claude", "gemini"):
+        agent_dir = project_path / f".{agent_type}"
+        agent_dir.mkdir(exist_ok=True)
+        settings_file = agent_dir / "settings.json"
 
-    existing: dict = {}
-    if settings_file.exists():
-        try:
-            existing = json_mod.loads(settings_file.read_text(encoding="utf-8"))
-        except json_mod.JSONDecodeError:
-            pass
+        existing: dict = {}
+        if settings_file.exists():
+            try:
+                existing = json_mod.loads(settings_file.read_text(encoding="utf-8"))
+            except json_mod.JSONDecodeError:
+                pass
 
-    # Merge hooks (don't overwrite existing hooks)
-    existing_hooks = existing.setdefault("hooks", {})
-    for event_type, hook_list in hook_config.get("hooks", {}).items():
-        existing_entries = existing_hooks.setdefault(event_type, [])
-        existing_commands = {e.get("command", "") for e in existing_entries}
-        for hook in hook_list:
-            if hook.get("command", "") not in existing_commands:
-                existing_entries.append(hook)
+        # Merge hooks (don't overwrite existing hooks)
+        existing_hooks = existing.setdefault("hooks", {})
+        for event_type, hook_list in hook_config.get("hooks", {}).items():
+            existing_entries = existing_hooks.setdefault(event_type, [])
+            existing_commands = {e.get("command", "") for e in existing_entries}
+            for hook in hook_list:
+                if hook.get("command", "") not in existing_commands:
+                    existing_entries.append(hook)
 
-    settings_file.write_text(
-        json_mod.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    print(f"  Updated {settings_file}")
+        settings_file.write_text(
+            json_mod.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(f"  Updated {settings_file}")
     print("  Done! Hooks will capture experiments in this directory.")
 
 
@@ -279,19 +281,19 @@ def _new_experiment(args: list[str]) -> None:
 
         # Register in state
         state = State()
-        project_id = slugify(name)
-        if not state.has_project(project_id):
-            state.add_project(
-                project_id=project_id,
+        experiment_id = slugify(name)
+        if not state.has_experiment(experiment_id):
+            state.add_experiment(
+                experiment_id=experiment_id,
                 name=name.replace("-", " ").title() if name == slugify(name) else name,
                 path=str(result),
             )
-            state.update_project(project_id, template=template_name)
+            state.update_experiment(experiment_id, template=template_name)
             state.save()
-            print(f"  - Registered as project '{project_id}'")
+            print(f"  - Registered as project '{experiment_id}'")
 
         print("\n  Launch it:")
-        print(f"    distillate --launch {project_id}")
+        print(f"    distillate --launch {experiment_id}")
 
     except (FileNotFoundError, FileExistsError) as e:
         print(f"  Error: {e}")
@@ -314,7 +316,7 @@ def _launch_experiment(args: list[str]) -> None:
     state = State()
 
     # Resolve: try project name/ID first, then path
-    proj = state.find_project(query)
+    proj = state.find_experiment(query)
     if proj:
         project_path = Path(proj["path"])
     else:
@@ -358,7 +360,7 @@ def _list_experiments() -> None:
     from distillate.state import State
 
     state = State()
-    projects = state.projects
+    projects = state.experiments
 
     if not projects:
         print("  No experiments tracked yet.")
@@ -378,7 +380,7 @@ def _list_experiments() -> None:
     insights_by_proj: list[tuple[str, dict]] = []
 
     for proj_id, proj in projects.items():
-        idx = state.project_index_of(proj_id)
+        idx = state.experiment_index_of(proj_id)
         name = proj.get("name", proj_id)[:22]
         status = proj.get("status", "tracking")
         runs = proj.get("runs", {})
@@ -588,7 +590,7 @@ def _campaign(args: list[str]) -> None:
         campaign["status"] = "paused"
         campaign["stop_reason"] = "user_stopped"
         campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
-        state.update_project(proj["id"], campaign=campaign)
+        state.update_experiment(proj["id"], campaign=campaign)
         state.save()
         print(f"  Campaign paused for '{proj_name}'.")
         return
@@ -633,7 +635,7 @@ def _campaign(args: list[str]) -> None:
         "completed_at": None,
         "stop_reason": None,
     }
-    state.update_project(proj["id"], campaign=campaign, auto_continue=True)
+    state.update_experiment(proj["id"], campaign=campaign, auto_continue=True)
     state.save()
 
     stop_flag = threading.Event()
@@ -681,13 +683,13 @@ def _campaign(args: list[str]) -> None:
 
     # Update campaign status in state
     state.reload()
-    p = state.get_project(proj["id"])
+    p = state.get_experiment(proj["id"])
     if p:
         c = dict(p.get("campaign", {}))
         c["status"] = "paused"
         c["stop_reason"] = reason
         c["completed_at"] = datetime.now(timezone.utc).isoformat()
-        state.update_project(proj["id"], campaign=c)
+        state.update_experiment(proj["id"], campaign=c)
         state.save()
 
 
@@ -723,7 +725,7 @@ def _goals(args: list[str]) -> None:
                 print("  Expected format: \"accuracy>0.95\" or \"loss<0.05\"")
                 return
 
-        state.update_project(proj["id"], goals=goals)
+        state.update_experiment(proj["id"], goals=goals)
         state.save()
         print(f"\n  Set {len(goals)} goal(s) for {_bold(proj_name)}:\n")
         for g in goals:
@@ -1123,7 +1125,7 @@ def _open_notebook(args: list[str]) -> None:
     # Also write to Obsidian vault if configured
     from distillate.obsidian import write_experiment_notebook, write_experiment_html_notebook
     obs_md = write_experiment_notebook(proj, md_content)
-    obs_html = write_experiment_html_notebook(proj, html_content)
+    write_experiment_html_notebook(proj, html_content)
 
     print(f"\n  Generated notebooks for {_bold(proj_name)}:")
     print(f"    HTML: {html_path}")
@@ -1365,7 +1367,7 @@ def _delete_experiment(args: list[str]) -> None:
             print("  Cancelled.")
             return
 
-    state.remove_project(proj_id)
+    state.remove_experiment(proj_id)
     state.save()
     print(f"  Deleted '{proj_name}' ({run_count} runs removed from tracking).")
 
@@ -1407,7 +1409,7 @@ def _edit_prompt(args: list[str]) -> None:
 
     detected = detect_primary_metric(content)
     if detected:
-        state.update_project(proj["id"], key_metric_name=detected)
+        state.update_experiment(proj["id"], key_metric_name=detected)
         state.save()
         print(f"  Detected primary metric: {detected}")
 
@@ -1544,8 +1546,8 @@ def _watch(args: list[str]) -> None:
         generate_html_notebook,
         generate_notebook,
         load_enrichment_cache,
-        scan_project,
-        watch_project_artifacts,
+        scan_experiment,
+        watch_experiment_artifacts,
     )
 
     config.setup_logging()
@@ -1557,7 +1559,7 @@ def _watch(args: list[str]) -> None:
     # Resolve project name to path
     from distillate.state import State as _WatchState
     _ws = _WatchState()
-    _wp = _ws.find_project(args[0])
+    _wp = _ws.find_experiment(args[0])
     if _wp and _wp.get("path"):
         project_path = Path(_wp["path"]).resolve()
     else:
@@ -1569,7 +1571,7 @@ def _watch(args: list[str]) -> None:
     print(f"  Watching {project_path}...")
 
     # Initial scan
-    project = scan_project(project_path)
+    project = scan_experiment(project_path)
     if "error" in project:
         print(f"  Error: {project['error']}")
         return
@@ -1620,10 +1622,10 @@ def _watch(args: list[str]) -> None:
                         print(line)
 
             # Check for artifact changes (notebook regen)
-            new_data = watch_project_artifacts(project_path)
+            new_data = watch_experiment_artifacts(project_path)
             if new_data:
                 print(f"  Detected {len(new_data)} new event(s), regenerating...")
-                project = scan_project(project_path)
+                project = scan_experiment(project_path)
                 enrichment = load_enrichment_cache(project_path)
                 if "error" not in project:
                     html = generate_html_notebook(project, enrichment=enrichment)
@@ -1666,7 +1668,7 @@ def _update_project(args: list[str]) -> None:
         print('  Nothing to update. Use --key-metric or --description.')
         return
 
-    state.update_project(proj["id"], **updates)
+    state.update_experiment(proj["id"], **updates)
     state.save()
     print(f"  Updated {_bold(proj.get('name', query))}:")
     for k, v in updates.items():
@@ -1691,7 +1693,7 @@ def _queue_sessions(args: list[str]) -> None:
     model = _opt("--model") or "claude-sonnet-4-5-20250929"
     max_turns = int(_opt("--turns") or "100")
 
-    state.update_project(proj["id"], continuation_queue={
+    state.update_experiment(proj["id"], continuation_queue={
         "count": count,
         "model": model,
         "max_turns": max_turns,
@@ -1746,7 +1748,7 @@ def _save_template(args: list[str]) -> None:
     print(f"  Saved template '{_bold(template_name)}' from {proj.get('name', query)}")
 
 
-def _compare_projects(args: list[str]) -> None:
+def _compare_experiments(args: list[str]) -> None:
     """Side-by-side experiment comparison table."""
     from distillate.state import State
 
@@ -1855,7 +1857,7 @@ def _github(args: list[str]) -> None:
 
     result = create_github_repo(Path(proj_path), repo_name, private=private)
     if result.get("ok"):
-        state.update_project(proj["id"], github_url=result["url"])
+        state.update_experiment(proj["id"], github_url=result["url"])
         state.save()
         print(f"  Created repo: {_bold(result['url'])}")
     else:
@@ -1899,11 +1901,11 @@ def _create_experiment(args: list[str]) -> None:
     )
 
     if result.get("success"):
-        print(f"  Project registered: {result.get('project_id', '')}")
+        print(f"  Project registered: {result.get('experiment_id', '')}")
         if result.get("goals_set"):
             print(f"  Goals: {result['goals_set']}")
         print("\n  Launch it:")
-        print(f"    distillate --launch {result.get('project_id', name)}")
+        print(f"    distillate --launch {result.get('experiment_id', name)}")
     else:
         print(f"  Error: {result.get('error', 'unknown')}")
 
@@ -1969,7 +1971,7 @@ def _parallel_campaign(args: list[str]) -> None:
             "completed_at": None,
             "stop_reason": None,
         }
-        state.update_project(proj["id"], campaign=campaign, auto_continue=True)
+        state.update_experiment(proj["id"], campaign=campaign, auto_continue=True)
     state.save()
 
     results: dict[str, dict] = {}

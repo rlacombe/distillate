@@ -22,74 +22,122 @@ _TIMEOUT = 30  # seconds
 
 
 def cloud_sync_available() -> bool:
-    """True when cloud sync credentials are configured."""
-    token = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+    """True when cloud sync credentials are configured.
+
+    Accepts either a session JWT (OAuth sign-in) or the legacy opaque token.
+    """
+    from distillate import secrets as _secrets
     cloud_url = os.environ.get("DISTILLATE_CLOUD_URL", "").strip()
-    return bool(token and cloud_url)
+    if not cloud_url:
+        return False
+    return bool(_secrets.get("DISTILLATE_SESSION_JWT") or _secrets.get("DISTILLATE_AUTH_TOKEN"))
 
 
 def _base_url() -> str:
     return os.environ.get("DISTILLATE_CLOUD_URL", "").strip().rstrip("/")
 
 
-def _token() -> str:
-    return os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
-
-
 def _headers() -> dict:
-    return {"Content-Type": "application/json", "x-auth-token": _token()}
+    """Build auth headers. Prefers session JWT; falls back to legacy opaque token."""
+    from distillate import secrets as _secrets
+    jwt = _secrets.get("DISTILLATE_SESSION_JWT")
+    if jwt:
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {jwt}"}
+    token = _secrets.get("DISTILLATE_AUTH_TOKEN")
+    if token:
+        return {"Content-Type": "application/json", "x-auth-token": token}
+    return {"Content-Type": "application/json"}
 
 
 def push_state(state: State) -> bool:
-    """Push documents and projects to the cloud. Returns True on success."""
+    """Push changed documents and projects to the cloud.
+
+    Uses delta sync: only rows with ``updated_at > last_pushed_at`` are sent.
+    On the first push (no watermark), all rows are sent.  Includes tombstones
+    (rows with ``deleted_at`` set) so the remote can soft-delete.
+
+    Returns True on success.
+    """
     if not cloud_sync_available():
         return False
+
+    from distillate import state_sqlite
 
     base = _base_url()
     headers = _headers()
     ok_docs = ok_projs = False
 
-    # Push documents
-    try:
-        resp = requests.put(
-            f"{base}/state/documents",
-            data=json.dumps({"documents": state.documents}, default=str),
-            headers=headers,
-            timeout=_TIMEOUT,
-        )
-        if resp.ok:
-            n = resp.json().get("upserted", 0)
-            log.info("Cloud push: %d document(s) synced", n)
-            ok_docs = True
-        else:
-            log.warning("Cloud push documents failed: %d %s", resp.status_code, resp.text[:200])
-    except requests.exceptions.ConnectionError:
-        log.warning("Cloud unreachable for document push")
-    except requests.exceptions.Timeout:
-        log.warning("Cloud document push timed out")
-    except Exception:
-        log.warning("Cloud document push failed", exc_info=True)
+    last_pushed = state_sqlite.get_meta("last_pushed_at")
 
-    # Push projects
-    try:
-        resp = requests.put(
-            f"{base}/state/projects",
-            data=json.dumps({"projects": state.projects}, default=str),
-            headers=headers,
-            timeout=_TIMEOUT,
+    # Delta: only changed documents since last push
+    changed_docs = state_sqlite.changed_documents_since(last_pushed)
+    if changed_docs:
+        try:
+            resp = requests.put(
+                f"{base}/state/documents",
+                data=json.dumps({"documents": changed_docs}, default=str),
+                headers=headers,
+                timeout=_TIMEOUT,
+            )
+            if resp.ok:
+                n = resp.json().get("upserted", 0)
+                log.info("Cloud push: %d document(s) synced (delta)", n)
+                ok_docs = True
+            elif resp.status_code == 401:
+                log.warning("Cloud push: session expired or invalid, pausing sync")
+                from distillate import auth as _auth
+                _auth.clear_session()
+                return False
+            else:
+                log.warning("Cloud push documents failed: %d %s", resp.status_code, resp.text[:200])
+        except requests.exceptions.ConnectionError:
+            log.warning("Cloud unreachable for document push")
+        except requests.exceptions.Timeout:
+            log.warning("Cloud document push timed out")
+        except Exception:
+            log.warning("Cloud document push failed", exc_info=True)
+    else:
+        log.debug("Cloud push: no document changes to sync")
+        ok_docs = True
+
+    # Delta: only changed experiments since last push
+    changed_exps = state_sqlite.changed_experiments_since(last_pushed)
+    if changed_exps:
+        try:
+            resp = requests.put(
+                f"{base}/state/experiments",
+                data=json.dumps({"experiments": changed_exps}, default=str),
+                headers=headers,
+                timeout=_TIMEOUT,
+            )
+            if resp.ok:
+                n = resp.json().get("upserted", 0)
+                log.info("Cloud push: %d experiment(s) synced (delta)", n)
+                ok_projs = True
+            elif resp.status_code == 401:
+                log.warning("Cloud push: session expired or invalid, pausing sync")
+                from distillate import auth as _auth
+                _auth.clear_session()
+                return False
+            else:
+                log.warning("Cloud push experiments failed: %d %s", resp.status_code, resp.text[:200])
+        except requests.exceptions.ConnectionError:
+            log.warning("Cloud unreachable for experiment push")
+        except requests.exceptions.Timeout:
+            log.warning("Cloud experiment push timed out")
+        except Exception:
+            log.warning("Cloud experiment push failed", exc_info=True)
+    else:
+        log.debug("Cloud push: no experiment changes to sync")
+        ok_projs = True
+
+    # Advance the watermark on success
+    if ok_docs and ok_projs:
+        from datetime import datetime, timezone
+        state_sqlite.set_meta(
+            "last_pushed_at",
+            datetime.now(timezone.utc).isoformat(),
         )
-        if resp.ok:
-            n = resp.json().get("upserted", 0)
-            log.info("Cloud push: %d project(s) synced", n)
-            ok_projs = True
-        else:
-            log.warning("Cloud push projects failed: %d %s", resp.status_code, resp.text[:200])
-    except requests.exceptions.ConnectionError:
-        log.warning("Cloud unreachable for project push")
-    except requests.exceptions.Timeout:
-        log.warning("Cloud project push timed out")
-    except Exception:
-        log.warning("Cloud project push failed", exc_info=True)
 
     return ok_docs and ok_projs
 
@@ -100,7 +148,7 @@ def pull_state(state: State) -> bool:
         return False
 
     base = _base_url()
-    headers = {"x-auth-token": _token()}
+    headers = _headers()
     since = state.last_cloud_sync_at
     params = {"since": since} if since else {}
     sync_at = None
@@ -115,6 +163,11 @@ def pull_state(state: State) -> bool:
         )
         if resp.status_code == 404:
             log.info("No remote documents found (first sync?)")
+        elif resp.status_code == 401:
+            log.warning("Cloud pull: session expired or invalid, pausing sync")
+            from distillate import auth as _auth
+            _auth.clear_session()
+            return False
         elif not resp.ok:
             log.warning("Cloud pull documents failed: %d", resp.status_code)
             return False
@@ -132,28 +185,28 @@ def pull_state(state: State) -> bool:
         log.warning("Cloud document pull failed", exc_info=True)
         return False
 
-    # Pull projects
+    # Pull experiments
     try:
         resp = requests.get(
-            f"{base}/state/projects",
+            f"{base}/state/experiments",
             headers=headers,
             params=params,
             timeout=_TIMEOUT,
         )
         if resp.status_code == 404:
-            log.info("No remote projects found (first sync?)")
+            log.info("No remote experiments found (first sync?)")
         elif not resp.ok:
-            log.warning("Cloud pull projects failed: %d", resp.status_code)
+            log.warning("Cloud pull experiments failed: %d", resp.status_code)
             return False
         else:
             data = resp.json()
-            _merge_projects(state, data.get("projects", {}))
+            _merge_experiments(state, data.get("experiments", {}))
             # Use the later sync_at as watermark
             proj_sync_at = data.get("sync_at")
             if proj_sync_at and (not sync_at or proj_sync_at > sync_at):
                 sync_at = proj_sync_at
     except requests.exceptions.ConnectionError:
-        log.warning("Cloud unreachable for project pull")
+        log.warning("Cloud unreachable for experiment pull")
         return False
     except requests.exceptions.Timeout:
         log.warning("Cloud project pull timed out")
@@ -173,15 +226,33 @@ def sync_state(state: State) -> bool:
     """Full sync: pull remote changes, then push local state.
 
     After a successful push, refreshes the Supabase snapshot so the
-    email functions have current experiment data.
+    email functions have current experiment data.  Also cleans up
+    tombstoned rows older than 30 days.
     """
     if not cloud_sync_available():
         return False
+
+    # Clean up old tombstones before syncing
+    _cleanup_tombstones()
+
     pull_state(state)
     ok = push_state(state)
     if ok:
         _refresh_snapshot(state)
     return ok
+
+
+def _cleanup_tombstones() -> None:
+    """Remove tombstoned rows older than 30 days."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        from distillate import state_sqlite
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        n = state_sqlite.hard_delete_before(cutoff)
+        if n:
+            log.info("Cleaned up %d tombstoned row(s) older than 30 days", n)
+    except Exception:
+        log.debug("Tombstone cleanup failed (non-critical)", exc_info=True)
 
 
 def _refresh_snapshot(state: State) -> None:
@@ -223,8 +294,19 @@ _RUN_STATUS_ORDER = {
 
 
 def _merge_documents(state: State, remote: dict) -> None:
-    """Merge remote documents into local state (additive, no deletions)."""
+    """Merge remote documents into local state.
+
+    Handles tombstones: if a remote document has ``deleted_at`` set,
+    the local copy is marked deleted.
+    """
     for key, remote_doc in remote.items():
+        # Tombstone: remote says this document was deleted
+        if remote_doc.get("deleted_at"):
+            if state.has_document(key):
+                state.mark_deleted(key)
+                log.info("Cloud pull: marked document '%s' as deleted (remote tombstone)", key)
+            continue
+
         local_doc = state.get_document(key)
         if local_doc is None:
             state.documents[key] = remote_doc
@@ -264,19 +346,29 @@ def _merge_single_document(local: dict, remote: dict) -> None:
             local[field] = remote[field]
 
 
-def _merge_projects(state: State, remote: dict) -> None:
+def _merge_experiments(state: State, remote: dict) -> None:
     """Merge remote projects into local state.
+
+    Handles tombstones: if a remote project has ``deleted_at`` set,
+    the local copy is removed.
 
     New projects are added wholesale.  Existing projects get run-level
     merge: new runs are added, existing runs have their fields filled
     and decisions advanced.
     """
     for pid, remote_proj in remote.items():
-        if not state.has_project(pid):
-            state.projects[pid] = remote_proj
+        # Tombstone: remote says this project was deleted
+        if remote_proj.get("deleted_at"):
+            if state.has_experiment(pid):
+                state.remove_experiment(pid)
+                log.info("Cloud pull: removed project '%s' (remote tombstone)", pid)
+            continue
+
+        if not state.has_experiment(pid):
+            state.experiments[pid] = remote_proj
             log.info("Cloud pull: added project '%s'", remote_proj.get("name", pid))
         else:
-            _merge_single_project(state.projects[pid], remote_proj)
+            _merge_single_project(state.experiments[pid], remote_proj)
 
 
 def _merge_single_project(local: dict, remote: dict) -> None:

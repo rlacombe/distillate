@@ -4,104 +4,276 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' http://127.0.0.1:*; script-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:*; img-src 'self' http://127.0.0.1:* data:;">
+        content="default-src 'self' http://127.0.0.1:*; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://esm.sh; connect-src ws://127.0.0.1:* http://127.0.0.1:* https://esm.sh https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' http://127.0.0.1:* https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src http://127.0.0.1:* https://fonts.gstatic.com; img-src 'self' http://127.0.0.1:* data: blob:; worker-src 'self' blob:;">
   <title>Distillate</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15.5' fill='%237366f1'/><g fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' opacity='0.35'><polyline points='6,11 11,15 6,19'/></g><path d='M13.5,16 L18.2,16 L15.1,24.6 A2.2,2.2 0 0,1 10.9,23.1 Z' fill='white' fill-opacity='0.4'/><g fill='none' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><line x1='10.9' y1='23.1' x2='16.9' y2='6.6'/><line x1='15.1' y1='24.6' x2='21.1' y2='8.1'/><path d='M10.9,23.1 A2.2,2.2 0,0,0 15.1,24.6'/><line x1='15.0' y1='5.9' x2='23.0' y2='8.8'/></g></svg>">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&display=swap">
 </head>
 <body>
   <div id="titlebar">
-    <span class="titlebar-text">Distillate</span>
-  </div>
-
-  <!-- Settings modal -->
-  <div id="settings-overlay" class="modal-overlay hidden">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Settings</h2>
-        <button id="settings-close" class="modal-close" aria-label="Close settings">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="setting-group">
-          <label for="setting-auth-token">Distillate Cloud Token</label>
-          <input type="password" id="setting-auth-token" placeholder="Optional" autocomplete="off">
-          <p class="setting-hint">For cloud sync. Leave blank to skip.</p>
-        </div>
-        <div class="setting-group">
-          <div class="setting-toggle-row">
-            <span class="setting-toggle-label">Private GitHub repos</span>
-            <label class="toggle-switch">
-              <input type="checkbox" id="setting-private-repos">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <p class="setting-hint">New experiment repos are public by default.</p>
-        </div>
-        <div class="setting-actions">
-          <button id="settings-save" class="btn-primary">Save</button>
-          <span id="settings-status" class="setting-status"></span>
-        </div>
-        <div class="setting-divider"></div>
-        <div class="setting-group">
-          <label>Data</label>
-          <div class="setting-data-actions">
-            <button id="settings-export" class="btn-secondary">Export State</button>
-            <button id="settings-import" class="btn-secondary">Import State</button>
-          </div>
-        </div>
-      </div>
+    <div class="topbar-breadcrumb" id="topbar-breadcrumb">
+      <span class="topbar-brand">Distillate</span>
+      <span class="topbar-crumb-sep" aria-hidden="true" id="topbar-crumb-sep-session">/</span>
+      <span class="topbar-crumb topbar-crumb-current hidden" id="topbar-crumb-session"></span>
+      <span class="topbar-crumb-sep" aria-hidden="true" id="topbar-crumb-sep-project">/</span>
+      <span class="topbar-crumb" id="topbar-crumb-project">Workbench</span>
+      <span class="topbar-crumb-sep" aria-hidden="true" id="topbar-crumb-sep-view">/</span>
+      <span class="topbar-crumb topbar-crumb-current" id="topbar-crumb-view">Nicolas</span>
+    </div>
+    <span id="topbar-live-pill" class="topbar-live-pill" hidden>
+      <span class="topbar-live-dot" aria-hidden="true"></span>
+      <span id="topbar-live-count">0</span>
+      <span class="topbar-live-label">live</span>
+    </span>
+    <button id="topbar-search" class="topbar-search" type="button"
+            title="Search or run a command (⌘K)" aria-label="Open command palette">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <span class="topbar-search-placeholder">Search or run a command&hellip;</span>
+      <kbd class="topbar-search-kbd">&#x2318;K</kbd>
+    </button>
+    <div class="topbar-utils">
+      <button id="topbar-bell" class="topbar-icon-btn" type="button"
+              title="Notifications" aria-label="Notifications">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span id="topbar-bell-badge" class="topbar-bell-badge" hidden>0</span>
+      </button>
     </div>
   </div>
 
   <div id="workbench">
-    <!-- Activity bar -->
+    <!-- Activity bar — v2: Nicolas → Experiments → Papers → Workspaces → [spacer] → Agents → Notebook → Wiki → [divider] → Account -->
     <div id="activity-bar">
-      <button class="activity-btn active" data-pane="sidebar-left" title="Experiments &#x2318;E" aria-label="Toggle experiments">
+      <!-- Nicolas (Tier 1 — the shell, default landing). Opens the sessions
+           sidebar AND shows the main-window chat in one click. -->
+      <button class="activity-btn active" data-pane="sidebar-left" data-sidebar-view="nicolas" data-action="show-nicolas" data-tooltip="Nicolas &#x2318;1" title="Nicolas &#x2318;1" aria-label="Nicolas">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="11" stroke-width="1.6"/>
+          <g transform="matrix(0.943 0 0 0.943 0.684 0.684)" stroke-width="1.5">
+            <polyline points="5.25,9.0 8.25,12.0 5.25,15.0" opacity="0.55"/>
+            <line x1="9.3" y1="17.3" x2="13.8" y2="4.95"/>
+            <line x1="12.4" y1="18.5" x2="16.9" y2="6.1"/>
+            <path d="M9.3,17.3 A1.67,1.67 0,0,0 12.4,18.5"/>
+            <line x1="12.9" y1="4.6" x2="17.9" y2="6.4"/>
+            <path d="M11.20,11.45 Q13.00,12.40 14.80,12.55" stroke-width="1.2"/>
+          </g>
+        </svg>
+        <span class="activity-notification-dot"></span>
+      </button>
+      <!-- Experiments (keystone) -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="experiments" data-tooltip="Experiments &#x2318;2" title="Experiments &#x2318;2" aria-label="Experiments">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 3h6v6l4 7H5l4-7V3z"/>
-          <line x1="9" y1="3" x2="15" y2="3"/>
+          <path d="M9 2h6v6l5 10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2l5-10V2z"/>
+          <line x1="9" y1="2" x2="15" y2="2"/>
+          <line x1="7.5" y1="11" x2="16.5" y2="11"/>
         </svg>
+        <span class="activity-notification-dot"></span>
       </button>
-      <button class="activity-btn active" data-pane="sidebar-right" title="Papers" aria-label="Toggle papers">
+      <!-- Papers -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="papers" data-tooltip="Papers &#x2318;3" title="Papers &#x2318;3" aria-label="Papers">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
         </svg>
       </button>
-      <button class="activity-btn active" data-pane="bottom-panel" title="Chat &#x2318;K" aria-label="Toggle chat">
+      <!-- Projects (rail id stays "workspaces" to avoid code churn) -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="workspaces" data-tooltip="Projects &#x2318;4" title="Projects &#x2318;4" aria-label="Projects">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
         </svg>
+        <span class="activity-notification-dot"></span>
       </button>
+      <!-- Spacer — secondary surfaces below -->
       <div class="activity-spacer"></div>
+      <!-- Agents (Tier 3b — personal peer agents: Lux, Switchback, etc.) -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="agents" data-tooltip="Agents &#x2318;5" title="Agents &#x2318;5" aria-label="Agents">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 8 A3 3 0 0 1 15 8"/>
+          <rect width="16" height="12" x="4" y="8" rx="2"/>
+          <path d="M2 14h2"/>
+          <path d="M20 14h2"/>
+          <path d="M15 11v2"/>
+          <path d="M9 11v2"/>
+          <path d="M10 17 Q12 18.5 14 17"/>
+        </svg>
+        <span class="activity-notification-dot"></span>
+      </button>
+      <!-- Notebook (timeline over unified event stream) -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="notebook" data-tooltip="Notebook &#x2318;6" title="Notebook &#x2318;6" aria-label="Notebook">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19A2 2 0 0 1 6 17H20"/>
+          <path d="M6 2H20v20H6A2 2 0 0 1 4 19v-15A2 2 0 0 1 6 2z"/>
+          <line x1="9" y1="7" x2="16" y2="7"/>
+          <line x1="9" y1="11" x2="14" y2="11"/>
+          <line x1="2" y1="6" x2="4" y2="6"/>
+          <line x1="2" y1="12" x2="4" y2="12"/>
+          <line x1="2" y1="18" x2="4" y2="18"/>
+        </svg>
+        <span class="activity-notification-dot"></span>
+      </button>
+      <!-- Wiki (Obsidian knowledge base browser) -->
+      <button class="activity-btn" data-pane="sidebar-left" data-sidebar-view="vault" data-tooltip="Wiki &#x2318;7" title="Wiki &#x2318;7" aria-label="Wiki">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </button>
+      <!-- Account / sign-in — pinned at the bottom -->
+      <div class="activity-bar-account-divider"></div>
+      <button id="account-btn" class="account-btn" aria-label="Account" title="Account">
+        <!-- Rendered by account.js: initials avatar (signed in) or person icon (signed out) -->
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="8" r="3.5"/>
+          <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
+        </svg>
+      </button>
     </div>
 
-    <!-- Left sidebar: Experiments -->
-    <div id="sidebar-left">
-      <div class="sidebar-header">
-        <span class="sidebar-title">Experiments</span>
-        <span id="experiments-count" class="sidebar-count"></span>
-        <button id="new-experiment-btn" class="sidebar-header-btn new-btn" title="New experiment">+ New</button>
-      </div>
-      <div id="experiments-sidebar" class="sidebar-content">
-        <div class="sidebar-empty">
-          <p>No experiments yet.</p>
-          <p class="sidebar-empty-hint">Ask Nicolas to run an experiment.</p>
-        </div>
-      </div>
-      <div id="connectors-section">
-        <div class="connectors-header">
-          <button id="connectors-toggle" class="connectors-chevron" title="Toggle connectors" aria-label="Toggle connectors">
-            <svg width="10" height="10" viewBox="0 0 10 10"><polyline points="2,3 5,6 8,3" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+    <!-- Left sidebar: starts collapsed so the welcome splash is centered.
+         JS opens it on first user interaction; state persists after that. -->
+    <div id="sidebar-left" class="collapsed">
+      <!-- Projects view (container id stays "workspaces-view" to avoid code churn) -->
+      <div id="workspaces-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Projects</span>
+          <span id="workspaces-count" class="sidebar-count"></span>
+          <button id="workspaces-collapse-all-btn" class="sidebar-header-icon-btn collapse-all-btn" title="Collapse all / expand all" onclick="toggleAllProjectsCollapsed()" aria-label="Collapse all">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <line x1="5" y1="8" x2="19" y2="8"/>
+              <line x1="5" y1="16" x2="19" y2="16"/>
+            </svg>
           </button>
-          <span class="sidebar-title">Connectors</span>
-          <span id="connectors-count" class="sidebar-count"></span>
-          <!-- add-connector-btn removed: not ready -->
+          <button id="new-workspace-btn" class="sidebar-header-btn new-btn" title="New project">+ New</button>
         </div>
-        <div id="connectors-list"></div>
+        <div id="workspaces-sidebar" class="sidebar-content">
+          <div class="sidebar-empty">
+            <p>No workspaces yet.</p>
+            <p class="sidebar-empty-hint">Create a workspace to start tracking repos and sessions.</p>
+          </div>
+        </div>
       </div>
+
+      <!-- Experiments view -->
+      <div id="experiments-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Experiments</span>
+          <span id="experiments-count" class="sidebar-count"></span>
+          <button id="new-experiment-btn" class="sidebar-header-btn new-btn" title="New experiment">+ New</button>
+        </div>
+        <div id="experiments-sidebar-filters"></div>
+        <div id="experiments-sidebar" class="sidebar-content">
+          <div class="sidebar-empty">
+            <p>No experiments yet.</p>
+            <p class="sidebar-empty-hint">Ask Nicolas to run an experiment.</p>
+          </div>
+        </div>
+      </div>
+      <!-- Nicolas view (Tier 1 — sessions picker. The chat itself lives in
+           the main window via #welcome). -->
+      <div id="nicolas-view" class="sidebar-tab-content active">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Threads</span>
+          <span id="nicolas-sessions-count" class="sidebar-count"></span>
+          <button id="nicolas-new-session-btn" class="sidebar-header-btn new-btn" title="New thread">+ New</button>
+        </div>
+        <div id="nicolas-sessions-list" class="sidebar-content"></div>
+        <!-- Live Runs: currently-running experiments. Hidden when none are
+             running. No fake progress bars — shows the real best-metric value
+             from the latest completed run, and the latest run index. -->
+        <div id="live-runs-section" class="sidebar-section hidden">
+          <div class="sidebar-subheader">
+            <span class="sidebar-subtitle">LIVE RUNS</span>
+            <span id="live-runs-count" class="sidebar-count"></span>
+          </div>
+          <div id="live-runs-list" class="sidebar-content"></div>
+        </div>
+        <!-- TODO(roadmap): QUEUED section pending a run-queue subsystem. Today
+             experiments launch immediately; there's no queue state to read. -->
+      </div>
+      <!-- Agents view (Tier 3b — personal peer agents: Lux, Switchback, etc.) -->
+      <div id="agents-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Agents</span>
+          <span id="agents-count" class="sidebar-count"></span>
+          <button id="new-agent-btn" class="sidebar-header-btn new-btn" title="New agent">+ New</button>
+        </div>
+        <div id="agents-sidebar" class="sidebar-content">
+          <div class="sidebar-empty">
+            <p>No agents yet.</p>
+            <p class="sidebar-empty-hint">Create an agent to start a persistent conversation.</p>
+          </div>
+        </div>
+      </div>
+      <!-- Notebook view (timeline over events) -->
+      <div id="notebook-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Notebook</span>
+          <span id="notebook-count" class="sidebar-count"></span>
+          <button id="notebook-add-btn" class="sidebar-header-btn new-btn" title="Add note">+ Note</button>
+        </div>
+        <div id="notebook-add-form" class="notebook-add-form hidden">
+          <input id="notebook-add-title" type="text" placeholder="Title" class="notebook-add-title">
+          <textarea id="notebook-add-text" placeholder="Body" rows="3"></textarea>
+          <div class="notebook-add-controls">
+            <input id="notebook-add-project" type="text" placeholder="Project tag" class="notebook-add-project">
+            <button id="notebook-add-submit" class="btn-primary notebook-add-submit">Save</button>
+          </div>
+        </div>
+        <div id="notebook-filters"></div>
+        <div id="notebook-date-nav" class="notebook-date-nav"></div>
+        <div id="notebook-sidebar" class="sidebar-content">
+          <div class="sidebar-empty">
+            <p>No notebook entries yet.</p>
+            <p class="sidebar-empty-hint">Activity from experiments, sessions, and readings will appear here.</p>
+          </div>
+        </div>
+      </div>
+      <!-- Papers view (moved from right sidebar) -->
+      <div id="papers-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Papers</span>
+          <span id="papers-count" class="sidebar-count"></span>
+        </div>
+        <div id="sync-progress-bar"><div id="sync-progress-fill"></div></div>
+        <div id="papers-sidebar-filters"></div>
+        <div id="papers-sidebar" class="sidebar-content"></div>
+      </div>
+
+      <!-- Vault wiki view -->
+      <div id="vault-view" class="sidebar-tab-content">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Wiki</span>
+          <span id="vault-count" class="sidebar-count"></span>
+          <button id="vault-obsidian-btn" class="sidebar-header-btn" title="Open in Obsidian" style="margin-left:auto"
+                  onclick="if(typeof _vaultOpenObsidian==='function')_vaultOpenObsidian()">
+            <img src="/ui/icons/obsidian.svg" alt="" width="14" height="14">
+          </button>
+          <button id="vault-refresh-btn" class="sidebar-header-btn" title="Refresh wiki" style="margin-left:0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+          </button>
+        </div>
+        <div id="vault-sidebar" class="sidebar-content"></div>
+      </div>
+
     </div>
 
     <div class="resize-handle vertical" id="resize-left"></div>
@@ -115,63 +287,316 @@
           <button class="editor-tab" data-view="session">Session</button>
           <button class="editor-tab" data-view="results">Results</button>
           <button class="editor-tab" data-view="prompt-editor">Prompt</button>
+          <button class="editor-tab" data-view="calibration">Calibration</button>
           <span id="editor-tabs-project-name" class="editor-tabs-label"></span>
         </div>
         <div id="editor-content">
           <!-- Control Panel view (default) -->
           <div id="control-panel-view">
-            <!-- Welcome screen (shown when no experiment selected) -->
+            <!-- Nicolas main chat — the app's home view. The B+ welcome
+                 block scrolls naturally above the conversation; input stays
+                 pinned at the bottom. IDs preserved for chat.js/core.js. -->
             <div id="welcome">
-              <div class="welcome-header">
-                <div class="welcome-flask">
-                  <div class="welcome-bubble wb1"></div>
-                  <div class="welcome-bubble wb2"></div>
-                  <div class="welcome-bubble wb3"></div>
-                  <div class="welcome-bubble wb4"></div>
-                  <div class="welcome-bubble wb5"></div>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 32 32">
-                    <circle cx="16" cy="16" r="15.5" fill="#7366f1"/>
-                    <g fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.35">
-                      <polyline points="5,11 10,15 5,19"/>
-                    </g>
-                    <path d="M11.6,20 L17.1,20 L14.6,24 A2.2,2.2 0 0,1 10.6,22 Z" fill="white" fill-opacity="0.4"/>
-                    <g fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <line x1="10.6" y1="22" x2="19.6" y2="7"/>
-                      <line x1="14.6" y1="24" x2="23.6" y2="9"/>
-                      <path d="M10.6,22 A2.2,2.2 0,0,0 14.6,24"/>
-                      <line x1="18.1" y1="6" x2="25.1" y2="10"/>
-                    </g>
-                  </svg>
+              <!-- Breadcrumb lives in the top bar now (#topbar-breadcrumb). -->
+              <!-- v6 overview strip — 4 cells summarising the lab state -->
+              <div class="overview" id="home-overview">
+                <div class="ov-cell ov-cell-current" data-ov="current" id="ov-current" role="button" tabindex="0" title="Click to switch experiment">
+                  <div class="ov-label"><span class="live-dot" id="ov-current-livedot"></span><span id="ov-current-label">Frontier</span><span class="ov-label-experiment" id="ov-current-experiment"></span><svg class="ov-label-chevron" width="8" height="8" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                  <div class="ov-value">
+                    <span class="ov-num tnum" id="ov-current-value">—</span>
+                    <span class="ov-delta" id="ov-current-delta"></span>
+                  </div>
+                  <svg class="sparkline" id="ov-current-sparkline" viewBox="0 0 200 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <div class="ov-sub" id="ov-current-sub"></div>
                 </div>
-                <h1>Distillate</h1>
+                <div class="ov-cell" data-ov="experiments">
+                  <div class="ov-label"><span class="live-dot" id="ov-exp-livedot"></span>Experiments</div>
+                  <div class="ov-value">
+                    <span class="ov-num tnum" id="dash-experiments-count">0</span>
+                    <span class="ov-sub" id="ov-exp-runs"></span>
+                  </div>
+                  <div class="segmented-bar" id="ov-exp-segbar"></div>
+                  <div class="ov-sub ov-exp-sub" id="ov-exp-sub"></div>
+                </div>
+                <div class="ov-cell" data-ov="papers">
+                  <div class="ov-label">Papers</div>
+                  <div class="ov-value">
+                    <span class="ov-num tnum" id="dash-papers-count">0</span>
+                    <span class="ov-sub" id="ov-papers-unread"></span>
+                  </div>
+                  <div class="ov-sub" id="ov-papers-sub"></div>
+                </div>
+                <div class="ov-cell" data-ov="compute" id="ov-compute">
+                  <div class="ov-label">Compute · today</div>
+                  <div class="ov-value">
+                    <span class="ov-num tnum" id="ov-compute-value">—</span>
+                    <span class="ov-badge" id="ov-compute-badge"></span>
+                    <span class="ov-sub" id="ov-compute-session"></span>
+                  </div>
+                  <div class="ov-sub" id="ov-compute-sub"></div>
+                </div>
               </div>
-              <div class="shortcuts-hint">
-                <span class="shortcut-item"><kbd>&#x2318;E</kbd> Experiments</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;K</kbd> Chat</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;1-4</kbd> Tabs</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>&#x2318;R</kbd> Refresh</span>
-                <span class="shortcut-sep">&middot;</span>
-                <span class="shortcut-item"><kbd>Esc</kbd> Deselect</span>
+
+              <div id="chat-area">
+                <div class="nicolas-home-content">
+                  <!-- First-use setup checklist — replaces the frontier chart until
+                       the first experiment runs. Hidden for returning users. -->
+                  <div id="first-use-checklist" class="first-use-checklist hidden">
+                    <div class="fuc-head">Get started</div>
+                    <div id="fuc-items">
+                      <div class="fuc-item fuc-primary" id="fuc-experiment">
+                        <span class="fuc-check" aria-hidden="true"></span>
+                        <div class="fuc-body">
+                          <div class="fuc-label">Launch your first experiment</div>
+                          <div class="fuc-sub">A tiny transformer learns matrix multiplication — watch the chart populate in real time.</div>
+                        </div>
+                        <button class="fuc-btn fuc-btn-primary" id="fuc-experiment-btn" type="button">Launch demo</button>
+                      </div>
+                      <div class="fuc-item" id="fuc-data-sources">
+                        <span class="fuc-check" aria-hidden="true"></span>
+                        <div class="fuc-body">
+                          <div class="fuc-label">Connect Zotero or Hugging Face</div>
+                          <div class="fuc-sub">Link your paper library and model hub so Nicolas has full context.</div>
+                        </div>
+                        <button class="fuc-btn" id="fuc-data-sources-btn" type="button">Connect</button>
+                      </div>
+                      <div class="fuc-item" id="fuc-workspace">
+                        <span class="fuc-check" aria-hidden="true"></span>
+                        <div class="fuc-body">
+                          <div class="fuc-label">Import a project</div>
+                          <div class="fuc-sub">Point Nicolas to an existing code directory and start running experiments on it.</div>
+                        </div>
+                        <button class="fuc-btn" id="fuc-workspace-btn" type="button">Import</button>
+                      </div>
+                    </div>
+                    <div id="fuc-complete" class="fuc-complete hidden">You&rsquo;re all set!</div>
+                  </div>
+                  <!-- Hero frontier chart — the keystone view. Renders aggregated
+                       best-metric curve across all experiments when data exists;
+                       shows empty-state copy otherwise. -->
+                  <section class="hero-chart" id="home-frontier">
+                    <header class="hero-chart-head">
+                      <div class="hero-chart-titles">
+                        <div class="hero-chart-title">
+                          Frontier
+                          <button class="hero-picker" id="home-frontier-picker" type="button" title="Switch experiment">
+                            <em id="home-frontier-subject"></em>
+                            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                        </div>
+                        <div class="hero-chart-subtitle" id="home-frontier-subtitle"></div>
+                      </div>
+                      <div class="hero-chart-controls">
+                        <div class="hero-chart-legend">
+                          <span><i class="leg-best"></i>best</span>
+                          <span><i class="leg-done"></i>complete</span>
+                          <span><i class="leg-cand"></i>candidate</span>
+                        </div>
+                        <button id="home-frontier-export" class="hero-chart-export" type="button"
+                                title="Download chart as PNG" aria-label="Download chart as PNG">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </header>
+                    <div class="hero-chart-wrap">
+                      <canvas id="home-frontier-canvas"></canvas>
+                      <div class="hero-chart-empty" id="home-frontier-empty">
+                        <div class="hero-chart-empty-title">No runs yet</div>
+                        <div class="hero-chart-empty-body">Launch an experiment to start tracing your frontier.</div>
+                      </div>
+                    </div>
+                    <!-- Picker dropdown — populated by core.js, shown when picker clicked -->
+                    <div class="hero-picker-menu hidden" id="home-frontier-menu" role="listbox"></div>
+                  </section>
+                  <!-- Continue-last-thread CTA. Populated by renderContinueThreadCTA
+                       when a recent thread exists and no session is loaded.
+                       Appears below the chart as a secondary action. -->
+                  <div id="continue-thread-slot-top" class="continue-thread-slot hidden"></div>
+                  <!-- HF auth bar — shown when not signed in, independent of thread history -->
+                  <div id="hf-auth-bar" class="hf-auth-bar hidden">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="flex-shrink:0;">
+                      <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" fill="#FFD21E"/>
+                      <path d="M8 11.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM16 11.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z" fill="#1a1a1a"/>
+                      <path d="M8.5 15.5c1 1 5 1 7 0" stroke="#1a1a1a" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    <span class="hf-auth-bar-text">Sign in with Hugging Face — sync experiments &amp; access cloud GPUs</span>
+                    <button id="hf-auth-bar-signin" class="hf-auth-bar-btn">Sign in</button>
+                    <button id="hf-auth-bar-dismiss" class="hf-auth-bar-dismiss" aria-label="Dismiss">✕</button>
+                  </div>
+                  <!-- B+ welcome block is redundant with breadcrumb + overview + hero chart. -->
+                  <div id="nicolas-welcome-block" class="hidden"></div>
+                  <!-- Budget/context warning banner — sticky at top of message area -->
+                  <div id="budget-banner-container" class="budget-banner-container"></div>
+                  <!-- Conversation turns scroll in below -->
+                  <div id="messages" role="log" aria-live="polite"></div>
+                </div>
               </div>
-              <p class="welcome-guidance">Type in the chat to talk to Nicolas, or click <strong>+ New</strong> to conjure an experiment.</p>
-              <p class="welcome-tip">Tip: run <kbd>npm run install:mac</kbd> to install Distillate to your Applications folder.</p>
+              <div id="chat-suggestions" class="suggestions"></div>
+              <div id="input-area">
+                <!-- Shown when Nicolas has no Claude connection (no CLI, no API key) -->
+                <div id="nicolas-connect-panel" class="nicolas-connect hidden">
+                  <div class="connect-head">Nicolas needs Claude to run</div>
+                  <div class="connect-primary">
+                    <button type="button" id="nicolas-install-link" class="connect-btn-primary">
+                      Install Claude Code
+                    </button>
+                    <span class="connect-primary-hint">free with a Claude subscription · restart after installing</span>
+                  </div>
+                  <details class="connect-advanced">
+                    <summary>Use an API key instead</summary>
+                    <div class="connect-row">
+                      <input type="password" id="nicolas-api-key-input"
+                             placeholder="sk-ant-api…" autocomplete="off"
+                             aria-label="Anthropic API key" />
+                      <button type="button" id="nicolas-connect-btn">Connect</button>
+                    </div>
+                  </details>
+                </div>
+                <!-- Context chips — current experiment / run selection (tier 2). -->
+                <div id="composer-context" class="composer-context" aria-label="Active context"></div>
+                <form id="input-form">
+                  <textarea id="input" placeholder="Ask Nicolas, or type / for commands..." rows="1"
+                            autocomplete="off" aria-label="Chat message"></textarea>
+                  <button type="submit" id="send-btn" title="Send" aria-label="Send message">
+                    <svg id="send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13"></line>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                    <svg id="stop-icon" class="hidden" width="28" height="28" viewBox="0 0 28 28" fill="none">
+                      <rect x="9" y="9" width="10" height="10" rx="2" fill="white"/>
+                      <circle cx="14" cy="14" r="12" stroke="white" stroke-width="2"
+                              stroke-dasharray="18 57" stroke-linecap="round" class="stop-orbit"/>
+                    </svg>
+                  </button>
+                </form>
+                <div class="composer-foot">
+                  <div class="composer-hints" aria-hidden="true">
+                    <span><kbd>/</kbd> commands</span>
+                    <span class="composer-hint-sep">·</span>
+                    <span><kbd>&#8679;&#8629;</kbd> newline</span>
+                  </div>
+                  <div id="composer-cost-hint" class="composer-cost-hint" aria-live="polite"></div>
+                </div>
+              </div>
             </div>
 
             <!-- Experiment detail (shown when experiment selected from sidebar) -->
             <div id="experiment-detail" class="hidden"></div>
+            <!-- Notebook day view (shown when notebook date selected) -->
+            <div id="notebook-detail" class="hidden"></div>
+            <!-- Vault file viewer (shown when vault file selected) -->
+            <div id="vault-detail" class="hidden"></div>
           </div>
 
           <!-- Session view (live terminal via xterm.js) -->
           <div id="session-view" class="hidden">
-            <div id="session-empty" class="tab-empty-state">
-              <div class="empty-icon">&#x1F4BB;</div>
-              <h2>No active session</h2>
-              <p>Launch an experiment to see the live Claude session here.</p>
+            <div id="session-title" class="hidden">
+              <span id="session-title-project"></span>
+              <span class="session-title-chevron">&#x203A;</span>
+              <span id="session-title-agent"></span>
+              <span class="session-title-spacer"></span>
+              <div id="session-title-actions" class="session-title-actions">
+                <button class="session-action-btn" id="session-btn-transcript" title="View transcript (⌘⇧T)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="8" y1="13" x2="16" y2="13"/>
+                    <line x1="8" y1="17" x2="16" y2="17"/>
+                    <line x1="8" y1="9" x2="10" y2="9"/>
+                  </svg>
+                </button>
+                <button class="session-action-btn" id="session-btn-restart" title="Restart session">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="1 4 1 10 7 10"/>
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                  </svg>
+                </button>
+                <button class="session-action-btn" id="session-btn-edit-agent" title="Edit agent" hidden>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                  </svg>
+                </button>
+                <button class="session-action-btn session-action-complete" id="session-btn-complete" title="Complete session">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </button>
+                <button class="session-action-btn session-action-danger" id="session-btn-stop" title="Stop session">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="4" y="4" width="16" height="16" rx="2"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div id="xterm-container" class="hidden"></div>
+            <div id="session-summary">
+              <span class="session-summary-item session-summary-errors" id="summary-errors"></span>
+              <span class="session-summary-item session-summary-files" id="summary-files"></span>
+              <span class="session-summary-action" id="summary-action"></span>
+            </div>
+            <div id="session-content-split">
+              <div id="session-terminal-pane">
+                <div id="session-empty" class="tab-empty-state">
+                  <div class="empty-icon">&#x1F4BB;</div>
+                  <h2>No active session</h2>
+                  <p>Launch an experiment to see the live Claude session here.</p>
+                </div>
+                <div id="xterm-container" class="hidden"></div>
+              </div>
+              <div class="resize-handle vertical" id="document-viewer-resize"></div>
+              <div id="document-viewer" class="hidden">
+                <div id="document-viewer-toolbar">
+                  <span id="document-viewer-title" class="document-viewer-title"></span>
+                  <div class="document-viewer-spacer"></div>
+                  <div class="document-view-toggle" role="tablist" aria-label="View mode">
+                    <button class="document-view-btn active" data-view="preview" title="Preview">Preview</button>
+                    <button class="document-view-btn" data-view="source" title="Source">Source</button>
+                  </div>
+                  <button class="document-viewer-save hidden" id="document-viewer-save" title="Save (⌘S)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                      <polyline points="17 21 17 13 7 13 7 21"/>
+                      <polyline points="7 3 7 8 15 8"/>
+                    </svg>
+                  </button>
+                  <span id="document-viewer-status" class="document-viewer-status"></span>
+                </div>
+                <div id="document-viewer-content">
+                  <div id="document-preview" class="document-preview">
+                    <div id="document-preview-empty" class="document-preview-empty">
+                      <p>Waiting for content...</p>
+                    </div>
+                    <div id="document-preview-body"></div>
+                  </div>
+                  <div id="document-source" class="document-source hidden">
+                    <textarea id="document-source-textarea" spellcheck="true" autocomplete="off"></textarea>
+                  </div>
+                </div>
+                <div id="document-viewer-install-modal" class="hidden">
+                  <div class="document-install-card">
+                    <h3>Installing Tectonic</h3>
+                    <p id="document-install-msg">Downloading LaTeX engine...</p>
+                    <div class="document-install-bar"><div id="document-install-fill"></div></div>
+                    <p class="document-install-hint">One-time setup. ~30 MB.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Calibration view -->
+          <div id="calibration-view" class="hidden">
+            <div id="calibration-no-selection" class="tab-empty-state">
+              <div class="empty-icon">&#x1F4D0;</div>
+              <h2>Select an experiment</h2>
+              <p>Pick an experiment from the sidebar to view its prediction calibration.</p>
+            </div>
+            <div id="calibration-rendered" class="hidden"></div>
           </div>
 
           <!-- Results view -->
@@ -207,98 +632,355 @@
               <textarea id="prompt-editor" class="hidden" spellcheck="false" placeholder="Loading PROMPT.md..."></textarea>
             </div>
           </div>
+
         </div>
       </div>
 
-      <div class="resize-handle horizontal" id="resize-bottom"></div>
+    </div>
 
-      <!-- Bottom panel: Chat -->
-      <div id="bottom-panel">
-        <div class="panel-header" id="panel-header-chat">
-          <span class="panel-title">Chat</span>
-          <div id="search-bar" class="hidden">
-            <input id="search-input" type="text" placeholder="Search..." aria-label="Search messages">
-            <span id="search-count"></span>
-            <button class="search-nav-btn" id="search-prev" aria-label="Previous">&#x25B2;</button>
-            <button class="search-nav-btn" id="search-next" aria-label="Next">&#x25BC;</button>
-            <button class="search-close-btn" id="search-close" aria-label="Close">&times;</button>
+    <div class="resize-handle vertical hidden" id="resize-right"></div>
+
+    <!-- Right sidebar: reserved for future use (was Papers, now in left sidebar) -->
+    <div id="sidebar-right" class="collapsed"></div>
+
+    <!-- Settings overlay: full-page two-column layout (account btn → opens this) -->
+    <div id="settings-overlay" class="settings-overlay" hidden>
+      <button class="settings-ov-close" onclick="closeSettings()" title="Close (Esc)">&times;</button>
+      <div class="settings-ov-layout">
+
+        <!-- Left nav -->
+        <nav class="settings-ov-nav">
+          <div class="settings-ov-nav-head">
+            <span class="settings-ov-nav-title">Settings</span>
           </div>
-        </div>
-        <div id="chat-area">
-          <div id="messages" role="log" aria-live="polite"></div>
-        </div>
-        <div id="chat-suggestions" class="suggestions"></div>
-        <div id="input-area">
-          <form id="input-form">
-            <textarea id="input" placeholder="Ask Nicolas anything..." rows="1"
-                      autofocus autocomplete="off" aria-label="Chat message"></textarea>
-            <button type="submit" id="send-btn" title="Send" aria-label="Send message">
-              <svg id="send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-              <svg id="stop-icon" class="hidden" width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <rect x="9" y="9" width="10" height="10" rx="2" fill="white"/>
-                <circle cx="14" cy="14" r="12" stroke="white" stroke-width="2"
-                        stroke-dasharray="18 57" stroke-linecap="round" class="stop-orbit"/>
-              </svg>
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
+          <button class="settings-ov-nav-item active" data-section="account">Account</button>
+          <button class="settings-ov-nav-item"        data-section="integrations">Integrations</button>
+          <button class="settings-ov-nav-item"        data-section="usage">Usage</button>
+          <button class="settings-ov-nav-item"        data-section="preferences">Preferences</button>
+          <button class="settings-ov-nav-item"        data-section="data">Data</button>
+          <button class="settings-ov-nav-item"        data-section="about">About</button>
+        </nav>
 
-    <div class="resize-handle vertical" id="resize-right"></div>
+        <!-- Content area -->
+        <div class="settings-ov-content">
 
-    <!-- Right sidebar: Papers -->
-    <div id="sidebar-right">
-      <div class="sidebar-header">
-        <span class="sidebar-title">Papers</span>
-        <span id="papers-count" class="sidebar-count"></span>
-        <button id="brew-sync-btn" class="sidebar-action-btn brew-btn" title="Brew — sync paper library">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 8V5a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v3"/>
-            <path d="M7 8l-2.5 9A2 2 0 0 0 6.4 20h11.2a2 2 0 0 0 1.9-2.6L17 8H7z"/>
-            <path d="M10 12c0 1.5 1 3 2 3s2-1.5 2-3"/>
-          </svg>
-        </button>
-        <button id="papers-insights-toggle" class="sidebar-action-btn" title="Insights">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="20" x2="18" y2="10"/>
-            <line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-          </svg>
-        </button>
-      </div>
-      <div id="papers-sidebar-filters"></div>
-      <div id="papers-sidebar" class="sidebar-content"></div>
-      <div id="papers-insights-panel" class="sidebar-content hidden"></div>
-    </div>
+          <!-- Account section -->
+          <div id="settings-section-account" class="settings-ov-section active">
+            <div id="settings-account-profile" class="settings-sb-profile hidden"></div>
+            <div id="settings-signin-prompt" class="settings-sb-signin-prompt hidden">
+              <p class="settings-sb-signin-msg">Sign in with HuggingFace to sync your work, access GPU compute, and unlock community features.</p>
+              <button class="account-panel-hf-btn" id="settings-hf-signin-btn">
+                🤗 Sign in with Hugging Face
+              </button>
+            </div>
+            <div class="settings-sb-group" id="settings-cloud-token-group">
+              <div class="settings-sb-group-title">Cloud token</div>
+              <input type="password" id="setting-auth-token" placeholder="Paste token…" autocomplete="off" class="settings-sb-input">
+              <p class="settings-sb-hint">Advanced: for cloud sync without Hugging Face sign-in.</p>
+              <div class="settings-sb-save-row">
+                <button id="settings-save" class="settings-sb-btn settings-sb-btn-primary">Save</button>
+              </div>
+            </div>
+            <div class="settings-sb-footer">
+              <button id="settings-signout-btn" class="settings-sb-danger-btn hidden">Sign out</button>
+            </div>
+          </div>
+
+          <!-- Integrations section -->
+          <div id="settings-section-integrations" class="settings-ov-section">
+            <div class="integrations-title-row">
+              <div class="settings-ov-section-title">Integrations</div>
+              <button id="integrations-recheck-btn" class="integrations-recheck-link" title="Re-check all integrations">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span>Re-check</span>
+              </button>
+            </div>
+            <div id="integrations-list" class="settings-integrations-list"></div>
+          </div>
+
+          <!-- Usage section -->
+          <div id="settings-section-usage" class="settings-ov-section">
+            <div id="stats-content" class="stats-full-content">
+              <div class="stats-loading">Loading&hellip;</div>
+            </div>
+          </div>
+
+          <!-- Preferences section -->
+          <div id="settings-section-preferences" class="settings-ov-section">
+            <div class="settings-ov-section-title">Preferences</div>
+            <div class="settings-sb-group">
+              <div class="settings-sb-row">
+                <div class="settings-sb-row-main">
+                  <span class="settings-sb-label">Theme</span>
+                  <span class="settings-sb-hint">Follow system, or force light/dark.</span>
+                </div>
+                <select id="setting-theme" class="settings-sb-select">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <label class="settings-sb-row" for="setting-private-repos">
+                <div class="settings-sb-row-main">
+                  <span class="settings-sb-label">Push experiments to private repos</span>
+                  <span class="settings-sb-hint">Off: new experiment repos on GitHub are public.</span>
+                </div>
+                <span class="toggle-switch">
+                  <input type="checkbox" id="setting-private-repos">
+                  <span class="toggle-slider"></span>
+                </span>
+              </label>
+            </div>
+            <div class="settings-sb-group-title">Budget</div>
+            <div class="settings-sb-group">
+              <div class="settings-sb-row">
+                <div class="settings-sb-row-main">
+                  <span class="settings-sb-label">Context warning</span>
+                  <span class="settings-sb-hint">Show a "thread is getting heavy" banner when session cost exceeds this amount. Set to 0 to disable.</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;">
+                  <span style="color:var(--text-dim);font-size:12px;">$</span>
+                  <input type="number" id="setting-budget-compact" class="settings-sb-input" style="width:72px;text-align:right;" min="0" step="0.5" value="1.00">
+                </div>
+              </div>
+              <div class="settings-sb-row">
+                <div class="settings-sb-row-main">
+                  <span class="settings-sb-label">Session cap</span>
+                  <span class="settings-sb-hint">Pause Nicolas and require confirmation when API spend per session reaches this amount. Set to 0 to disable.</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;">
+                  <span style="color:var(--text-dim);font-size:12px;">$</span>
+                  <input type="number" id="setting-budget-session" class="settings-sb-input" style="width:72px;text-align:right;" min="0" step="1" value="5.00">
+                </div>
+              </div>
+              <div class="settings-sb-action-row" style="margin-top:8px;">
+                <button id="settings-budget-save" class="settings-sb-btn settings-sb-btn-primary">Save budget</button>
+                <span id="settings-budget-status" class="settings-status"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Data section -->
+          <div id="settings-section-data" class="settings-ov-section">
+            <div class="settings-ov-section-title">Data</div>
+            <div class="settings-sb-group">
+              <div class="settings-sb-action-row">
+                <button id="settings-export" class="settings-sb-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  <span>Export</span>
+                </button>
+                <button id="settings-import" class="settings-sb-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  <span>Import</span>
+                </button>
+              </div>
+              <p class="settings-sb-hint">Export your state as JSON, or restore from a backup.</p>
+              <span id="settings-status" class="settings-status"></span>
+            </div>
+          </div>
+
+          <!-- About section -->
+          <div id="settings-section-about" class="settings-ov-section">
+            <div class="settings-ov-section-title">About</div>
+            <div class="settings-sb-group">
+              <div class="settings-sb-about">
+                <div class="settings-sb-about-name">Distillate</div>
+                <div class="settings-sb-about-version" id="settings-about-version">v0.7.0</div>
+              </div>
+              <div class="settings-sb-about-links">
+                <a id="settings-changelog-link" href="#">What's new</a>
+                <span class="settings-sb-about-sep">·</span>
+                <a id="settings-docs-link" href="#">Docs</a>
+                <span class="settings-sb-about-sep">·</span>
+                <a id="settings-feedback-link" href="#">Feedback</a>
+              </div>
+              <p class="settings-sb-hint">MIT License · Open source on GitHub</p>
+            </div>
+          </div>
+
+        </div><!-- /.settings-ov-content -->
+      </div><!-- /.settings-ov-layout -->
+    </div><!-- /#settings-overlay -->
   </div>
 
   <!-- Status bar -->
   <div id="status-bar">
     <span id="status-dot" class="dot disconnected" aria-hidden="true"></span>
     <span id="status-text">Connecting...</span>
-    <div class="status-spacer"></div>
-    <span class="powered-by" title="Chat runs through Claude Code (Agent SDK)">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px; opacity: 0.6;">
-        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-      </svg>Claude Code
+    <!-- Inline live-run counter — visible only while experiments are running.
+         Driven by populateWelcomeDashboard() in core.js. -->
+    <span id="status-live" class="status-live" hidden>
+      <span class="status-sep" aria-hidden="true">&middot;</span>
+      <span class="status-live-dot" aria-hidden="true"></span>
+      <span id="status-live-count">0</span>
+      <span class="status-live-label">live</span>
     </span>
+    <span id="status-runs-today" class="status-runs-today" hidden>
+      <span class="status-sep" aria-hidden="true">&middot;</span>
+      <span id="status-runs-today-count">0</span>
+      <span class="status-runs-today-label">runs today</span>
+    </span>
+    <!-- Hardware metrics strip — inline, next to the connection state. Shows
+         only when at least one experiment session is running on Apple Silicon
+         with passwordless sudo configured for powermetrics. Populated by
+         hw-metrics.js. -->
+    <span id="hw-metrics-strip" hidden>
+      <span class="hw-sep" aria-hidden="true">&middot;</span>
+      <span class="hw-source" title="Local Apple Silicon GPU (MPS)">MPS</span>
+      <span class="hw-pill" id="hw-gpu-active" hidden>
+        <span class="hw-pill-label">GPU</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+      <span class="hw-pill" id="hw-gpu-power" hidden>
+        <span class="hw-pill-label">GPU&nbsp;W</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+      <span class="hw-pill" id="hw-cpu-power" hidden>
+        <span class="hw-pill-label">CPU&nbsp;W</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+      <span class="hw-pill" id="hw-ane-power" hidden>
+        <span class="hw-pill-label">ANE&nbsp;W</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+    </span>
+    <span id="hw-hf-strip" hidden>
+      <span class="hw-sep" aria-hidden="true">&middot;</span>
+      <span class="hw-source" title="HuggingFace Jobs GPU">HF</span>
+      <span class="hw-pill" id="hw-hf-gpu-util" hidden>
+        <span class="hw-pill-label">GPU</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+      <span class="hw-pill" id="hw-hf-gpu-mem" hidden>
+        <span class="hw-pill-label">VRAM</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+      <span class="hw-pill" id="hw-hf-cpu" hidden>
+        <span class="hw-pill-label">CPU</span>
+        <span class="hw-pill-value">&mdash;</span>
+      </span>
+    </span>
+    <div class="status-spacer"></div>
+    <!-- Billing pills: model picker + live cost. Populated by billing.js.
+         Intentionally NOT class="status-btn" — that class sets
+         display:flex which breaks native <select> rendering in Electron. -->
+    <select id="model-pill" title="Nicolas model" aria-label="Nicolas model">
+      <!-- Options re-synced by billing.js; defaults below match pricing.py. -->
+      <option value="claude-opus-4-6">Opus 4.6</option>
+      <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
+      <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
+      <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+      <option value="gemini-3.1">Gemini 3.1 Pro</option>
+      <option value="gemini-3.0">Gemini 3.0 Flash</option>
+    </select>
+    <span id="cost-pill" title="Token usage">
+      <span id="cost-pill-session">0</span>
+      <span class="cost-pill-sep">·</span>
+      <span id="cost-pill-today">0 tok today</span>
+    </span>
+    <button id="theme-toggle" class="status-btn" title="Auto (follows system)">
+      <svg id="theme-icon-sun" class="hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+      <svg id="theme-icon-moon" class="hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      <svg id="theme-icon-auto" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"/><path d="M12 7v10a5 5 0 0 0 0-10z" fill="currentColor"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+    </button>
+    <!-- Harness indicator (Claude Code / Codex / Gemini CLI / OpenHands) lives
+         in the Integrations rail (Harnesses section), not here, per
+         Primitives v2 §Vocabulary. -->
+
   </div>
 
   <script src="marked.min.js"></script>
   <script>
-    // Configure marked and expose markedParse globally
+    // Configure marked and expose markedParse globally.
+    // Also pre-process GFM-style [!experiment] callouts into styled cards
+    // so Nicolas's experiment-scaffold previews get a clear frame.
     if (typeof marked !== "undefined") {
       marked.setOptions({ breaks: true, gfm: true });
-      window.markedParse = (text) => marked.parse(text);
+
+      function _escapeHtmlInline(s) {
+        return String(s ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function _preprocessExperimentCallouts(md) {
+        // Match a blockquote starting with `> [!experiment] optional title`,
+        // capture all following `> ...` lines as the body. This is the GFM
+        // alert convention (`> [!NOTE]`, `> [!WARNING]`) reused for us.
+        return md.replace(
+          /(^|\n)(> \[!experiment\][^\n]*(?:\n> [^\n]*)*)/gi,
+          (_m, prefix, block) => {
+            const lines = block.split(/\n/);
+            const titleLine = lines[0].replace(/^> \[!experiment\] ?/i, "").trim();
+            const bodyMd = lines.slice(1)
+              .map((l) => l.replace(/^> ?/, ""))
+              .join("\n")
+              .replace(/\s+$/, "");
+            const bodyHtml = marked.parse(bodyMd);
+            const titleHtml = titleLine
+              ? `<span class="experiment-callout-title">${_escapeHtmlInline(titleLine)}</span>`
+              : "";
+            return `${prefix}<div class="experiment-callout">` +
+              `<div class="experiment-callout-header">` +
+              `<span class="experiment-callout-icon">\u2697\uFE0F</span>` +
+              `<span class="experiment-callout-label">Experiment Scaffold — review before launch</span>` +
+              titleHtml +
+              `</div>` +
+              `<div class="experiment-callout-body">${bodyHtml}</div>` +
+              `</div>`;
+          }
+        );
+      }
+
+      window.markedParse = (text) =>
+        marked.parse(_preprocessExperimentCallouts(text || ""));
     }
   </script>
-  <script src="app.js"></script>
+  <script src="browser-shim.js"></script>
+  <script src="core.js"></script>
+  <script src="chat.js"></script>
+  <script src="layout.js"></script>
+  <script src="charts.js"></script>
+  <script src="papers.js"></script>
+  <script src="paper-reader.js"></script>
+  <script src="integrations.js"></script>
+  <script src="experiments.js"></script>
+  <script src="experiment-detail.js"></script>
+  <script src="experiment-wizard.js"></script>
+  <script src="results.js"></script>
+  <script src="calibration.js"></script>
+  <script src="nicolas-ui.js"></script>
+  <script src="agents-ui.js"></script>
+  <script src="welcome.js"></script>
+  <script src="notebook-ui.js"></script>
+  <script src="vault-ui.js"></script>
+  <script src="workspaces.js"></script>
+  <script src="transcript-overlay.js"></script>
+
+  <!-- Drafts dock: non-blocking panel for pending session wrapup summaries.
+       Populated by drafts-dock.js when ✓ is clicked on a running session. -->
+  <div id="drafts-dock" hidden></div>
+  <script src="drafts-dock.js"></script>
+  <script src="billing.js"></script>
+  <script src="hw-metrics.js"></script>
+  <script src="account.js"></script>
+  <script src="usage-stats.js"></script>
 </body>
 </html>

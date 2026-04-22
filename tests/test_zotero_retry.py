@@ -1,3 +1,4 @@
+# Covers: distillate/zotero_client.py
 """Tests for Zotero API retry logic and item type filtering."""
 
 from unittest.mock import MagicMock, patch

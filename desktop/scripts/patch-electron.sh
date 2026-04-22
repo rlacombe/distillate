@@ -3,8 +3,15 @@
 # in the dock, Cmd+Tab switcher, and menu bar instead of "Electron".
 #
 # This runs as part of postinstall and must be re-run after npm install/ci.
+# No-op on non-Darwin platforms (e.g. Linux CI) — plutil is macOS-only and
+# the bundle rename is a macOS concern.
 
 set -e
+
+if [ "$(uname)" != "Darwin" ]; then
+  echo "patch-electron: skipping (non-Darwin platform)"
+  exit 0
+fi
 
 DIST="node_modules/electron/dist"
 SRC="$DIST/Electron.app"

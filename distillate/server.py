@@ -31,10 +31,17 @@ Papers (Papers tab):
     POST /papers/{paper_key}/promote          Add paper to promoted list.
     POST /papers/{paper_key}/unpromote        Remove paper from promoted list.
     POST /papers/{paper_key}/refresh-metadata Re-fetch metadata from Zotero + S2.
+    GET  /papers/{paper_key}/pdf              PDF bytes for the desktop reader
+                                              (local cache → Zotero fallback).
+    GET  /papers/{paper_key}/annotations      Raw Zotero highlight annotations
+                                              with position data for overlay.
+    GET  /papers/{paper_key}/read-position    Last-read page for the reader.
+    POST /papers/{paper_key}/read-position    Persist current page.  Body:
+                                              ``{"page": <int>}``.
 
 Experiments (Live tab):
     GET  /experiments/list                    All tracked projects with run summaries.
-    GET  /experiments/{project_id}/notebook   Self-contained HTML lab notebook.
+    GET  /experiments/{experiment_id}/notebook   Self-contained HTML lab notebook.
     GET  /experiments/stream                  SSE stream of experiment events.
     POST /experiments/attach                  Open terminal attached to tmux session.
                                               Body: ``{"project": "id"}``.
@@ -65,22 +72,35 @@ Chat:
 import asyncio
 import json
 import logging
-import os
 import sys
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-
 from distillate.agent_sdk import NicolasClient, _classify_error
-from distillate.server_helpers import (
-    _parse_stream_json,
-)
-from distillate.state import State, acquire_lock, release_lock
+from distillate.state import State
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8742
-_executor = ThreadPoolExecutor(max_workers=4)
+_executor = ThreadPoolExecutor(max_workers=8)
+
+# Module-level singletons for the Nicolas client + its shared State.
+# Hoisted out of _create_app so tests can monkey-patch _get_nicolas.
+_nicolas_singleton: "NicolasClient | None" = None
+_app_state: "State | None" = None
+
+
+def _register_app_state(state: "State") -> None:
+    """Called once by _create_app to hand the shared State to _get_nicolas."""
+    global _app_state, _nicolas_singleton
+    _app_state = state
+    _nicolas_singleton = None  # reset so the next _get_nicolas() uses this state
+
+
+def _get_nicolas() -> "NicolasClient":
+    global _nicolas_singleton
+    if _nicolas_singleton is None:
+        _nicolas_singleton = NicolasClient(_app_state)
+    return _nicolas_singleton
 
 
 def _find_ui_dir():
@@ -119,7 +139,36 @@ def _create_app():
     _last_reload = 0.0
     _RELOAD_TTL = 2.0  # seconds — skip re-reading disk if recently loaded
 
+    # Bootstrap Nicolas as the default long-lived agent
+    if not _state.get_agent("nicolas"):
+        _state.add_agent("nicolas", "Nicolas", agent_type="nicolas", builtin=True)
+        _state.save()
+
+    # Bootstrap Workbench default project (idempotent)
+    if not _state.get_default_workspace():
+        _state.ensure_workbench()
+        _state.save()
+
+    # v2 Phase 2 migration: backfill agent_id, harness_id, tier fields
+    if not _state._data.get("v2_phase2_migrated"):
+        changes = _state.migrate_v2_phase2()
+        if changes:
+            _state.save()
+
     _initial_sync_done = False
+
+    # Initialize shared context for router modules
+    from distillate.routes import _context
+    _context.init(_state)
+
+    # Auto-recover lost coding sessions on startup
+    try:
+        from distillate.experiment_tools import recover_all_sessions_tool
+        result = recover_all_sessions_tool(state=_state)
+        if result.get("recovered", 0) > 0:
+            log.info("Startup: recovered %d coding session(s)", result["recovered"])
+    except Exception:
+        log.debug("Startup session recovery failed", exc_info=True)
 
     app = FastAPI(title="Nicolas", docs_url=None, redoc_url=None)
 
@@ -151,8 +200,9 @@ def _create_app():
 
         Raises 403 otherwise.
         """
+        import os as _os
         token = request.headers.get("x-auth-token", "")
-        expected = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+        expected = _os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
         if expected and token == expected:
             return
 
@@ -166,13 +216,41 @@ def _create_app():
 
         raise HTTPException(status_code=403, detail="Authentication required")
 
-    def _get_project_or_404(project_id: str):
+    def _get_project_or_404(experiment_id: str):
         """Reload state and look up a project, raising 404 if not found."""
         _cached_reload()
-        proj = _state.find_project(project_id)
+        proj = _state.find_experiment(experiment_id)
         if not proj:
             raise HTTPException(404, detail="not_found")
         return proj
+
+    # Shared Nicolas singleton — one per server process. The WebSocket
+    # handler and the /nicolas/sessions HTTP endpoints all route through
+    # the same instance so switching sessions from the sidebar affects
+    # the next WS send. Disconnect happens only at app shutdown.
+    #
+    # Hand the state to the module-level _get_nicolas factory so tests can
+    # monkeypatch it to a fake.
+    _register_app_state(_state)
+
+    @app.get("/usage")
+    async def usage_snapshot():
+        """Billing snapshot: session/today/week/all/by_model + current_model."""
+        from distillate.agent_runtime import usage_tracker as _ut
+        nicolas = _get_nicolas()
+        sid = getattr(nicolas, "session_id", None)
+        return _ut.get_tracker().snapshot(session_id=sid)
+
+    @app.post("/preferences/budget")
+    async def set_budget(request: Request):
+        """Persist budget thresholds without requiring an open WebSocket."""
+        body = await request.json()
+        nicolas = _get_nicolas()
+        nicolas.set_budget_thresholds(
+            compact_suggest=body.get("compact_suggest"),
+            session_hard=body.get("session_hard"),
+        )
+        return {"ok": True}
 
     @app.get("/status")
     async def status():
@@ -186,7 +264,7 @@ def _create_app():
 
         # Experiment stats
         experiment_stats = None
-        projects = _state.projects
+        projects = _state.experiments
         if projects:
             total_runs = 0
             runs_best = 0
@@ -230,13 +308,6 @@ def _create_app():
         if experiment_stats:
             resp["experiments"] = experiment_stats
 
-        # One-shot migration toast — consumed once
-        from distillate.state import last_migration_message
-        if last_migration_message:
-            import distillate.state as _st
-            resp["migration_message"] = last_migration_message
-            _st.last_migration_message = None
-
         return JSONResponse(resp)
 
     @app.get("/connectors")
@@ -276,6 +347,9 @@ def _create_app():
             "connected": has_obsidian,
             "detail": None,
             "setup": "obsidian",
+            "icon": "obsidian",
+            "vault_name": config.OBSIDIAN_VAULT_NAME if has_obsidian else "",
+            "papers_folder": config.OBSIDIAN_PAPERS_FOLDER if has_obsidian else "",
         })
 
         # Tablet — reMarkable (only show if reading source is remarkable or rmapi is available)
@@ -290,33 +364,55 @@ def _create_app():
                 "setup": "remarkable",
             })
 
+        # HuggingFace — inference, compute, models
+        hf_token = os.environ.get("HF_TOKEN", "").strip()
+        connectors.append({
+            "id": "huggingface",
+            "label": "HuggingFace",
+            "service": "Models, compute & inference",
+            "connected": bool(hf_token),
+            "setup": "huggingface",
+        })
+
         return JSONResponse({"ok": True, "connectors": connectors})
 
     @app.get("/init")
     async def init_bundle():
-        """Return status + experiments + papers + connectors in one call.
+        """Return status + workspaces + experiments + papers + connectors in one call.
 
-        Replaces the four parallel fetches on app startup with a single
+        Replaces the five parallel fetches on app startup with a single
         round-trip, cutting initial load latency.  After the first call,
         triggers a background cloud sync (deferred to avoid racing with
         the initial UI load).
         """
         nonlocal _initial_sync_done
         import asyncio as _aio
-        status_resp, experiments_resp, papers_resp, connectors_resp = await _aio.gather(
+        from distillate.routes.experiments import list_experiments as _list_experiments
+        from distillate.routes.papers import list_papers as _list_papers
+        from distillate.routes.settings import list_integrations as _list_integrations
+        from distillate.experiment_tools import list_workspaces_tool as _list_workspaces_tool
+
+        def _get_workspaces():
+            return _list_workspaces_tool(state=_state)
+
+        status_resp, experiments_resp, papers_resp, integrations_resp, workspaces_data = await _aio.gather(
             status(),
-            list_experiments(),
-            list_papers(),
-            list_connectors(),
+            _list_experiments(),
+            _list_papers(),
+            _list_integrations(),
+            _aio.to_thread(_get_workspaces),
         )
         # Each returns a JSONResponse — extract the bodies
         import json as _json
+        integrations_data = _json.loads(integrations_resp.body)
         resp = JSONResponse({
             "ok": True,
             "status": _json.loads(status_resp.body),
+            "workspaces": workspaces_data,
             "experiments": _json.loads(experiments_resp.body),
             "papers": _json.loads(papers_resp.body),
-            "connectors": _json.loads(connectors_resp.body),
+            "connectors": {"ok": True, "connectors": integrations_data.get("library", [])},
+            "integrations": integrations_data,
         })
 
         # Deferred cloud sync: run once after the UI has loaded
@@ -328,6 +424,227 @@ def _create_app():
                 loop.run_in_executor(_executor, sync_state, _state)
 
         return resp
+
+    @app.get("/welcome/state")
+    async def welcome_state():
+        """Return the welcome screen state blob (7-state fallback chain)."""
+        _cached_reload()
+        from distillate.welcome_state import synthesize_welcome_state
+        result = synthesize_welcome_state(_state)
+        return JSONResponse(result)
+
+    # --- Nicolas sessions ---------------------------------------------------
+
+    @app.get("/nicolas/state")
+    async def get_nicolas_state_endpoint():
+        """Authoritative "working" | "idle" | null for the Nicolas chat turn.
+
+        Renderer polls this alongside the session status endpoint so the
+        tray + activity-bar bell mirror backend state (set from inside
+        NicolasClient.send) instead of relying on a renderer-local flag.
+        """
+        from distillate.nicolas_state import get_nicolas_state
+        return JSONResponse({"status": get_nicolas_state()})
+
+    @app.post("/nicolas/ack")
+    async def ack_nicolas_state():
+        """Renderer acknowledges the pending-turn bell — clear backend state.
+
+        Called when the user focuses the Nicolas sidebar view. Without
+        this, backend would stay in "idle" until the next prompt, and
+        a second window polling the state would re-raise the bell the
+        first window just dismissed.
+        """
+        from distillate.nicolas_state import clear_nicolas_state
+        clear_nicolas_state()
+        return JSONResponse({"ok": True})
+
+    @app.get("/nicolas/sessions")
+    async def list_nicolas_sessions():
+        nicolas = _get_nicolas()
+        return JSONResponse({
+            "sessions": nicolas.list_sessions(),
+            "active_session_id": nicolas.session_id,
+        })
+
+    @app.post("/nicolas/sessions")
+    async def create_nicolas_session():
+        """Disconnect the active session and clear active_session_id.
+
+        The new session_id is minted by Claude Code on the next /ws send
+        (via the session_init event), which then appears in the registry.
+        """
+        nicolas = _get_nicolas()
+        await nicolas.new_conversation()
+        return JSONResponse({"ok": True, "active_session_id": None})
+
+    @app.post("/nicolas/sessions/{session_id}/activate")
+    async def activate_nicolas_session(session_id: str):
+        nicolas = _get_nicolas()
+        await nicolas.switch_session(session_id)
+        return JSONResponse({"ok": True, "active_session_id": session_id})
+
+    @app.patch("/nicolas/sessions/{session_id}")
+    async def update_nicolas_session(session_id: str, request: Request):
+        body = await request.json() if request.content_length else {}
+        nicolas = _get_nicolas()
+        updated = False
+
+        # Update name if provided
+        name = (body or {}).get("name", "").strip()
+        if name:
+            if not nicolas.rename_session(session_id, name):
+                raise HTTPException(404, detail="session_not_found")
+            updated = True
+
+        # Update status if provided
+        status = (body or {}).get("status", "").strip()
+        if status:
+            if not nicolas.set_session_status(session_id, status):
+                raise HTTPException(404, detail="session_not_found")
+            updated = True
+
+        if not updated:
+            raise HTTPException(400, detail="name_or_status_required")
+        return JSONResponse({"ok": True})
+
+    @app.delete("/nicolas/sessions/{session_id}")
+    async def delete_nicolas_session(session_id: str):
+        nicolas = _get_nicolas()
+        if not await nicolas.delete_session(session_id):
+            raise HTTPException(404, detail="session_not_found")
+        return JSONResponse({"ok": True})
+
+    @app.get("/nicolas/sessions/{session_id}/history")
+    async def nicolas_session_history(session_id: str):
+        """Replay past turns for a session from Claude Code's .jsonl store.
+
+        Returns ``{"turns": [...]}`` where each turn has a ``role`` field:
+          - ``user``:       {"role": "user", "text": str}
+          - ``assistant``:  {"role": "assistant", "text": str}
+          - ``tool``:       {"role": "tool", "name": str, "input": dict,
+                             "tool_use_id": str, "is_error": bool}
+
+        Tool turns preserve the original inline ordering: an assistant
+        message like [text, tool_use, text] becomes three consecutive
+        turns. This lets the renderer replay tool indicators inline with
+        text just like they appeared live, so switching back to a session
+        shows the full trajectory instead of a stripped-down text log.
+        """
+        from pathlib import Path
+        projects_dir = Path.home() / ".claude" / "projects"
+        history_path: Path | None = None
+        if projects_dir.is_dir():
+            for project_dir in projects_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                candidate = project_dir / f"{session_id}.jsonl"
+                if candidate.exists():
+                    history_path = candidate
+                    break
+        if history_path is None:
+            return JSONResponse({"turns": []})
+
+        turns: list[dict] = []
+        # Track tool_use_ids that received an error so we can mark them
+        # on replay (tool_result.is_error lives in the subsequent user msg).
+        errored_tool_ids: set[str] = set()
+        try:
+            # First pass: scan for error tool_results so we can annotate
+            # the matching tool_use turns from the assistant side.
+            for line in history_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message") or {}
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                for c in content:
+                    if (
+                        isinstance(c, dict)
+                        and c.get("type") == "tool_result"
+                        and c.get("is_error")
+                    ):
+                        tid = c.get("tool_use_id")
+                        if tid:
+                            errored_tool_ids.add(tid)
+
+            # Second pass: build the turn list preserving inline order.
+            for line in history_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message") or {}
+                role = msg.get("role")
+                content = msg.get("content")
+
+                if role == "user":
+                    # Skip tool_result-only messages; they're already
+                    # paired with their tool_use on the assistant side.
+                    # Also filter out system-injected XML that Claude Code
+                    # inserts as user-role messages (<task-notification>,
+                    # <system-reminder>, etc.) — these are internal metadata
+                    # and must not render as user chat turns.
+                    def _is_system_xml(text: str) -> bool:
+                        t = text.strip()
+                        return t.startswith("<") and any(
+                            t.startswith(f"<{tag}")
+                            for tag in (
+                                "task-notification", "system-reminder",
+                                "command-name", "local-command",
+                            )
+                        )
+
+                    if isinstance(content, str) and content.strip():
+                        if not _is_system_xml(content):
+                            turns.append({"role": "user", "text": content})
+                    elif isinstance(content, list):
+                        texts = [
+                            c.get("text", "")
+                            for c in content
+                            if isinstance(c, dict)
+                            and c.get("type") == "text"
+                            and not _is_system_xml(c.get("text", ""))
+                        ]
+                        joined = "\n".join(t for t in texts if t)
+                        if joined.strip():
+                            turns.append({"role": "user", "text": joined})
+
+                elif role == "assistant" and isinstance(content, list):
+                    # Preserve inline order of text + tool_use blocks.
+                    for c in content:
+                        if not isinstance(c, dict):
+                            continue
+                        ctype = c.get("type")
+                        if ctype == "text":
+                            text = c.get("text", "")
+                            if text.strip():
+                                turns.append({"role": "assistant", "text": text})
+                        elif ctype == "tool_use":
+                            name = c.get("name", "") or ""
+                            # Strip the MCP server prefix the renderer uses too.
+                            if name.startswith("mcp__distillate__"):
+                                name = name[len("mcp__distillate__"):]
+                            tid = c.get("id", "")
+                            turns.append({
+                                "role": "tool",
+                                "name": name,
+                                "input": c.get("input") or {},
+                                "tool_use_id": tid,
+                                "is_error": tid in errored_tool_ids,
+                            })
+        except OSError:
+            pass
+        return JSONResponse({"turns": turns})
 
     @app.get("/connectors/{connector_id}")
     async def connector_detail(connector_id: str):
@@ -392,2133 +709,362 @@ def _create_app():
                     {"key": "RM_FOLDER_PAPERS", "label": "Papers folder", "value": config.RM_FOLDER_PAPERS},
                 ],
             }})
+        elif connector_id == "huggingface":
+            hf_token = os.environ.get("HF_TOKEN", "").strip()
+            hf_connected = bool(hf_token)
+            settings = [
+                {"key": "HF_TOKEN", "label": "API token", "value": (hf_token[:8] + "...") if hf_token else "(not set)", "sensitive": True},
+                {"key": "HF_INFERENCE_ROUTING", "label": "Inference routing", "value": config.HF_INFERENCE_ROUTING},
+                {"key": "HF_DEFAULT_GPU_FLAVOR", "label": "Default GPU", "value": config.HF_DEFAULT_GPU_FLAVOR},
+            ]
+            # If connected, fetch account info
+            account = {}
+            if hf_connected:
+                from distillate.huggingface import validate_token
+                info = validate_token(hf_token)
+                if info.get("ok"):
+                    account = {
+                        "username": info.get("username", ""),
+                        "plan": info.get("plan", "free"),
+                        "can_pay": info.get("can_pay", False),
+                    }
+                    settings.insert(1, {"key": "username", "label": "Account", "value": info.get("username", "")})
+                    settings.insert(2, {"key": "plan", "label": "Plan", "value": info.get("plan", "free")})
+            return JSONResponse({"ok": True, "connector": {
+                "id": "huggingface",
+                "label": "HuggingFace",
+                "service": "Models, compute & inference",
+                "connected": hf_connected,
+                "account": account,
+                "settings": settings,
+                "features": {
+                    "inference": hf_connected,
+                    "compute": hf_connected and account.get("can_pay", False),
+                    "hub_search": True,
+                    "mcp_server": hf_connected,
+                },
+            }})
         else:
             return JSONResponse({"ok": False, "reason": "Unknown connector"}, status_code=404)
 
-    @app.post("/sync")
-    async def sync_to_cloud():
-        from distillate.cloud_sync import cloud_sync_available, sync_state
-        if not cloud_sync_available():
-            return JSONResponse(
-                {"ok": False, "reason": "no_credentials"}, status_code=501,
-            )
-        _state.reload()
-        loop = asyncio.get_event_loop()
-        ok = await loop.run_in_executor(_executor, sync_state, _state)
-        return JSONResponse({"ok": ok})
+    # Experiment endpoints moved to distillate/routes/experiments.py
 
-    @app.post("/library/setup")
-    async def library_setup(body: dict):
-        """Validate Zotero credentials, save config, and optionally set reading surface."""
-        from distillate.config import save_to_env
+    @app.get("/terminal/{tmux_name}/capture")
+    async def terminal_capture(tmux_name: str, lines: int = 5000):
+        """Capture tmux pane scrollback for client-side scroll+select.
 
-        api_key = body.get("zotero_api_key", "").strip()
-        user_id = body.get("zotero_user_id", "").strip()
-        reading_source = body.get("reading_source", "").strip().lower()
-
-        if not api_key or not user_id:
-            return JSONResponse(
-                {"ok": False, "reason": "Both zotero_api_key and zotero_user_id are required"},
-                status_code=400,
-            )
-
-        # Validate credentials against Zotero API
-        import urllib.request
-        import urllib.error
-        try:
-            req = urllib.request.Request(
-                f"https://api.zotero.org/users/{user_id}/items?limit=1",
-                headers={
-                    "Zotero-API-Version": "3",
-                    "Zotero-API-Key": api_key,
-                },
-            )
-            loop = asyncio.get_event_loop()
-            resp = await loop.run_in_executor(
-                _executor,
-                lambda: urllib.request.urlopen(req, timeout=10),
-            )
-            if resp.status != 200:
-                return JSONResponse(
-                    {"ok": False, "reason": f"Zotero API returned {resp.status}"},
-                    status_code=422,
-                )
-        except urllib.error.HTTPError as e:
-            reason = "Invalid API key" if e.code == 403 else f"Zotero API error ({e.code})"
-            return JSONResponse({"ok": False, "reason": reason}, status_code=422)
-        except Exception as e:
-            return JSONResponse(
-                {"ok": False, "reason": f"Could not reach Zotero: {e}"},
-                status_code=502,
-            )
-
-        # Save to .env
-        save_to_env("ZOTERO_API_KEY", api_key)
-        save_to_env("ZOTERO_USER_ID", user_id)
-
-        # Update in-memory config
-        config.ZOTERO_API_KEY = api_key
-        config.ZOTERO_USER_ID = user_id
-
-        if reading_source in ("remarkable", "zotero"):
-            save_to_env("READING_SOURCE", reading_source)
-            config.READING_SOURCE = reading_source
-            if reading_source == "zotero":
-                save_to_env("SYNC_HIGHLIGHTS", "false")
-                config.SYNC_HIGHLIGHTS = False
-            else:
-                save_to_env("SYNC_HIGHLIGHTS", "true")
-                config.SYNC_HIGHLIGHTS = True
-
-        return JSONResponse({"ok": True, "message": "Library configured successfully"})
-
-    @app.post("/email/register")
-    async def register_email(body: dict):
-        """Register email for notifications (experiment reports, digests)."""
-        from distillate.config import save_to_env
-
-        email = body.get("email", "").strip()
-
-        if not email or "@" not in email:
-            return JSONResponse({"ok": False, "reason": "Valid email required"}, status_code=400)
-
-        save_to_env("DISTILLATE_EMAIL", email)
-
-        # Save independent preferences
-        if "experiment_reports" in body:
-            save_to_env("DISTILLATE_EMAIL_EXPERIMENT_REPORTS", "true" if body["experiment_reports"] else "false")
-        if "daily_papers" in body:
-            save_to_env("DISTILLATE_EMAIL_DAILY_PAPERS", "true" if body["daily_papers"] else "false")
-        if "weekly_digest" in body:
-            save_to_env("DISTILLATE_EMAIL_WEEKLY_DIGEST", "true" if body["weekly_digest"] else "false")
-
-        # Sync snapshot to cloud
-        try:
-            from distillate.cloud_email import sync_snapshot
-            _state.reload()
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(_executor, lambda: sync_snapshot(_state))
-            if result and result.get("ok"):
-                verified = result.get("verified", False)
-                save_to_env("DISTILLATE_EMAIL_VERIFIED", "true" if verified else "false")
-                return JSONResponse({"ok": True, "verified": verified, "message": "Email registered and synced"})
-        except Exception as e:
-            log.debug("Cloud sync failed: %s", e)
-
-        return JSONResponse({"ok": True, "verified": False, "message": "Email saved locally"})
-
-    @app.post("/email/resend-verification")
-    async def resend_verification():
-        """Re-trigger verification email via cloud."""
-        from distillate.cloud_email import sync_snapshot
-        email = os.environ.get("DISTILLATE_EMAIL", "").strip()
-        if not email:
-            return JSONResponse({"ok": False, "reason": "No email configured"}, status_code=400)
-        try:
-            _state.reload()
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(_executor, lambda: sync_snapshot(_state, resend_verification=True))
-            if result and result.get("ok"):
-                return JSONResponse({"ok": True, "message": "Verification email sent"})
-        except Exception as e:
-            log.debug("Resend verification failed: %s", e)
-        return JSONResponse({"ok": False, "reason": "Failed to send verification email"}, status_code=500)
-
-    @app.get("/experiments/templates")
-    async def list_experiment_templates():
-        """List available experiment templates."""
-        from distillate.launcher import list_templates
-
-        templates = list_templates()
-        return JSONResponse({
-            "ok": True,
-            "templates": [
-                {
-                    "name": t["name"],
-                    "has_data": t["has_data"],
-                    "prompt_lines": t["prompt_lines"],
-                }
-                for t in templates
-            ],
-        })
-
-    @app.post("/experiments/create")
-    async def create_experiment(body: dict):
-        """Create a new experiment: scan directory, draft PROMPT.md with Claude,
-        install hooks, register, and launch a Claude Code session.
-
-        Uses the CLI's init_experiment_tool for steps 1-4, then launches.
-
-        Body: {"name": "experiment-name", "goal": "what to optimize",
-               "target": "/path" (optional), "constraints": "..." (optional),
-               "launch": true (optional)}
-
-        Returns progress via streaming NDJSON so the desktop can update a
-        flowchart in real time.
+        Returns the last ``lines`` lines of tmux output including ANSI
+        escape sequences so the client can populate xterm.js scrollback.
         """
-        from pathlib import Path
+        from distillate.launcher import capture_pane as _capture_pane
+        text = _capture_pane(tmux_name, lines=lines)
+        if not text:
+            return JSONResponse({"ok": False, "error": "capture failed"}, status_code=404)
+        return JSONResponse({"ok": True, "content": text})
 
-        from starlette.responses import StreamingResponse
+    @app.websocket("/ws/terminal/{tmux_name}")
+    async def ws_terminal(websocket: WebSocket, tmux_name: str):
+        """WebSocket terminal proxy: xterm.js ↔ tmux session.
 
-        from distillate import config
-        from distillate.experiments import slugify
-
-        name = body.get("name", "").strip()
-        goal = body.get("goal", "").strip()
-        if not name:
-            return JSONResponse(
-                {"ok": False, "reason": "name is required"}, status_code=400,
-            )
-
-        target = body.get("target", "")
-        if not target:
-            project_id = slugify(name)
-            root = config.EXPERIMENTS_ROOT or str(Path.home() / "experiments")
-            target = str(Path(root) / project_id)
-        target_path = Path(target).expanduser().resolve()
-
-        async def generate():
-            from distillate.experiment_tools import init_experiment_tool
-            from distillate.launcher import launch_experiment
-
-            # Step 1: Create project directory
-            yield json.dumps({"step": 1, "label": "Create project directory", "status": "active"}) + "\n"
-            try:
-                target_path.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                yield json.dumps({"step": 1, "status": "error", "detail": str(e)}) + "\n"
-                return
-            yield json.dumps({"step": 1, "status": "done", "detail": str(target_path)}) + "\n"
-
-            # Steps 2-4: init_experiment_tool handles scanning, PROMPT.md
-            # generation (via Claude), hooks, reporting, and registration
-            yield json.dumps({"step": 2, "label": "Draft PROMPT.md with Claude", "status": "active"}) + "\n"
-
-            _state.reload()
-            loop = asyncio.get_event_loop()
-            try:
-                result = await loop.run_in_executor(
-                    _executor,
-                    lambda: init_experiment_tool(
-                        state=_state,
-                        path=str(target_path),
-                        goal=goal,
-                        name=name,
-                        constraints=body.get("constraints", ""),
-                        duration_minutes=body.get("duration_minutes", 5),
-                        primary_metric=body.get("primary_metric", ""),
-                        metric_direction=body.get("metric_direction", ""),
-                        metric_constraint=body.get("metric_constraint", ""),
-                    ),
-                )
-            except Exception as e:
-                yield json.dumps({"step": 2, "status": "error", "detail": str(e)}) + "\n"
-                return
-
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error")
-                # If PROMPT.md already exists, that's okay — use the existing one
-                if "already exists" in error_msg:
-                    yield json.dumps({"step": 2, "status": "done", "detail": "Using existing PROMPT.md"}) + "\n"
-                    # Still need to ensure hooks and registration
-                    from distillate.launcher import _install_hooks_into
-                    yield json.dumps({"step": 3, "label": "Install hooks & reporting", "status": "active"}) + "\n"
-                    _install_hooks_into(target_path)
-                    yield json.dumps({"step": 3, "status": "done"}) + "\n"
-
-                    yield json.dumps({"step": 4, "label": "Register experiment", "status": "active"}) + "\n"
-                    from distillate.experiments import slugify
-                    from distillate.experiment_tools import _parse_goals_from_text
-                    project_id = slugify(name)
-                    if not _state.has_project(project_id):
-                        display_name = name.replace("-", " ").title() if name == project_id else name
-                        _state.add_project(
-                            project_id=project_id,
-                            name=display_name,
-                            path=str(target_path),
-                            description=goal,
-                        )
-                        _state.save()
-                    # Auto-parse goals from free-form goal text
-                    parsed_goals = _parse_goals_from_text(goal)
-                    if parsed_goals:
-                        _state.update_project(project_id, goals=parsed_goals)
-                    primary_metric = body.get("primary_metric", "")
-                    if primary_metric:
-                        _state.update_project(project_id, key_metric_name=primary_metric)
-                    _state.save()
-                    yield json.dumps({"step": 4, "status": "done", "project_id": project_id}) + "\n"
-                else:
-                    yield json.dumps({"step": 2, "status": "error", "detail": error_msg}) + "\n"
-                    return
-            else:
-                project_id = result["project_id"]
-                yield json.dumps({"step": 2, "status": "done"}) + "\n"
-
-                # Step 3: Hooks & reporting (already done by init_experiment_tool)
-                yield json.dumps({"step": 3, "label": "Install hooks & reporting", "status": "done"}) + "\n"
-
-                # Step 4: Register (already done by init_experiment_tool)
-                yield json.dumps({"step": 4, "label": "Register experiment", "status": "done", "project_id": project_id}) + "\n"
-
-            # Step 5: Launch Claude Code session
-            if body.get("launch", True):
-                yield json.dumps({"step": 5, "label": "Launch Claude Code session", "status": "active"}) + "\n"
-                try:
-                    _state.reload()
-                    proj = _state.find_project(project_id)
-                    launch_result = await loop.run_in_executor(
-                        _executor,
-                        lambda: launch_experiment(
-                            target_path, model="claude-sonnet-4-6",
-                            max_turns=100, project=proj,
-                        ),
-                    )
-                    acquire_lock()
-                    try:
-                        sessions = proj.setdefault("sessions", {})
-                        sessions[launch_result["session_id"]] = launch_result
-                        _state.save()
-                    finally:
-                        release_lock()
-                    yield json.dumps({
-                        "step": 5, "status": "done",
-                        "tmux_session": launch_result.get("tmux_session", ""),
-                    }) + "\n"
-                except Exception as e:
-                    yield json.dumps({"step": 5, "status": "error", "detail": str(e)}) + "\n"
-                    return
-
-            yield json.dumps({"done": True, "project_id": project_id, "path": str(target_path)}) + "\n"
-
-        return StreamingResponse(generate(), media_type="application/x-ndjson")
-
-    @app.post("/experiments/scaffold")
-    async def scaffold_from_template(body: dict):
-        """Scaffold an experiment from a built-in template (no Claude API call)."""
-        from pathlib import Path
-
-        from distillate import config
-        from distillate.experiments import slugify
-        from distillate.launcher import scaffold_experiment
-
-        template = body.get("template", "").strip()
-        name = body.get("name", "").strip() or template.replace("-", " ").title()
-        if not template:
-            return JSONResponse({"ok": False, "reason": "template required"}, status_code=400)
-
-        project_id = slugify(name)
-        root = config.EXPERIMENTS_ROOT or str(Path.home() / "experiments")
-        target = Path(root) / project_id
-
-        # If already scaffolded and registered, just return the existing project
-        existing = _state.projects.get(project_id)
-        if existing:
-            return JSONResponse({"ok": True, "project_id": project_id, "path": existing.get("path", str(target)), "already_exists": True})
-
-        try:
-            loop = asyncio.get_event_loop()
-            result_path = await loop.run_in_executor(
-                _executor, lambda: scaffold_experiment(template, target, name=name)
-            )
-        except FileNotFoundError as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=404)
-        except FileExistsError as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=409)
-        except Exception as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
-
-        # Register in state with appropriate metadata
-        _state.add_project(project_id, name, str(result_path))
-        _state.update_project(project_id,
-            key_metric_name="param_count",
-            duration_minutes=5,
-            goals=[
-                {"metric": "test_accuracy", "threshold": 0.99, "direction": "maximize"},
-                {"metric": "param_count", "threshold": 100000, "direction": "minimize"},
-            ],
-        )
-        _state.save()
-
-        return JSONResponse({"ok": True, "project_id": project_id, "path": str(result_path)})
-
-    @app.post("/experiments/{project_id}/github")
-    async def create_github_repo_endpoint(project_id: str, body: dict = None):
-        """Create a GitHub repo for the experiment and push initial commit."""
-        from pathlib import Path
-
-        from distillate.launcher import create_github_repo
-
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        body = body or {}
-        repo_name = body.get("name", f"distillate-xp-{project_id}")
-        private = body.get("private", False)
-
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor,
-            lambda: create_github_repo(proj_path, repo_name, private=private),
-        )
-
-        if result.get("ok"):
-            _state.update_project(project_id, github_url=result.get("url", ""))
-            _state.save()
-
-        return JSONResponse(result)
-
-    @app.get("/experiments/{project_id}/prompt")
-    async def get_experiment_prompt(project_id: str):
-        """Get the PROMPT.md content for a project."""
-        from pathlib import Path
-
-        proj = _get_project_or_404(project_id)
-
-        prompt_path = Path(proj.get("path", "")) / "PROMPT.md"
-        if not prompt_path.exists():
-            return JSONResponse({"ok": False, "reason": "no_prompt"})
-
-        content = prompt_path.read_text(encoding="utf-8")
-        return JSONResponse({"ok": True, "content": content, "path": str(prompt_path)})
-
-    @app.put("/experiments/{project_id}/prompt")
-    async def update_experiment_prompt(project_id: str, body: dict):
-        """Update the PROMPT.md content for a project."""
-        from pathlib import Path
-
-        proj = _get_project_or_404(project_id)
-
-        content = body.get("content", "")
-        project_path = Path(proj.get("path", ""))
-        prompt_path = project_path / "PROMPT.md"
-        prompt_path.write_text(content, encoding="utf-8")
-
-        # Signal running agent that PROMPT.md changed
-        distillate_dir = project_path / ".distillate"
-        distillate_dir.mkdir(exist_ok=True)
-        flag = distillate_dir / "prompt_updated"
-        flag.write_text(
-            datetime.now(timezone.utc).isoformat() + "\n",
-            encoding="utf-8",
-        )
-
-        # Auto-detect primary metric from PROMPT.md content
-        detected_metric = _detect_primary_metric(content)
-        if detected_metric:
-            _state.update_project(project_id, key_metric_name=detected_metric)
-            _state.save()
-
-        return JSONResponse({"ok": True, "detected_metric": detected_metric})
-
-    @app.get("/experiments/{project_id}/results")
-    async def get_experiment_results(project_id: str):
-        """Get the RESULTS.md content for a project."""
-        from pathlib import Path
-
-        proj = _get_project_or_404(project_id)
-
-        results_path = Path(proj.get("path", "")) / "RESULTS.md"
-        if not results_path.exists():
-            return JSONResponse({"ok": False, "reason": "no_results"})
-
-        content = results_path.read_text(encoding="utf-8")
-        return JSONResponse({"ok": True, "content": content, "path": str(results_path)})
-
-    @app.get("/experiments/{project_id}/claude-md")
-    async def get_experiment_claude_md(project_id: str):
-        """Get the CLAUDE.md (agent protocol) for a project."""
-        from pathlib import Path
-
-        proj = _get_project_or_404(project_id)
-
-        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
-        if not claude_path.exists():
-            return JSONResponse({"ok": False, "reason": "no_claude_md"})
-
-        content = claude_path.read_text(encoding="utf-8")
-        return JSONResponse({"ok": True, "content": content, "path": str(claude_path)})
-
-    @app.put("/experiments/{project_id}/claude-md")
-    async def update_experiment_claude_md(project_id: str, body: dict):
-        """Update the CLAUDE.md content for a project."""
-        from pathlib import Path
-
-        proj = _get_project_or_404(project_id)
-
-        content = body.get("content", "")
-        claude_path = Path(proj.get("path", "")) / "CLAUDE.md"
-        claude_path.write_text(content, encoding="utf-8")
-        return JSONResponse({"ok": True})
-
-    @app.get("/experiments/{project_id}/session")
-    async def get_session_output(project_id: str):
-        """Get parsed session output for the project.
-
-        Reads the session log file (.distillate/<session_id>.jsonl) which
-        contains stream-json output piped via tee.  Falls back to
-        capture_pane for sessions started before the log-file change.
+        The client sends raw keystrokes, the server pipes them to tmux and
+        streams output back. Works in any browser — no Electron required.
         """
-        from pathlib import Path
-        from distillate.launcher import _ensure_path, capture_pane
+        import asyncio as _aio
+        import os as _term_os
+        import pty as _pty
+        import select as _select
+        import subprocess as _sp
+        import struct as _struct
+        import fcntl as _fcntl
+        import termios as _termios
 
-        _ensure_path()
-        proj = _get_project_or_404(project_id)
-
-        sessions = proj.get("sessions", {})
-        # Find the most recent running session
-        running = [s for s in sessions.values() if s.get("status") == "running"]
-        if not running:
-            return JSONResponse({"ok": False, "reason": "no_running_session", "output": ""}, status_code=404)
-
-        sess = running[-1]
-        tmux_name = sess.get("tmux_session", "")
-        session_log = sess.get("session_log", "")
-
+        # Verify tmux session exists
         try:
-            raw = ""
-            # Prefer log file (reliable, survives scrollback limits)
-            if session_log:
-                log_path = Path(session_log)
-                if log_path.exists():
-                    # Read last ~50KB of the log file
-                    size = log_path.stat().st_size
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        if size > 50_000:
-                            f.seek(size - 50_000)
-                            f.readline()  # skip partial line
-                        raw = f.read()
-
-            # Fallback to capture_pane
-            if not raw.strip() and tmux_name:
-                loop = asyncio.get_event_loop()
-                raw = await loop.run_in_executor(
-                    _executor,
-                    lambda: capture_pane(tmux_name, lines=500),
-                )
-
-            output = _parse_stream_json(raw)
-            return JSONResponse({
-                "ok": True,
-                "session": tmux_name,
-                "output": output,
-            })
-        except Exception as e:
-            return JSONResponse({"ok": False, "reason": str(e), "output": ""}, status_code=500)
-
-    @app.post("/experiments/attach")
-    async def attach_experiment(body: dict):
-        """Open a new Terminal window attached to the experiment's tmux session.
-
-        Called by desktop app's 'Attach' button in Lab tab.
-        Body: {"project": "tiny-gene-code"}
-        """
-        from distillate.launcher import attach_session
-
-        project_query = body.get("project", "")
-        if not project_query:
-            return JSONResponse({"ok": False, "reason": "missing_project"}, status_code=400)
-
-        proj = _get_project_or_404(project_query)
-
-        sessions = proj.get("sessions", {})
-        running = [s for s in sessions.values() if s.get("status") == "running"]
-        if not running:
-            return JSONResponse({"ok": False, "reason": "no_running_session"}, status_code=404)
-
-        sess = running[-1]
-        tmux_name = sess.get("tmux_session", "")
-        host = sess.get("host")
-
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(_executor, attach_session, tmux_name, host)
-            return JSONResponse({"ok": True, "session": tmux_name})
-        except RuntimeError as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
-
-    @app.post("/experiments/{project_id}/launch")
-    async def launch_experiment_endpoint(project_id: str, body: dict = None):
-        """Launch a new experiment session for the project."""
-        from pathlib import Path
-
-        from distillate.launcher import launch_experiment
-
-        body = body or {}
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        if not proj_path.exists():
-            return JSONResponse({"ok": False, "reason": "path_not_found"}, status_code=404)
-
-        model = body.get("model", "claude-sonnet-4-6")
-        prompt_override = body.get("prompt_override")
-
-        try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                _executor,
-                lambda: launch_experiment(
-                    proj_path, model=model, project=proj,
-                    prompt_override=prompt_override,
-                ),
-            )
-            # Persist session to state
-            acquire_lock()
-            try:
-                sessions = proj.setdefault("sessions", {})
-                sessions[result["session_id"]] = result
-                _state.save()
-            finally:
-                release_lock()
-
-            return JSONResponse({
-                "ok": True,
-                "session_id": result.get("session_id", ""),
-                "tmux_session": result.get("tmux_session", ""),
-            })
-        except Exception as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
-
-    @app.post("/experiments/{project_id}/stop")
-    async def stop_experiment_endpoint(project_id: str):
-        """Stop all running sessions for the project."""
-        from distillate.launcher import _ensure_path, refresh_session_statuses, stop_session
-
-        _ensure_path()
-
-        # Refresh tmux statuses first — a session may have died but state
-        # still says "running".  This prevents false "no_running_session".
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(_executor, refresh_session_statuses, _state)
-
-        proj = _get_project_or_404(project_id)
-
-        sessions = proj.get("sessions", {})
-        running = [s for s in sessions.values() if s.get("status") == "running"]
-        if not running:
-            _state.save()
-            return JSONResponse({"ok": False, "reason": "no_running_session"}, status_code=404)
-
-        stopped = []
-        for sess in running:
-            tmux_name = sess.get("tmux_session", "")
-            host = sess.get("host")
-            if tmux_name:
-                try:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        _executor, stop_session, tmux_name, host,
-                    )
-                    sess["status"] = "completed"
-                    stopped.append(tmux_name)
-                except Exception:
-                    log.debug("Failed to stop session %s", tmux_name, exc_info=True)
-        if stopped:
-            _state.save()
-        return JSONResponse({"ok": True, "stopped": stopped})
-
-    # ---------------------------------------------------------------
-    # Rescan helper (shared by /scan endpoint and SSE auto-rescan)
-    # ---------------------------------------------------------------
-
-    def _rescan_project(proj_id: str, proj: dict) -> dict | None:
-        """Rescan a project, update state, return summary or None."""
-        from pathlib import Path
-
-        from distillate.experiments import (
-            backfill_runs_from_events,
-            scan_project,
-        )
-
-        proj_path = Path(proj.get("path", ""))
-        if not proj_path.is_dir():
-            return None
-
-        # Backfill runs.jsonl from events.jsonl before scanning
-        backfilled = backfill_runs_from_events(proj_path)
-        if backfilled:
-            log.info("Backfilled %d run(s) for %s", backfilled, proj_id)
-
-        result = scan_project(proj_path)
-        if "error" in result:
-            return None
-
-        acquire_lock()
-        try:
-            _state.reload()
-            existing = _state.get_project(proj_id)
-            if not existing:
-                return None
-            old_runs = existing.get("runs", {})
-            old_count = len(old_runs)
-            scan_names = {r["name"] for r in result.get("runs", {}).values()}
-            existing_names = {r["name"] for r in old_runs.values()}
-
-            # Remove stale runs no longer in scan results (e.g. artifact-
-            # scanned duplicates superseded by structured runs)
-            stale_keys = [
-                eid for eid, erun in old_runs.items()
-                if erun["name"] not in scan_names
-            ]
-            for k in stale_keys:
-                del old_runs[k]
-
-            new_runs = 0
-            for run_id, run_data in result.get("runs", {}).items():
-                if run_data["name"] not in existing_names:
-                    _state.add_run(proj_id, run_id, run_data)
-                    new_runs += 1
-                else:
-                    # Merge scan data into existing run (preserves state,
-                    # picks up new fields like backfilled descriptions)
-                    for eid, erun in old_runs.items():
-                        if erun["name"] == run_data["name"]:
-                            for k, v in run_data.items():
-                                if k == "id":
-                                    continue
-                                if k == "decision":
-                                    # Don't overwrite "best" with "completed"
-                                    # from backward-compat parsing of old
-                                    # runs.jsonl keep/discard entries
-                                    if v and erun.get(k) != "best":
-                                        erun[k] = v
-                                elif k in ("status", "results",
-                                         "agent_reasoning", "description",
-                                         "hypothesis", "reasoning"):
-                                    # Always take latest value for mutable fields
-                                    if v:
-                                        erun[k] = v
-                                elif v and not erun.get(k):
-                                    erun[k] = v
-                            break
-            _state.update_project(
-                proj_id,
-                last_scanned_at=datetime.now(timezone.utc).isoformat(),
-                last_commit_hash=result.get("head_hash", ""),
-            )
-            _state.save()
-        finally:
-            release_lock()
-
-        # Find best metric across all non-crash runs
-        best_metric = None
-        updated_proj = _state.get_project(proj_id)
-        if updated_proj:
-            for run in updated_proj.get("runs", {}).values():
-                if run.get("decision") == "crash" or run.get("status") == "failed":
-                    continue
-                for k, v in run.get("results", {}).items():
-                    if isinstance(v, (int, float)):
-                        if best_metric is None or v > next(iter(best_metric.values())):
-                            best_metric = {k: v}
-
-        return {
-            "new_runs": new_runs,
-            "total_runs": old_count + new_runs,
-            "best_metric": best_metric,
-            "backfilled": backfilled,
-        }
-
-    @app.post("/experiments/{project_id}/scan")
-    async def scan_experiment(project_id: str, full: str = ""):
-        """Manually trigger a rescan for a project."""
-        proj = _get_project_or_404(project_id)
-
-        # Full rescan: clear watch state + scan state to force re-read
-        if full:
-            from pathlib import Path
-            proj_path = Path(proj.get("path", ""))
-            for state_file in ("watch_state.json", "scan_state.json"):
-                sf = proj_path / ".distillate" / state_file
-                if sf.exists():
-                    sf.unlink()
-
-        loop = asyncio.get_event_loop()
-        summary = await loop.run_in_executor(
-            _executor, _rescan_project, project_id, proj,
-        )
-        if summary is None:
-            return JSONResponse({"ok": False, "reason": "scan_failed"}, status_code=500)
-        return JSONResponse({"ok": True, **summary})
-
-    # ---------------------------------------------------------------
-    # Auto-continuation helper
-    # ---------------------------------------------------------------
-
-    async def _maybe_auto_continue(
-        proj_id: str, proj: dict, loop,
-    ) -> dict | None:
-        """If goals unmet (or queue remains), launch a continuation session.
-
-        Returns a ``session_continued`` SSE event dict, or None.
-        """
-        from pathlib import Path
-
-        from distillate.launcher import launch_continuation, should_continue
-        from distillate.state import acquire_lock, release_lock
-
-        # Check queue first (decrement count if present)
-        queue = proj.get("continuation_queue", {})
-        queue_remaining = queue.get("count", 0)
-        if queue_remaining <= 0 and not should_continue(proj):
-            return None
-
-        proj_path = Path(proj.get("path", ""))
-        if not proj_path.is_dir():
-            return None
-
-        model = queue.get("model") or "claude-sonnet-4-5-20250929"
-        max_turns = queue.get("max_turns", 100)
-
-        try:
-            session_data = await loop.run_in_executor(
-                _executor,
-                lambda: launch_continuation(
-                    proj_path, proj, model=model, max_turns=max_turns,
-                ),
-            )
-        except Exception:
-            log.exception("Auto-continue failed for %s", proj_id)
-            return None
-
-        # Save session + decrement queue
-        acquire_lock()
-        try:
-            _state.reload()
-            _state.add_session(proj_id, session_data["session_id"], session_data)
-            if queue_remaining > 0:
-                _state.update_project(
-                    proj_id,
-                    continuation_queue={
-                        **queue,
-                        "count": queue_remaining - 1,
-                    },
-                )
-            _state.save()
-        finally:
-            release_lock()
-
-        return {
-            "type": "session_continued",
-            "project_id": proj_id,
-            "tmux_session": session_data["tmux_session"],
-            "model": model,
-            "queue_remaining": max(0, queue_remaining - 1),
-        }
-
-    @app.post("/experiments/{project_id}/queue")
-    async def queue_continuation(project_id: str, request: Request):
-        """Queue N continuation sessions for a project.
-
-        Body: ``{"count": int, "model": str (optional), "max_turns": int (optional)}``
-        """
-        body = await request.json()
-        count = body.get("count", 1)
-        model = body.get("model", "claude-sonnet-4-5-20250929")
-        max_turns = body.get("max_turns", 100)
-
-        proj = _get_project_or_404(project_id)
-
-        _state.update_project(project_id, continuation_queue={
-            "count": count,
-            "model": model,
-            "max_turns": max_turns,
-        }, auto_continue=True)
-        _state.save()
-
-        return JSONResponse({
-            "ok": True,
-            "queued": count,
-            "model": model,
-        })
-
-    @app.post("/experiments/{project_id}/sweep")
-    async def sweep_experiment(project_id: str, request: Request):
-        """Launch a parallel hyperparameter sweep.
-
-        Body: ``{"configs": [{"lr": 0.001}, ...], "model": str, "max_turns": int}``
-        """
-        from pathlib import Path
-
-        from distillate.launcher import launch_sweep
-        from distillate.state import acquire_lock, release_lock
-
-        body = await request.json()
-        configs = body.get("configs", [])
-        model = body.get("model", "claude-sonnet-4-5-20250929")
-        max_turns = body.get("max_turns", 100)
-
-        if not configs or len(configs) < 2:
-            return JSONResponse(
-                {"ok": False, "reason": "Provide at least 2 config variants."},
-                status_code=400,
-            )
-
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        if not proj_path.is_dir():
-            return JSONResponse(
-                {"ok": False, "reason": "project_path_missing"},
-                status_code=400,
-            )
-
-        loop = asyncio.get_event_loop()
-        try:
-            sessions = await loop.run_in_executor(
-                _executor,
-                lambda: launch_sweep(
-                    proj_path, proj, configs,
-                    model=model, max_turns=max_turns,
-                ),
-            )
-        except Exception as e:
-            return JSONResponse(
-                {"ok": False, "reason": str(e)}, status_code=500,
-            )
-
-        acquire_lock()
-        try:
-            _state.reload()
-            for sd in sessions:
-                _state.add_session(project_id, sd["session_id"], sd)
-            _state.save()
-        finally:
-            release_lock()
-
-        return JSONResponse({
-            "ok": True,
-            "variants": len(sessions),
-            "sessions": [s["tmux_session"] for s in sessions],
-        })
-
-    # ---------------------------------------------------------------
-    # Campaign orchestration (M3)
-    # ---------------------------------------------------------------
-
-    _campaign_tasks: dict[str, asyncio.Task] = {}
-
-    async def _campaign_loop(project_id: str):
-        """Background campaign loop — delegates to shared run_campaign()."""
-        import threading
-
-        from distillate.launcher import run_campaign
-
-        _state.reload()
-        proj = _state.get_project(project_id)
-        if not proj:
-            _campaign_tasks.pop(project_id, None)
+            _sp.run(["tmux", "has-session", "-t", tmux_name],
+                     check=True, capture_output=True, timeout=5)
+        except (_sp.CalledProcessError, FileNotFoundError):
+            await websocket.close(code=4004, reason=f"tmux session '{tmux_name}' not found")
             return
 
-        campaign = proj.get("campaign", {})
-        budget = campaign.get("budget", {})
-        max_sessions = budget.get("max_sessions", 10)
-        model = campaign.get("model", "claude-sonnet-4-5-20250929")
-        max_turns = campaign.get("max_turns", 100)
+        await websocket.accept()
 
-        # The stop flag is checked by run_campaign; we set it on cancel
-        stop_flag = threading.Event()
+        # Fork a PTY running `tmux attach -t <name>`
+        master_fd, slave_fd = _pty.openpty()
+        env = _term_os.environ.copy()
+        env["TERM"] = "xterm-256color"
 
-        loop = asyncio.get_event_loop()
-        try:
-            await loop.run_in_executor(
-                _executor,
-                lambda: run_campaign(
-                    project_id,
-                    _state,
-                    max_sessions=max_sessions,
-                    model=model,
-                    max_turns=max_turns,
-                    stop_flag=stop_flag,
-                ),
-            )
-        except Exception:
-            log.exception("Campaign loop failed for %s", project_id)
-        finally:
-            _campaign_tasks.pop(project_id, None)
-
-    @app.post("/experiments/{project_id}/campaign/start")
-    async def start_campaign(project_id: str, request: Request):
-        """Start an autonomous campaign loop for a project."""
-        body = await request.json()
-
-        proj = _get_project_or_404(project_id)
-
-        # Validate goals exist
-        if not proj.get("goals"):
-            return JSONResponse(
-                {"ok": False, "reason": "Set goals first with update_goals."},
-                status_code=400,
-            )
-
-        # Don't start if already running
-        existing = proj.get("campaign", {})
-        if existing.get("status") == "running":
-            return JSONResponse(
-                {"ok": False, "reason": "Campaign already running."},
-                status_code=409,
-            )
-
-        objective = body.get("objective", "")
-        max_sessions = body.get("max_sessions", 10)
-        max_hours = body.get("max_hours", 8)
-        model = body.get("model", "claude-sonnet-4-5-20250929")
-        max_turns = body.get("max_turns", 100)
-
-        campaign = {
-            "status": "running",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "objective": objective,
-            "budget": {"max_sessions": max_sessions, "max_hours": max_hours},
-            "model": model,
-            "max_turns": max_turns,
-            "sessions_launched": 0,
-            "current_session_id": None,
-            "completed_at": None,
-            "stop_reason": None,
-        }
-
-        _state.update_project(
-            project_id, campaign=campaign, auto_continue=True,
+        proc = _sp.Popen(
+            ["tmux", "attach-session", "-t", tmux_name],
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            env=env, preexec_fn=_term_os.setsid,
         )
-        _state.save()
+        _term_os.close(slave_fd)  # parent keeps only the master
 
-        # Start background campaign loop
-        task = asyncio.create_task(_campaign_loop(project_id))
-        _campaign_tasks[project_id] = task
+        # Make master_fd non-blocking so reads don't hang
+        import fcntl as _fcntl2
+        flags = _fcntl2.fcntl(master_fd, _fcntl2.F_GETFL)
+        _fcntl2.fcntl(master_fd, _fcntl2.F_SETFL, flags | _term_os.O_NONBLOCK)
 
-        return JSONResponse({"ok": True, "campaign": campaign})
-
-    @app.post("/experiments/{project_id}/campaign/pause")
-    async def pause_campaign(project_id: str):
-        """Pause a running campaign (finishes current session, stops launching)."""
-        proj = _get_project_or_404(project_id)
-        campaign = proj.get("campaign", {})
-        if campaign.get("status") != "running":
-            return JSONResponse(
-                {"ok": False, "reason": "Campaign not running."},
-                status_code=400,
-            )
-        campaign["status"] = "paused"
-        campaign["stop_reason"] = "user_paused"
-        _state.update_project(project_id, campaign=campaign)
-        _state.save()
-        return JSONResponse({"ok": True})
-
-    @app.post("/experiments/{project_id}/campaign/resume")
-    async def resume_campaign(project_id: str):
-        """Resume a paused campaign."""
-        proj = _get_project_or_404(project_id)
-        campaign = proj.get("campaign", {})
-        if campaign.get("status") != "paused":
-            return JSONResponse(
-                {"ok": False, "reason": "Campaign not paused."},
-                status_code=400,
-            )
-        campaign["status"] = "running"
-        campaign["stop_reason"] = None
-        _state.update_project(project_id, campaign=campaign)
-        _state.save()
-        # Restart the background loop
-        task = asyncio.create_task(_campaign_loop(project_id))
-        _campaign_tasks[project_id] = task
-        return JSONResponse({"ok": True})
-
-    @app.post("/experiments/{project_id}/campaign/stop")
-    async def stop_campaign(project_id: str):
-        """Stop a campaign permanently."""
-        proj = _get_project_or_404(project_id)
-        campaign = proj.get("campaign", {})
-        campaign["status"] = "paused"
-        campaign["stop_reason"] = "user_stopped"
-        campaign["completed_at"] = datetime.now(timezone.utc).isoformat()
-        _state.update_project(project_id, campaign=campaign)
-        _state.save()
-        # Cancel the background task
-        task = _campaign_tasks.pop(project_id, None)
-        if task:
-            task.cancel()
-        return JSONResponse({"ok": True})
-
-    @app.patch("/experiments/{project_id:path}")
-    async def patch_experiment(project_id: str, request: Request):
-        """Update experiment fields (key_metric_name, description, etc.)."""
-        proj = _get_project_or_404(project_id)
-        actual_id = proj.get("id", project_id)
-        body = await request.json()
-        updates = {}
-        if "name" in body:
-            updates["name"] = body["name"]
-        if "key_metric_name" in body:
-            updates["key_metric_name"] = body["key_metric_name"]
-        if "description" in body:
-            updates["description"] = body["description"]
-        if "goals" in body:
-            updates["goals"] = body["goals"]
-        if updates:
-            _state.update_project(actual_id, **updates)
-            _state.save()
-        return JSONResponse({"ok": True, "updated": list(updates.keys())})
-
-    @app.delete("/experiments/{project_id:path}")
-    async def delete_experiment(project_id: str):
-        """Delete experiment from tracking. Does NOT delete files or remote repo."""
-        from distillate.launcher import _tmux_session_exists
-
-        proj = _get_project_or_404(project_id)
-
-        # Use the actual state key, not the URL param
-        actual_id = proj.get("id", project_id)
-
-        # Refuse if sessions are running
-        for sess in proj.get("sessions", {}).values():
-            if sess.get("status") == "running":
-                tmux_name = sess.get("tmux_session", "")
-                if tmux_name and _tmux_session_exists(tmux_name):
-                    return JSONResponse(
-                        {"ok": False, "reason": f"Session '{tmux_name}' is still running. Stop it first."},
-                        status_code=409,
-                    )
-
-        name = proj.get("name", actual_id)
-        run_count = len(proj.get("runs", {}))
-        _state.remove_project(actual_id)
-        _state.save()
-        return JSONResponse({"ok": True, "message": f"Deleted '{name}' ({run_count} runs). Files and remote repo untouched."})
-
-    @app.post("/experiments/{project_id}/steer")
-    async def steer_experiment(project_id: str, request: Request):
-        """Write steering instructions for the next session."""
-        from pathlib import Path
-
-        from distillate.launcher import write_steering
-
-        body = await request.json()
-        text = body.get("text", "").strip()
-        if not text:
-            return JSONResponse(
-                {"ok": False, "reason": "No steering text provided."},
-                status_code=400,
-            )
-
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        write_steering(proj_path, text)
-
-        return JSONResponse({"ok": True})
-
-    # ------------------------------------------------------------------
-    # M4 stubs: Multi-Agent Research Lab
-    # ------------------------------------------------------------------
-
-    @app.get("/experiments/compare")
-    async def compare_experiments(ids: str = ""):
-        """Compare metrics across multiple experiments.
-
-        Query param: ?ids=proj1,proj2,proj3
-        Returns a grid of metrics for side-by-side comparison.
-        """
-        if not ids:
-            return JSONResponse(
-                {"ok": False, "reason": "No project IDs provided."},
-                status_code=400,
-            )
-
-        project_ids = [i.strip() for i in ids.split(",") if i.strip()]
-        _state.reload()
-
-        comparison = []
-        all_metrics: set[str] = set()
-
-        for pid in project_ids:
-            proj = _state.find_project(pid)
-            if not proj:
-                continue
-
-            # Find best results across non-crash runs
-            best: dict[str, float] = {}
-            for run in proj.get("runs", {}).values():
-                if run.get("decision") == "crash" or run.get("status") == "failed":
-                    continue
-                for k, v in run.get("results", {}).items():
-                    if isinstance(v, (int, float)):
-                        if k not in best or v > best[k]:
-                            best[k] = v
-                        all_metrics.add(k)
-
-            comparison.append({
-                "id": proj.get("id", pid),
-                "name": proj.get("name", pid),
-                "run_count": len(proj.get("runs", {})),
-                "best_metrics": best,
-                "goals": proj.get("goals", []),
-                "campaign": proj.get("campaign"),
-            })
-
-        return JSONResponse({
-            "ok": True,
-            "projects": comparison,
-            "metrics": sorted(all_metrics),
-        })
-
-    @app.post("/experiments/{project_id}/save-template")
-    async def save_template(project_id: str, request: Request):
-        """Save a successful experiment as a reusable template."""
-        from pathlib import Path
-
-        from distillate.launcher import import_template
-
-        body = await request.json()
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        if not proj_path.is_dir():
-            return JSONResponse(
-                {"ok": False, "reason": "path_not_found"}, status_code=404,
-            )
-
-        template_name = body.get("name", proj.get("name", project_id))
-
-        loop = asyncio.get_event_loop()
-        try:
-            result_name = await loop.run_in_executor(
-                _executor,
-                lambda: import_template(proj_path, template_name),
-            )
-        except Exception as e:
-            return JSONResponse(
-                {"ok": False, "reason": str(e)}, status_code=500,
-            )
-
-        return JSONResponse({
-            "ok": True,
-            "template_name": result_name,
-            "message": f"Saved as template '{result_name}'.",
-        })
-
-    @app.post("/experiments/campaign/parallel")
-    async def start_parallel_campaigns(request: Request):
-        """Launch campaigns across multiple projects in parallel.
-
-        Body: {"project_ids": ["proj1", "proj2"], "max_sessions": 5, "model": "..."}
-        """
-        body = await request.json()
-        project_ids = body.get("project_ids", [])
-        max_sessions = body.get("max_sessions", 5)
-        model = body.get("model", "claude-sonnet-4-5-20250929")
-        max_turns = body.get("max_turns", 100)
-
-        if len(project_ids) < 2:
-            return JSONResponse(
-                {"ok": False, "reason": "Provide at least 2 project IDs."},
-                status_code=400,
-            )
-
-        _state.reload()
-        launched = []
-        errors = []
-
-        for pid in project_ids:
-            proj = _state.find_project(pid)
-            if not proj:
-                errors.append({"id": pid, "reason": "not_found"})
-                continue
-            if not proj.get("goals"):
-                errors.append({"id": pid, "reason": "no_goals"})
-                continue
-            if proj.get("campaign", {}).get("status") == "running":
-                errors.append({"id": pid, "reason": "already_running"})
-                continue
-
-            campaign = {
-                "status": "running",
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "objective": "",
-                "budget": {"max_sessions": max_sessions},
-                "model": model,
-                "max_turns": max_turns,
-                "sessions_launched": 0,
-                "current_session_id": None,
-                "completed_at": None,
-                "stop_reason": None,
-            }
-            _state.update_project(pid, campaign=campaign, auto_continue=True)
-            _state.save()
-
-            task = asyncio.create_task(_campaign_loop(pid))
-            _campaign_tasks[pid] = task
-            launched.append(pid)
-
-        return JSONResponse({
-            "ok": True,
-            "launched": launched,
-            "errors": errors,
-        })
-
-    @app.get("/experiments/stream")
-    async def experiments_stream():
-        """SSE endpoint that tails experiment events and runs.jsonl."""
-        from pathlib import Path
-
-        from starlette.responses import StreamingResponse
-
-        async def _event_generator():
-            """Yield SSE events from .distillate/events.jsonl, runs.jsonl, and live_metrics.jsonl."""
-            # Track file offsets: events + runs + live metrics per project
-            event_offsets: dict[str, int] = {}
-            run_offsets: dict[str, int] = {}
-            metric_offsets: dict[str, int] = {}
-
-            _state.reload()
-            projects = _state.projects
-
-            while True:
-                for proj_id, proj in projects.items():
-                    proj_path = proj.get("path", "")
-                    if not proj_path:
-                        continue
-                    base = Path(proj_path) / ".distillate"
-
-                    # --- Tail events.jsonl ---
-                    events_file = base / "events.jsonl"
-                    if events_file.exists():
-                        ekey = str(events_file)
-                        last_offset = event_offsets.get(ekey, 0)
-                        try:
-                            file_size = events_file.stat().st_size
-                        except OSError:
-                            file_size = 0
-
-                        if file_size > last_offset:
-                            try:
-                                with open(events_file, encoding="utf-8") as f:
-                                    f.seek(last_offset)
-                                    for line in f:
-                                        line = line.strip()
-                                        if not line:
-                                            continue
-                                        # Check for session_end → auto-rescan
-                                        try:
-                                            evt = json.loads(line)
-                                        except json.JSONDecodeError:
-                                            yield f"data: {line}\n\n"
-                                            continue
-                                        yield f"data: {line}\n\n"
-                                        if evt.get("type") == "session_end":
-                                            # Auto-rescan in background
-                                            loop = asyncio.get_event_loop()
-                                            summary = await loop.run_in_executor(
-                                                _executor,
-                                                _rescan_project, proj_id, proj,
-                                            )
-                                            if summary:
-                                                completed_evt = {
-                                                    "type": "session_completed",
-                                                    "project_id": proj_id,
-                                                    "new_runs": summary["new_runs"],
-                                                    "total_runs": summary["total_runs"],
-                                                    "best_metric": summary["best_metric"],
-                                                }
-                                                yield f"data: {json.dumps(completed_evt)}\n\n"
-
-                                                # Push updated state to cloud
-                                                from distillate.cloud_sync import cloud_sync_available, push_state
-                                                if cloud_sync_available():
-                                                    loop.run_in_executor(
-                                                        _executor, push_state, _state,
-                                                    )
-
-                                            # Auto-continue if goals unmet
-                                            _state.reload()
-                                            fresh_proj = _state.get_project(proj_id)
-                                            if fresh_proj and fresh_proj.get("auto_continue"):
-                                                cont_evt = await _maybe_auto_continue(
-                                                    proj_id, fresh_proj, loop,
-                                                )
-                                                if cont_evt:
-                                                    yield f"data: {json.dumps(cont_evt)}\n\n"
-                                event_offsets[ekey] = events_file.stat().st_size
-                            except OSError:
-                                pass
-
-                    # --- Tail runs.jsonl ---
-                    runs_file = base / "runs.jsonl"
-                    if runs_file.exists():
-                        rkey = str(runs_file)
-                        last_offset = run_offsets.get(rkey, 0)
-                        try:
-                            file_size = runs_file.stat().st_size
-                        except OSError:
-                            file_size = 0
-
-                        if file_size > last_offset:
-                            try:
-                                with open(runs_file, encoding="utf-8") as f:
-                                    f.seek(last_offset)
-                                    for line in f:
-                                        line = line.strip()
-                                        if not line:
-                                            continue
-                                        try:
-                                            run_data = json.loads(line)
-                                        except json.JSONDecodeError:
-                                            continue
-                                        run_evt = {
-                                            "type": "run_update",
-                                            "project_id": proj_id,
-                                            "run": run_data,
-                                        }
-                                        yield f"data: {json.dumps(run_evt)}\n\n"
-
-                                        # --- Goal checker ---
-                                        if run_data.get("status") in ("best", "completed", "keep") or run_data.get("decision") in ("best", "completed"):
-                                            _state.reload()
-                                            fresh_proj = _state.get_project(proj_id)
-                                            if fresh_proj and fresh_proj.get("goals"):
-                                                from distillate.launcher import should_continue, stop_session
-                                                if not should_continue(fresh_proj):
-                                                    # Find which goal was met
-                                                    run_results = run_data.get("results", {})
-                                                    for g in fresh_proj["goals"]:
-                                                        gmetric = g.get("metric", "")
-                                                        gthresh = g.get("threshold")
-                                                        if gmetric and gthresh is not None and gmetric in run_results:
-                                                            val = run_results[gmetric]
-                                                            if isinstance(val, (int, float)):
-                                                                met = False
-                                                                if g.get("direction") == "maximize" and val >= gthresh:
-                                                                    met = True
-                                                                elif g.get("direction") == "minimize" and val <= gthresh:
-                                                                    met = True
-                                                                if met:
-                                                                    goal_evt = {
-                                                                        "type": "goal_reached",
-                                                                        "project_id": proj_id,
-                                                                        "metric": gmetric,
-                                                                        "value": val,
-                                                                        "target": gthresh,
-                                                                    }
-                                                                    yield f"data: {json.dumps(goal_evt)}\n\n"
-                                                                    break
-
-                                                    # Auto-stop running sessions
-                                                    loop = asyncio.get_event_loop()
-                                                    sessions = fresh_proj.get("sessions", {})
-                                                    stopped_any = False
-                                                    for sess in sessions.values():
-                                                        if sess.get("status") == "running":
-                                                            tmux = sess.get("tmux_session", "")
-                                                            if tmux:
-                                                                await loop.run_in_executor(
-                                                                    _executor, stop_session, tmux, None,
-                                                                )
-                                                                sess["status"] = "completed"
-                                                                stopped_any = True
-                                                    if stopped_any:
-                                                        _state.save()
-
-                                run_offsets[rkey] = runs_file.stat().st_size
-                            except OSError:
-                                pass
-
-                    # --- Tail live_metrics.jsonl ---
-                    metrics_file = base / "live_metrics.jsonl"
-                    if metrics_file.exists():
-                        mkey = str(metrics_file)
-                        last_offset = metric_offsets.get(mkey, 0)
-                        try:
-                            file_size = metrics_file.stat().st_size
-                        except OSError:
-                            file_size = 0
-
-                        if file_size > last_offset:
-                            try:
-                                with open(metrics_file, encoding="utf-8") as f:
-                                    f.seek(last_offset)
-                                    for line in f:
-                                        line = line.strip()
-                                        if not line:
-                                            continue
-                                        try:
-                                            metric_data = json.loads(line)
-                                        except json.JSONDecodeError:
-                                            continue
-                                        metric_evt = {
-                                            "type": "metric_update",
-                                            "project_id": proj_id,
-                                            **metric_data,
-                                        }
-                                        yield f"data: {json.dumps(metric_evt)}\n\n"
-                                metric_offsets[mkey] = metrics_file.stat().st_size
-                            except OSError:
-                                pass
-
-                await asyncio.sleep(2)
-
-        return StreamingResponse(
-            _event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-    # -------------------------------------------------------------------
-    # Data endpoints for desktop app tabs
-    # -------------------------------------------------------------------
-
-    def _extract_run_number(name: str) -> tuple:
-        """Extract sortable (number, suffix) from run name like 'run_122' or 'run_004a'.
-
-        Returns (number, suffix) for run_NNN patterns, or (0, "") for others
-        so non-numeric IDs sort first by timestamp fallback.
-        """
-        import re
-        m = re.match(r"(?:run_?)(\d+)([a-z]?)", name)
-        if m:
-            return (int(m.group(1)), m.group(2))
-        return (0, "")
-
-    from distillate.experiment_tools import _run_summary_full
-    from distillate.experiments import detect_primary_metric as _detect_primary_metric
-    from distillate.experiments import infer_key_metric_name as _infer_key_metric_name
-
-    def _sort_runs_chronologically(proj: dict, runs: dict) -> list:
-        """Sort runs by runs.jsonl file order (true chronological).
-
-        The append order in runs.jsonl is the ground truth for when runs
-        happened. Timestamps can be wrong (midnight sessions, backfills).
-        Runs only in state.json (no runs.jsonl) are appended at the end
-        sorted by timestamp as fallback.
-        """
-        from pathlib import Path as _P
-
-        # Build file-order index from runs.jsonl
-        file_order: dict[str, int] = {}  # run_name → position
-        proj_path = proj.get("path", "")
-        if proj_path:
-            runs_file = _P(proj_path) / ".distillate" / "runs.jsonl"
-            if runs_file.exists():
-                try:
-                    pos = 0
-                    for line in runs_file.read_text(encoding="utf-8").splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        rid = entry.get("id", "")
-                        st = entry.get("status", "")
-                        # Use first terminal entry position for each run
-                        if rid and rid not in file_order and st in (
-                            "best", "completed", "keep", "discard", "crash",
-                        ):
-                            file_order[rid] = pos
-                            pos += 1
-                except OSError:
-                    pass
-
-        # Build name→file_position lookup
-        name_to_pos: dict[str, int] = {}
-        for sid, r in runs.items():
-            name = r.get("name", sid)
-            if name in file_order:
-                name_to_pos[sid] = file_order[name]
-
-        fallback_start = len(file_order)
-
-        def _sort_key(sid_run):
-            sid, r = sid_run
-            if sid in name_to_pos:
-                return (0, name_to_pos[sid], "")
-            # Fallback: timestamp sort for state-only runs
-            ts = r.get("started_at", "") or r.get("completed_at", "")
-            return (1, fallback_start, ts)
-
-        return [r for _, r in sorted(runs.items(), key=_sort_key)]
-
-    @app.get("/experiments/list")
-    async def list_experiments():
-        from distillate.launcher import refresh_session_statuses
-
-        _cached_reload()
-
-        # Refresh tmux session statuses so the UI doesn't show stale "running"
-        loop = asyncio.get_event_loop()
-        changed = await loop.run_in_executor(
-            _executor, refresh_session_statuses, _state,
-        )
-        if changed:
-            _state.save()
-
-        _cached_reload()
-        projects = _state.projects
-        result = []
-        for proj_id, proj in projects.items():
-            runs = proj.get("runs", {})
-            sessions = proj.get("sessions", {})
-            active_sessions = {
-                sid: s for sid, s in sessions.items()
-                if s.get("status") == "running"
-            }
-            active = len(active_sessions)
-            entry = {
-                "id": proj_id,
-                "name": proj.get("name", ""),
-                "path": proj.get("path", ""),
-                "status": proj.get("status", ""),
-                "description": proj.get("description", ""),
-                "tags": proj.get("tags", []),
-                "goals": proj.get("goals", []),
-                "run_count": len(runs),
-                "active_sessions": active,
-                "sessions": {
-                    sid: {
-                        "tmux_session": s.get("tmux_session", ""),
-                        "started_at": s.get("started_at", ""),
-                    }
-                    for sid, s in active_sessions.items()
-                    if s.get("tmux_session")
-                },
-                "key_metric_name": _infer_key_metric_name(proj),
-                "duration_minutes": proj.get("duration_minutes", 5),
-                "added_at": proj.get("added_at", ""),
-                "last_scanned_at": proj.get("last_scanned_at", ""),
-                "runs": [_run_summary_full(r, i + 1) for i, r in enumerate(
-                    _sort_runs_chronologically(proj, runs),
-                )],
-            }
-            linked_papers = proj.get("linked_papers", [])
-            if linked_papers:
-                entry["linked_papers"] = linked_papers
-            github_url = proj.get("github_url", "")
-            if github_url:
-                entry["github_url"] = github_url
-            campaign = proj.get("campaign")
-            if campaign:
-                entry["campaign"] = campaign
-            # Include research insights from LLM enrichment or RESULTS.md fallback
-            proj_path_str = proj.get("path", "")
-            if proj_path_str:
-                from pathlib import Path as _P
-                from distillate.experiments import load_enrichment_cache
-                proj_p = _P(proj_path_str)
-                cache = load_enrichment_cache(proj_p)
-                enr = cache.get("enrichment", cache)
-                project_insights = enr.get("project", {})
-                if project_insights:
-                    entry["insights"] = project_insights
-                elif (proj_p / "RESULTS.md").exists():
-                    # Fallback: use RESULTS.md as key_breakthrough
-                    try:
-                        results_text = (proj_p / "RESULTS.md").read_text(
-                            encoding="utf-8"
-                        ).strip()
-                        if results_text:
-                            entry["insights"] = {
-                                "key_breakthrough": results_text[:2000],
-                            }
-                    except Exception:
-                        pass
-
-                # Latest learning + current run from runs.jsonl
-                runs_jsonl = proj_p / ".distillate" / "runs.jsonl"
-                if runs_jsonl.exists():
-                    try:
-                        all_lines = runs_jsonl.read_text(
-                            encoding="utf-8"
-                        ).splitlines()
-                        found_learning = False
-                        found_current = False
-                        resolved_ids: set[str] = set()
-                        for line in reversed(all_lines):
-                            if found_learning and found_current:
-                                break
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                rr = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            rid = rr.get("id", "")
-                            status = rr.get("status", "")
-                            # Track completed runs so we skip stale
-                            # "running" announcements
-                            if status in ("best", "completed", "keep", "discard", "crash"):
-                                resolved_ids.add(rid)
-                            # Surface what the agent is currently attempting
-                            if (not found_current
-                                    and status == "running"
-                                    and rid not in resolved_ids
-                                    and rr.get("description")):
-                                entry["current_run"] = rr["description"]
-                                entry["current_run_started"] = rr.get(
-                                    "timestamp", "")
-                                found_current = True
-                            if (not found_learning
-                                    and status in ("best", "completed", "keep")
-                                    and rr.get("reasoning")):
-                                entry["latest_learning"] = rr["reasoning"]
-                                found_learning = True
-
-                        # Total experiment time: pair-matching for
-                        # running→completed, gap-based for remainder
-                        MAX_GAP = 1800  # 30 min = session break
-                        run_starts: dict[str, datetime] = {}
-                        pair_secs = 0.0
-                        unpaired_dts: list[datetime] = []
-                        active_run_start = ""
-
-                        for fwd_line in all_lines:
-                            fwd_line = fwd_line.strip()
-                            if not fwd_line:
-                                continue
-                            try:
-                                rr = json.loads(fwd_line)
-                            except json.JSONDecodeError:
-                                continue
-                            ts = rr.get("timestamp", "")
-                            st = rr.get("status", "")
-                            rid = rr.get("id", "")
-                            if not ts:
-                                continue
-                            try:
-                                dt = datetime.fromisoformat(
-                                    ts.replace("Z", "+00:00"))
-                                if dt.tzinfo is not None:
-                                    dt = dt.replace(tzinfo=None)
-                            except (ValueError, TypeError):
-                                continue
-
-                            if st == "running":
-                                active_run_start = ts
-                                run_starts[rid] = dt
-                            elif st in ("best", "completed", "keep", "discard", "crash"):
-                                active_run_start = ""
-                                if rid in run_starts:
-                                    pair_secs += (
-                                        dt - run_starts[rid]
-                                    ).total_seconds()
-                                    del run_starts[rid]
-                                else:
-                                    unpaired_dts.append(dt)
-                            else:
-                                unpaired_dts.append(dt)
-
-                        # Gap-based for unpaired entries
-                        gap_secs = 0.0
-                        prev_dt = None
-                        for udt in sorted(unpaired_dts):
-                            if prev_dt is not None:
-                                gap = (udt - prev_dt).total_seconds()
-                                if 0 < gap <= MAX_GAP:
-                                    gap_secs += gap
-                            prev_dt = udt
-
-                        entry["experiment_total_secs"] = (
-                            pair_secs + gap_secs
-                        )
-                        if active_run_start:
-                            # Only send if the announcement is recent
-                            # (stale = agent logged "running" but never
-                            # completed — don't show a ticking timer)
-                            try:
-                                ar_dt = datetime.fromisoformat(
-                                    active_run_start.replace("Z", "+00:00"))
-                                if ar_dt.tzinfo is not None:
-                                    ar_dt = ar_dt.replace(tzinfo=None)
-                                budget = (proj.get("duration_minutes") or 5) * 60
-                                age = (datetime.utcnow() - ar_dt).total_seconds()
-                                if age < budget * 3:
-                                    entry["active_run_start"] = active_run_start
-                            except (ValueError, TypeError):
-                                pass
-                    except OSError:
-                        pass
-
-                # Only report current_run/active_run_start for active sessions
-                if active == 0:
-                    entry.pop("current_run", None)
-                    entry.pop("current_run_started", None)
-                    entry["active_run_start"] = ""
-                elif active > 0 and not entry.get("current_run"):
-                    # Active session but no unresolved running entry
-                    sess = next(iter(active_sessions.values()), {})
-                    entry["current_run"] = "Session active"
-                    entry["current_run_started"] = sess.get("started_at", "")
-
-                # Experiment summary from PROMPT.md first meaningful line
-                prompt_md = proj_p / "PROMPT.md"
-                if prompt_md.exists():
-                    try:
-                        for pline in prompt_md.read_text(
-                            encoding="utf-8"
-                        ).splitlines():
-                            pline = pline.strip()
-                            if (pline and not pline.startswith("#")
-                                    and not pline.startswith("```")):
-                                entry["experiment_summary"] = pline[:500]
-                                break
-                    except OSError:
-                        pass
-
-            result.append(entry)
-        return JSONResponse({"ok": True, "projects": result})
-
-    @app.get("/experiments/{project_id}/notebook")
-    async def experiment_notebook(project_id: str):
-        from pathlib import Path
-
-        from starlette.responses import HTMLResponse
-
-        from distillate.experiments import (
-            generate_html_notebook,
-            load_enrichment_cache,
-        )
-
-        proj = _get_project_or_404(project_id)
-
-        proj_path = Path(proj.get("path", ""))
-        enrichment = load_enrichment_cache(proj_path) if proj_path.exists() else {}
-
-        html = generate_html_notebook(proj, enrichment=enrichment)
-        return HTMLResponse(html)
-
-    @app.get("/experiments/{project_id}/chart/export")
-    async def export_chart(project_id: str, metric: str = "", format: str = "png",
-                           log_scale: str = ""):
-        """Generate a Karpathy-style clean chart PNG for sharing."""
-        proj = _get_project_or_404(project_id)
-
-        from distillate.experiments import generate_export_chart
-        runs = list(proj.get("runs", {}).values())
-        if not metric:
-            metric = _infer_key_metric_name(proj)
-        if not metric:
-            return JSONResponse({"ok": False, "reason": "no_metric"}, status_code=400)
-
-        try:
-            use_log = log_scale in ("1", "true", "yes")
-            # Get experiment summary for chart subtitle
-            subtitle = ""
-            proj_path_str = proj.get("path", "")
-            if proj_path_str:
-                from pathlib import Path as _PP
-                prompt_md = _PP(proj_path_str) / "PROMPT.md"
-                if prompt_md.exists():
-                    try:
-                        for line in prompt_md.read_text(encoding="utf-8").splitlines():
-                            line = line.strip()
-                            if line and not line.startswith("#") and not line.startswith("```"):
-                                # Strip markdown bold
-                                import re
-                                subtitle = re.sub(r'\*\*([^*]+)\*\*', r'\1', line)
-                                if len(subtitle) > 80:
-                                    subtitle = subtitle[:78] + "\u2026"
-                                break
-                    except OSError:
-                        pass
-            png_bytes = generate_export_chart(runs, metric, proj.get("name", project_id),
-                                              log_scale=use_log, subtitle=subtitle)
-            from starlette.responses import Response
-            return Response(content=png_bytes, media_type="image/png")
-        except Exception as e:
-            return JSONResponse({"ok": False, "reason": str(e)}, status_code=500)
-
-    @app.get("/papers")
-    async def list_papers(status: str = None):
-        _cached_reload()
-        docs = _state.documents
-        promoted_set = set(_state.promoted_papers)
-        results = []
-        for key, doc in docs.items():
-            if status and doc.get("status") != status:
-                continue
-            meta = doc.get("metadata", {})
-            idx = _state.index_of(key)
-            summary_text = doc.get("summary", "") or ""
-            results.append({
-                "index": idx,
-                "key": key,
-                "title": doc.get("title", ""),
-                "citekey": meta.get("citekey", ""),
-                "status": doc.get("status", ""),
-                "authors": doc.get("authors", [])[:3],
-                "summary": summary_text[:200] + ("..." if len(summary_text) > 200 else ""),
-                "engagement": doc.get("engagement", 0),
-                "promoted": key in promoted_set,
-                "promoted_at": doc.get("promoted_at", ""),
-                "tags": meta.get("tags", [])[:5],
-                "citation_count": meta.get("citation_count", 0),
-                "publication_date": meta.get("publication_date", ""),
-                "uploaded_at": doc.get("uploaded_at", ""),
-                "processed_at": doc.get("processed_at", ""),
-                "page_count": meta.get("numPages") or meta.get("page_count", 0),
-            })
-        return JSONResponse({"ok": True, "papers": results, "total": len(results)})
-
-    @app.post("/papers/{paper_key}/promote")
-    async def promote_paper(paper_key: str):
-        """Add a paper to the promoted list."""
-        _state.reload()
-        doc = _state.documents.get(paper_key)
-        if not doc:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
-        promoted = _state.promoted_papers
-        if paper_key not in promoted:
-            promoted.append(paper_key)
-            doc["promoted_at"] = datetime.now(timezone.utc).isoformat()
-            _state.save()
-        return JSONResponse({"ok": True, "promoted": True})
-
-    @app.post("/papers/{paper_key}/unpromote")
-    async def unpromote_paper(paper_key: str):
-        """Remove a paper from the promoted list."""
-        _state.reload()
-        doc = _state.documents.get(paper_key)
-        if not doc:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
-        promoted = _state.promoted_papers
-        if paper_key in promoted:
-            promoted.remove(paper_key)
-            doc.pop("promoted_at", None)
-            _state.save()
-        return JSONResponse({"ok": True, "promoted": False})
-
-    @app.post("/papers/{paper_key}/refresh-metadata")
-    async def refresh_paper_metadata(paper_key: str):
-        """Re-fetch metadata from Zotero + Semantic Scholar for a single paper."""
-        _state.reload()
-        doc = _state.documents.get(paper_key)
-        if not doc:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
-        from distillate.tools import refresh_metadata
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor, lambda: refresh_metadata(state=_state, identifier=paper_key)
-        )
-        return JSONResponse({"ok": True, "result": result})
-
-    @app.get("/papers/{paper_key}")
-    async def paper_detail(paper_key: str):
-        _state.reload()
-        doc = _state.get_document(paper_key)
-        if not doc:
-            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
-        meta = doc.get("metadata", {})
-        idx = _state.index_of(paper_key)
-
-        # Read highlights from Obsidian note if available (no truncation for desktop)
-        highlights = ""
-        try:
-            from distillate.tools import _read_note_content
-            note = _read_note_content(meta.get("citekey", ""), doc.get("title", ""))
-            if note:
-                start = note.find("## Highlights")
-                if start >= 0:
-                    end = note.find("\n## ", start + 1)
-                    highlights = note[start:end] if end > 0 else note[start:]
-        except Exception:
-            pass
-
-        # Resolve linked projects to names
-        linked_projects = []
-        for pid in doc.get("linked_projects", []):
-            p = _state.find_project(pid)
-            if p:
-                linked_projects.append({
-                    "id": p.get("id", pid),
-                    "name": p.get("name", pid),
-                })
-            else:
-                linked_projects.append({"id": pid, "name": pid})
-
-        return JSONResponse({"ok": True, "paper": {
-            "index": idx,
-            "key": paper_key,
-            "title": doc.get("title", ""),
-            "citekey": meta.get("citekey", ""),
-            "status": doc.get("status", ""),
-            "authors": doc.get("authors", []),
-            "summary": doc.get("summary", "") or "",
-            "s2_tldr": meta.get("s2_tldr", ""),
-            "engagement": doc.get("engagement", 0),
-            "tags": meta.get("tags", []),
-            "citation_count": meta.get("citation_count", 0),
-            "publication_date": meta.get("publication_date", ""),
-            "venue": meta.get("venue", ""),
-            "doi": meta.get("doi", ""),
-            "arxiv_id": meta.get("arxiv_id", ""),
-            "url": meta.get("url", ""),
-            "uploaded_at": doc.get("uploaded_at", ""),
-            "processed_at": doc.get("processed_at", ""),
-            "promoted_at": doc.get("promoted_at", ""),
-            "highlights": highlights,
-            "linked_projects": linked_projects,
-        }})
-
-    # -------------------------------------------------------------------
-    # Insights & state management
-    # -------------------------------------------------------------------
-
-    @app.get("/report")
-    async def report():
-        """Reading insights dashboard data."""
-        from collections import Counter
-        from datetime import timedelta
-
-        _state.reload()
-        processed = _state.documents_with_status("processed")
-
-        if not processed:
-            return JSONResponse({"ok": True, "empty": True})
-
-        # Lifetime stats
-        total_papers = len(processed)
-        total_pages = sum(
-            d.get("page_count", 0)
-            or d.get("metadata", {}).get("numPages", 0)
-            or 0
-            for d in processed
-        )
-        total_words = sum(d.get("highlight_word_count", 0) for d in processed)
-        engagements = [d.get("engagement", 0) for d in processed if d.get("engagement")]
-        avg_engagement = round(sum(engagements) / len(engagements)) if engagements else 0
-
-        # Reading velocity (last 8 weeks)
-        velocity = []
-        week_counts: Counter = Counter()
-        now = datetime.now(timezone.utc)
-        for doc in processed:
-            ts = doc.get("processed_at", "")
-            if not ts:
-                continue
+        def _set_winsize(rows, cols):
             try:
-                dt = datetime.fromisoformat(ts)
-                weeks_ago = (now - dt).days // 7
-                if weeks_ago < 8:
-                    monday = dt - timedelta(days=dt.weekday())
-                    label = monday.strftime("%Y-%m-%d")
-                    week_counts[label] += 1
-            except (ValueError, TypeError):
+                winsize = _struct.pack("HHHH", rows, cols, 0, 0)
+                _fcntl.ioctl(master_fd, _termios.TIOCSWINSZ, winsize)
+            except OSError:
                 pass
-        for label in sorted(week_counts.keys()):
-            velocity.append({"week": label, "count": week_counts[label]})
 
-        # Top topics
-        topic_counter: Counter = Counter()
-        for doc in processed:
-            tags = doc.get("metadata", {}).get("tags") or []
-            for tag in tags:
-                topic_counter[tag] += 1
-        topics = [{"topic": t, "count": c} for t, c in topic_counter.most_common(8)]
+        _set_winsize(24, 80)
 
-        # Engagement distribution
-        buckets = {"0-25%": 0, "25-50%": 0, "50-75%": 0, "75-100%": 0}
-        for doc in processed:
-            eng = doc.get("engagement", 0)
-            if eng <= 25:
-                buckets["0-25%"] += 1
-            elif eng <= 50:
-                buckets["25-50%"] += 1
-            elif eng <= 75:
-                buckets["50-75%"] += 1
-            else:
-                buckets["75-100%"] += 1
-        engagement_dist = [{"range": k, "count": v} for k, v in buckets.items()]
+        _alive = True
 
-        # Most-cited papers
-        cited = sorted(
-            [d for d in processed if d.get("metadata", {}).get("citation_count", 0) > 0],
-            key=lambda d: d.get("metadata", {}).get("citation_count", 0),
-            reverse=True,
-        )
-        cited_papers = []
-        for doc in cited[:5]:
-            key = doc.get("zotero_item_key", "")
-            cited_papers.append({
-                "title": doc.get("title", "")[:80],
-                "citations": doc["metadata"]["citation_count"],
-                "index": _state.index_of(key) if key else 0,
-            })
+        async def _read_pty():
+            """Read from PTY master and send to WebSocket.
 
-        # Most-read authors
-        author_counter: Counter = Counter()
-        for doc in processed:
-            for author in doc.get("authors", []):
-                if author and author.lower() != "unknown":
-                    author_counter[author] += 1
-        top_authors = [
-            {"name": a, "count": c}
-            for a, c in author_counter.most_common(5)
-            if c >= 2
-        ]
+            Uses a dedicated reader thread to avoid per-read thread pool
+            scheduling overhead from run_in_executor.
+            """
+            nonlocal _alive
+            import threading as _threading
+            loop = _aio.get_event_loop()
+            queue = _aio.Queue()
 
-        return JSONResponse({
-            "ok": True,
-            "lifetime": {
-                "papers": total_papers,
-                "pages": total_pages,
-                "words": total_words,
-                "avg_engagement": avg_engagement,
-            },
-            "velocity": velocity,
-            "topics": topics,
-            "engagement": engagement_dist,
-            "cited_papers": cited_papers,
-            "top_authors": top_authors,
-        })
+            def _reader_thread():
+                while _alive:
+                    try:
+                        ready = _select.select([master_fd], [], [], 0.005)[0]
+                    except (ValueError, OSError):
+                        break
+                    if not ready:
+                        continue
+                    try:
+                        data = _term_os.read(master_fd, 65536)
+                        if not data:
+                            break
+                        loop.call_soon_threadsafe(queue.put_nowait, data)
+                    except (BlockingIOError, OSError):
+                        break
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    @app.get("/state/export")
-    async def export_state(request: Request):
-        """Return current state as JSON for backup."""
-        _require_local_auth(request)
-        from distillate.state import STATE_PATH
-        if not STATE_PATH.exists():
-            return JSONResponse({"ok": False, "reason": "no_state"}, status_code=404)
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return JSONResponse({"ok": True, "state": data})
+            t = _threading.Thread(target=_reader_thread, daemon=True)
+            t.start()
 
-    @app.post("/state/import")
-    async def import_state(request: Request, body: dict):
-        """Validate and import a state backup."""
-        _require_local_auth(request)
-        import shutil
-        from distillate.state import STATE_PATH, _run_migrations
+            try:
+                while _alive:
+                    data = await queue.get()
+                    if data is None:
+                        break
+                    await websocket.send_bytes(data)
+            except Exception:
+                pass
+            finally:
+                _alive = False
 
-        state_data = body.get("state")
-        if not state_data or not isinstance(state_data, dict):
-            return JSONResponse({"ok": False, "reason": "invalid_body"}, status_code=400)
-        if "documents" not in state_data:
-            return JSONResponse({"ok": False, "reason": "missing_documents"}, status_code=400)
+        async def _write_pty():
+            """Read from WebSocket and write to PTY master."""
+            nonlocal _alive
+            try:
+                while _alive:
+                    msg = await websocket.receive()
+                    if msg["type"] == "websocket.disconnect":
+                        break
+                    if "bytes" in msg and msg["bytes"]:
+                        _term_os.write(master_fd, msg["bytes"])
+                    elif "text" in msg and msg["text"]:
+                        text = msg["text"]
+                        # Handle resize messages
+                        if text.startswith("{"):
+                            try:
+                                cmd = json.loads(text)
+                                if cmd.get("type") == "resize":
+                                    _set_winsize(cmd.get("rows", 24), cmd.get("cols", 80))
+                                    continue
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                        _term_os.write(master_fd, text.encode("utf-8"))
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+            finally:
+                _alive = False
 
-        _run_migrations(state_data)
-
-        # Backup existing
-        if STATE_PATH.exists():
-            backup = STATE_PATH.with_suffix(".json.bak")
-            shutil.copy2(STATE_PATH, backup)
-
-        STATE_PATH.write_text(
-            json.dumps(state_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        _state.reload()
-        n_papers = len(state_data.get("documents", {}))
-        return JSONResponse({"ok": True, "papers": n_papers})
+        try:
+            await _aio.gather(_read_pty(), _write_pty())
+        finally:
+            proc.terminate()
+            try:
+                _term_os.close(master_fd)
+            except OSError:
+                pass
+            proc.wait()
 
     @app.websocket("/ws")
     async def ws_chat(websocket: WebSocket):
+        """Single-receive WebSocket handler.
+
+        All incoming messages flow through one ``receive_text()`` call in
+        the main loop. Streaming work runs in a spawned task so cancels,
+        model switches, and other control messages can be processed
+        without contention. This is the fix for the concurrency bug where
+        the outer loop's ``receive_text`` raced with a background cancel
+        listener's ``receive_text`` ("cannot call recv while another
+        coroutine is already waiting for the next message").
+        """
         await websocket.accept()
 
-        nicolas = NicolasClient(_state)
-        _cancel_flag = asyncio.Event()
+        # Reuse the shared singleton so session state is consistent with the
+        # /nicolas/sessions HTTP endpoints.
+        nicolas = _get_nicolas()
+        cancel_flag = asyncio.Event()
+        # Serialize streaming tasks: Nicolas processes one user query at a
+        # time. A second message sent while the first is streaming queues
+        # behind the lock instead of racing.
+        stream_lock = asyncio.Lock()
+
+        async def _stream_turn(user_input: str) -> None:
+            async with stream_lock:
+                cancel_flag.clear()
+                # Collect assistant text for post-turn auto-naming.
+                _assistant_chunks: list[str] = []
+                # Track whether a tool in this turn requested a thread branch
+                # (e.g. launch_experiment → new thread named after the experiment).
+                _pending_branch: dict | None = None
+                try:
+                    async for event in nicolas.send(user_input):
+                        if cancel_flag.is_set():
+                            await websocket.send_json({"type": "cancelled"})
+                            return
+                        await websocket.send_json(event)
+
+                        # Capture streamed assistant text so we can feed
+                        # it to the Haiku-powered thread-namer.
+                        if event.get("type") == "text_delta":
+                            _assistant_chunks.append(event.get("text", ""))
+
+                        # Harvest the thread_branch hint from any tool_done
+                        # whose result carries one (only launch_experiment
+                        # does, today). The branch fires AFTER turn_end so
+                        # we don't truncate Nicolas's final response.
+                        if event.get("type") == "tool_done":
+                            res = event.get("result") or {}
+                            if isinstance(res, dict) and res.get("_thread_branch"):
+                                _pending_branch = res["_thread_branch"]
+                            # Push usage snapshot after every tool call so the
+                            # thinking-indicator token counter reflects real
+                            # API usage (including lab_repl delegate calls)
+                            # without waiting for turn_end.
+                            try:
+                                from distillate.agent_runtime import usage_tracker as _ut
+                                _sid = getattr(nicolas, "session_id", None)
+                                _snap = _ut.get_tracker().snapshot(session_id=_sid)
+                                await websocket.send_json({"type": "usage_update", **_snap})
+                            except Exception:
+                                pass
+
+                        # Push a fresh billing snapshot right after every
+                        # turn so the renderer's cost pill updates live.
+                        if event.get("type") == "turn_end":
+                            try:
+                                from distillate.agent_runtime import usage_tracker as _ut
+                                sid = getattr(nicolas, "session_id", None) or event.get("session_id")
+                                snap = _ut.get_tracker().snapshot(session_id=sid)
+                                await websocket.send_json({
+                                    "type": "usage_update", **snap,
+                                })
+                            except Exception:
+                                log.debug("usage_update push failed", exc_info=True)
+
+                            # After the turn completes, fire the two
+                            # post-turn workflows. Both run as tasks so we
+                            # don't block further message handling.
+                            end_sid = event.get("session_id") or getattr(nicolas, "session_id", None)
+                            assistant_text = "".join(_assistant_chunks)
+                            if _pending_branch:
+                                asyncio.create_task(_handle_thread_branch(
+                                    websocket, nicolas, _pending_branch,
+                                ))
+                            else:
+                                asyncio.create_task(_maybe_auto_name(
+                                    websocket, end_sid, user_input, assistant_text,
+                                ))
+                except Exception as exc:
+                    log.exception("Nicolas query failed")
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": str(exc),
+                            "category": _classify_error(str(exc)),
+                        })
+                    except Exception:
+                        # WebSocket likely closed; nothing we can do.
+                        pass
+
+        async def _maybe_auto_name(
+            ws: WebSocket, session_id: str | None,
+            user_msg: str, assistant_msg: str,
+        ) -> None:
+            """Call Haiku in a worker thread to generate a 3-5 word name
+            for the thread if it doesn't already have a meaningful one.
+            Emits `session_renamed` so the sidebar refreshes."""
+            if not session_id:
+                return
+            try:
+                from distillate.agent_sdk import (
+                    _load_registry, _needs_auto_name,
+                    _generate_thread_name, _apply_auto_name,
+                )
+                reg = _load_registry()
+                entry = next(
+                    (s for s in reg.get("sessions", [])
+                     if s.get("session_id") == session_id),
+                    None,
+                )
+                if not entry or not _needs_auto_name(entry):
+                    return
+                name = await asyncio.to_thread(
+                    _generate_thread_name, user_msg, assistant_msg,
+                )
+                if not name:
+                    # Fallback: first ~6 words of user message
+                    words = (user_msg or "").strip().split()
+                    name = " ".join(words[:6])
+                    if not name:
+                        return
+                if _apply_auto_name(session_id, name):
+                    try:
+                        await ws.send_json({
+                            "type": "session_renamed",
+                            "session_id": session_id,
+                            "name": name,
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                log.debug("auto-name failed (non-critical)", exc_info=True)
+
+        async def _handle_thread_branch(
+            ws: WebSocket, nicolas_client, branch: dict,
+        ) -> None:
+            """After launch_experiment, start a fresh Nicolas thread
+            named after the experiment. The current thread stays in
+            the sidebar as the setup conversation."""
+            try:
+                name = (branch or {}).get("name") or "New Experiment"
+                # Clear the active session; the next user send creates a
+                # new Claude Code session via _ensure_connected. The
+                # pending_name is applied in session_init so the new
+                # entry lands with the experiment's name from the start.
+                await nicolas_client.new_conversation(pending_name=name)
+                try:
+                    await ws.send_json({
+                        "type": "thread_branched",
+                        "suggested_name": name,
+                    })
+                except Exception:
+                    pass
+            except Exception:
+                log.debug("thread branch failed (non-critical)", exc_info=True)
+
+        active_streams: set[asyncio.Task] = set()
 
         try:
             while True:
@@ -2532,66 +1078,144 @@ def _create_app():
                     await nicolas.new_conversation()
                     continue
 
+                if msg.get("type") == "unblock_budget":
+                    nicolas.unblock_budget()
+                    await websocket.send_json({"type": "budget_unblocked"})
+                    continue
+
                 if msg.get("type") == "set_model":
                     new_model = msg.get("model")
-                    if new_model:
-                        await nicolas.set_model(new_model)
-                        log.info("Model changed to %s", new_model)
+                    if not new_model:
+                        continue
+                    from distillate import pricing as _pricing
+                    from distillate import preferences as _prefs
+                    if new_model not in _pricing.MODEL_PRICES:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Unknown model: {new_model}",
+                            "category": "invalid_model",
+                        })
+                        continue
+                    # Persist first so a crash in nicolas.set_model() still
+                    # reflects the user's choice on the next restart.
+                    _prefs.set("nicolas_model", new_model)
+                    await nicolas.set_model(new_model)
+                    log.info("Model changed to %s", new_model)
+                    continue
+
+                if msg.get("type") == "get_preferences":
+                    from distillate import preferences as _prefs
+                    from distillate import pricing as _pricing
+                    await websocket.send_json({
+                        "type": "preferences",
+                        "nicolas_model": _prefs.get("nicolas_model", _pricing.DEFAULT_MODEL),
+                        "supported_models": _pricing.supported_models(),
+                        "budget_compact_suggest_usd": nicolas._compact_suggest_usd,
+                        "budget_session_hard_usd": nicolas._session_hard_warn_usd,
+                    })
+                    continue
+
+                if msg.get("type") == "set_budget_thresholds":
+                    nicolas.set_budget_thresholds(
+                        compact_suggest=msg.get("compact_suggest"),
+                        session_hard=msg.get("session_hard"),
+                        day_hard=msg.get("day_hard"),
+                    )
+                    await websocket.send_json({"type": "budget_thresholds_saved"})
+                    continue
+
+                if msg.get("type") == "get_usage":
+                    from distillate.agent_runtime import usage_tracker as _ut
+                    sid = getattr(nicolas, "session_id", None)
+                    snap = _ut.get_tracker().snapshot(session_id=sid)
+                    await websocket.send_json({"type": "usage", **snap})
                     continue
 
                 if msg.get("type") == "cancel":
-                    _cancel_flag.set()
+                    # NOTE: We do NOT call nicolas.interrupt() — that sends
+                    # SIGINT to the Claude Code process which can disrupt
+                    # running tools (e.g. tmux commands checking on
+                    # experiments). The flag stops forwarding events; the
+                    # underlying turn completes in the background.
+                    cancel_flag.set()
                     continue
 
                 user_input = msg.get("text", "").strip()
                 if not user_input:
                     continue
 
-                _cancel_flag.clear()
-
-                # Listen for cancel messages while streaming
-                # NOTE: We do NOT call nicolas.interrupt() — that sends SIGINT
-                # to the Claude Code process which can disrupt running tools
-                # (e.g. tmux commands checking on experiments). Instead we just
-                # set the flag to stop forwarding events to the client.
-                async def _listen_for_cancel():
+                # Prepend context hints so Nicolas can resolve "this project" /
+                # "here" without extra tool calls, and knows what the user is
+                # currently looking at (active_project_id = auto from selection;
+                # focus = explicitly-pinned items from the "+ add context" chip).
+                ctx = msg.get("context") or {}
+                hints: list[str] = []
+                active_pid = ctx.get("active_project_id")
+                if active_pid:
                     try:
-                        while not _cancel_flag.is_set():
-                            raw = await websocket.receive_text()
-                            try:
-                                m = json.loads(raw)
-                            except json.JSONDecodeError:
-                                continue
-                            if m.get("type") == "cancel":
-                                _cancel_flag.set()
-                                break
+                        proj = _state.get_workspace(active_pid)
+                        if proj and proj.get("name"):
+                            hints.append(
+                                f"user is currently viewing project "
+                                f"\"{proj['name']}\" (id={active_pid})"
+                            )
                     except Exception:
-                        pass
+                        log.debug("active project lookup failed", exc_info=True)
+                for fi in (ctx.get("focus") or []):
+                    ftype = fi.get("type", "")
+                    fid = fi.get("id", "")
+                    flabel = fi.get("label", "")
+                    if not (ftype and flabel):
+                        continue
+                    if ftype == "paper":
+                        hints.append(f"user has pinned paper \"{flabel}\" for context")
+                    elif ftype == "experiment":
+                        hints.append(f"user is focused on experiment \"{flabel}\" (id={fid})")
+                    elif ftype == "project":
+                        hints.append(f"user is focused on project \"{flabel}\" (id={fid})")
+                if hints:
+                    user_input = f"[Context: {'; '.join(hints)}]\n\n{user_input}"
 
-                cancel_task = asyncio.create_task(_listen_for_cancel())
-
-                try:
-                    async for event in nicolas.send(user_input):
-                        if _cancel_flag.is_set():
-                            await websocket.send_json({"type": "cancelled"})
-                            break
-                        await websocket.send_json(event)
-                except Exception as exc:
-                    log.exception("Nicolas query failed")
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": str(exc),
-                        "category": _classify_error(str(exc)),
-                    })
-                finally:
-                    cancel_task.cancel()
+                # Spawn streaming as a task so the main loop can keep
+                # handling control messages (esp. cancel) while Nicolas
+                # processes. The stream_lock ensures only one turn streams
+                # at a time; extra text messages queue behind it.
+                task = asyncio.create_task(_stream_turn(user_input))
+                active_streams.add(task)
+                task.add_done_callback(active_streams.discard)
 
         except WebSocketDisconnect:
             log.info("WebSocket client disconnected")
         except Exception:
             log.exception("WebSocket error")
         finally:
-            await nicolas.disconnect()
+            # Cancel any in-flight streaming tasks on disconnect.
+            for t in list(active_streams):
+                t.cancel()
+        # Do NOT disconnect the singleton on WS close — other requests
+        # (session list, switches) still need it. Disconnect at app shutdown.
+
+    # --- Include domain routers ---
+    from distillate.routes.experiments import router as experiments_router
+    from distillate.routes.papers import router as papers_router
+    from distillate.routes.settings import router as settings_router
+    from distillate.routes.workspaces import router as workspaces_router
+    from distillate.routes.agents import router as agents_router
+    from distillate.routes.notebook import router as notebook_router
+    from distillate.routes.canvas import router as canvas_router
+    from distillate.routes.hooks import router as hooks_router
+    from distillate.routes.auth import router as auth_router
+    from distillate.routes.hf_metrics import router as hf_metrics_router
+    app.include_router(experiments_router)
+    app.include_router(papers_router)
+    app.include_router(settings_router)
+    app.include_router(workspaces_router)
+    app.include_router(agents_router)
+    app.include_router(notebook_router)
+    app.include_router(canvas_router)
+    app.include_router(hooks_router)
+    app.include_router(auth_router)
+    app.include_router(hf_metrics_router)
 
     # Mount desktop UI static files at /ui (served from wheel or dev monorepo)
     ui_dir = _find_ui_dir()
@@ -2604,10 +1228,38 @@ def _create_app():
 
 
 def main():
-    """Entry point: ``python -m distillate.server [port]``."""
+    """Entry point: ``python -m distillate.server [port] [--no-open]``."""
     import uvicorn
 
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else _DEFAULT_PORT
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    port = int(args[0]) if args else _DEFAULT_PORT
+    no_open = "--no-open" in flags
+
+    # Make the port visible to the session launcher, which writes it into
+    # Claude Code's .claude/settings.local.json hook URLs on launch.
+    from distillate.claude_hooks import set_server_port
+    set_server_port(port)
+
+    if not no_open:
+        import threading
+        import webbrowser
+
+        def _open():
+            import time
+            time.sleep(1.0)
+            webbrowser.open(f"http://127.0.0.1:{port}/ui/")
+
+        threading.Thread(target=_open, daemon=True).start()
+
+    # Load all credentials from encrypted database into memory cache.
+    # This happens once at startup (no OS keychain prompts).
+    from distillate import secrets, db
+    db.get_connection()  # Ensure DB is initialized with credentials table
+    for key in secrets.SECRET_KEYS:
+        secrets.get(key)  # Populate in-memory cache from encrypted DB
+    log.info("Credentials loaded from encrypted storage")
+
     log.info("Starting Nicolas server on 127.0.0.1:%d", port)
     uvicorn.run(
         _create_app(),

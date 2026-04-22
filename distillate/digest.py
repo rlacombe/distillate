@@ -34,7 +34,7 @@ def match_suggestion_to_title(line: str, known_titles: list[str]) -> str | None:
 
 
 _SIGNATURE = (
-    '<div style="border-top:1px solid #eee;margin-top:24px;padding-top:12px;font-size:12px;color:#999;">'
+    '<div class="sig" style="border-top:1px solid #eee;margin-top:24px;padding-top:12px;font-size:12px;color:#999;">'
     '<a href="https://distillate.dev" style="color:#6366f1;text-decoration:none;">distillate.dev</a>'
     ' · Your research alchemist</div>'
 )
@@ -46,10 +46,28 @@ _HEADER = (
 
 # Shared email wrapper — clean HTML, respects client light/dark mode
 def _wrap_email(content: str) -> str:
-    """Wrap email content in the branded template."""
+    """Wrap email content in the branded template.
+
+    Includes color-scheme meta tags and a prefers-color-scheme media query
+    so the email automatically adapts to dark mode in Superhuman (Carbon),
+    Apple Mail, iOS Mail, and Outlook macOS.  Gmail ignores the CSS but
+    the light default survives its auto-inverter unscathed.
+    """
     return (
-        '<html><body style="font-family:-apple-system,system-ui,BlinkMacSystemFont,sans-serif;'
-        'max-width:560px;margin:0 auto;padding:24px 20px;color:#333;">'
+        '<html><head>'
+        '<meta name="color-scheme" content="light dark">'
+        '<meta name="supported-color-schemes" content="light dark">'
+        '<style>'
+        ':root { color-scheme: light dark; }'
+        '@media (prefers-color-scheme: dark) {'
+        '  .email-body { background: #0f0f23 !important; color: #e0e0e8 !important; }'
+        '  .email-body a { color: #818cf8 !important; }'
+        '  .email-body .sig { border-color: #2a2a3e !important; color: #8888a0 !important; }'
+        '}'
+        '</style>'
+        '</head>'
+        '<body class="email-body" style="font-family:-apple-system,system-ui,BlinkMacSystemFont,sans-serif;'
+        'max-width:560px;margin:0 auto;padding:24px 20px;color:#333;background:#ffffff;">'
         f'{_HEADER}{content}{_SIGNATURE}'
         '</body></html>'
     )
@@ -497,9 +515,65 @@ def fetch_pending_from_gist() -> dict | None:
     return None
 
 
+def _use_local_email() -> bool:
+    """Check if the user has opted into local email sending (legacy).
+
+    Returns True only if DISTILLATE_LOCAL_EMAIL=true is set in .env.
+    Default: use cloud email path.
+    """
+    return os.environ.get("DISTILLATE_LOCAL_EMAIL", "").strip().lower() in ("true", "1", "yes")
+
+
+def _send_via_cloud(email_type: str = "daily") -> bool:
+    """Trigger email via cloud: sync snapshot then call send-scheduled.
+
+    The cloud edge function renders the email using the canonical template
+    (with light/dark mode support) and sends via Resend.
+    """
+    from distillate.cloud_email import sync_snapshot, _cloud_configured, _post
+
+    if not _cloud_configured():
+        log.info("Cloud not configured, falling back to local email")
+        return False
+
+    state = State()
+    _sync_tags(state)
+
+    # Sync snapshot first (ensures cloud has latest data)
+    result = sync_snapshot(state)
+    if not result or not result.get("ok"):
+        log.warning("Cloud sync failed, falling back to local email")
+        return False
+
+    # Trigger send-scheduled for this user
+    auth_token = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+    email = os.environ.get("DISTILLATE_EMAIL", "").strip()
+    resp = _post("send-scheduled", {
+        "trigger_for_email": email,
+        "email_type": email_type,
+    }, auth_token=auth_token)
+
+    if resp and resp.get("ok"):
+        sent = resp.get("sent", 0)
+        log.info("Cloud email sent (%s): %d", email_type, sent)
+        return True
+    else:
+        log.warning("Cloud send-scheduled failed: %s", resp)
+        return False
+
+
 def send_weekly_digest(days: int = 7) -> None:
-    """Compile and send a digest of papers processed in the last N days."""
+    """Compile and send a digest of papers processed in the last N days.
+
+    Routes through cloud email by default. Set DISTILLATE_LOCAL_EMAIL=true
+    in .env to use the legacy local rendering path.
+    """
     config.setup_logging()
+
+    if not _use_local_email():
+        if _send_via_cloud("weekly"):
+            return
+        log.info("Cloud path failed, using local fallback")
 
     state = State()
     _sync_tags(state)
@@ -625,13 +699,13 @@ def _experiments_html(state: State) -> str:
     from pathlib import Path
     from distillate.experiments import load_enrichment_cache
 
-    if not state.projects:
+    if not state.experiments:
         return ""
 
     featured = []   # (name, run_count, kept, is_running, insight)
     also_ran = []   # (name, run_count)
 
-    for pid, proj in state.projects.items():
+    for pid, proj in state.experiments.items():
         runs = proj.get("runs", {})
         if not runs:
             continue
@@ -769,11 +843,22 @@ def _get_todays_suggestions(state: State) -> str | None:
 def send_suggestion() -> None:
     """Send a daily suggestion email. Computes suggestions at most once per day.
 
+    Routes through cloud email by default — the cloud edge function picks
+    papers from the pre-scored snapshot and renders the canonical dark/light
+    template. Set DISTILLATE_LOCAL_EMAIL=true in .env to use the legacy
+    local rendering path instead.
+
     When Claude is unavailable (e.g. depleted API credits), sends a fallback
     email with queue health, reading stats, and trending papers.
     """
     config.setup_logging()
 
+    if not _use_local_email():
+        if _send_via_cloud("daily"):
+            return
+        log.info("Cloud path failed, using local fallback")
+
+    # Legacy local path
     state = State()
     _sync_tags(state)
 
@@ -848,14 +933,12 @@ def _build_suggestion_body(suggestion_text, unread, state: State):
 
         # Match title to a known paper (bidirectional: handles journal suffixes)
         url = ""
-        tags = []
         paper_idx = 0
         matched_title = ""
         matched = match_suggestion_to_title(line, known_titles)
         if matched:
             matched_lower = matched.lower()
             url = url_lookup.get(matched_lower, "")
-            tags = tags_lookup.get(matched_lower, [])
             paper_idx = index_lookup.get(matched_lower, 0)
             rest_lower = rest.lower()
             idx = rest_lower.find(matched_lower)
@@ -916,8 +999,6 @@ def _build_fallback_suggestion_body(unread: list, state: State) -> str:
         title = doc.get("title", "Untitled")
         url = _paper_url(doc)
         idx = state.index_of(doc.get("zotero_item_key", ""))
-        tags = doc.get("metadata", {}).get("tags", [])
-
 
         title_html = (
             f'<a href="{url}" style="color:inherit;text-decoration:none;">'

@@ -49,7 +49,8 @@ from distillate.commands import (  # noqa: F401
 from distillate.wizard import (  # noqa: F401
     _init_wizard,
     _init_step5_claude,
-    _init_step6_extras,
+    _init_step6_huggingface,
+    _init_step7_extras,
     _init_done,
     _init_seed,
     _init_newsletter,

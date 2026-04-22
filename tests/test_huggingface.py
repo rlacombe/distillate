@@ -1,3 +1,4 @@
+# Covers: distillate/huggingface.py
 """Tests for distillate.huggingface — HuggingFace Daily Papers integration."""
 
 from unittest.mock import MagicMock, patch

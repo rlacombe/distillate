@@ -29,7 +29,7 @@ _STATS_TEMPLATE = """\
 
 ```dataview
 TABLE length(rows) as "Papers", sum(map(rows, (r) => default(r.page_count, 0))) as "Pages Read", round(sum(map(rows, (r) => default(r.engagement, 0))) / length(rows)) as "Avg Eng%", sum(map(rows, (r) => default(r.highlight_word_count, 0))) as "Words Highlighted"
-FROM "{folder}/Saved"
+FROM "{folder}/Papers/Notes"
 WHERE date_read
 GROUP BY dateformat(date_read, "yyyy-MM") as "Month"
 SORT rows[0].date_read DESC
@@ -39,7 +39,7 @@ SORT rows[0].date_read DESC
 
 ```dataview
 TABLE length(rows) as "Papers", round(sum(map(rows, (r) => default(r.engagement, 0))) / length(rows)) as "Avg Eng%"
-FROM "{folder}/Saved"
+FROM "{folder}/Papers/Notes"
 WHERE date_read
 FLATTEN tags as tag
 GROUP BY tag as "Topic"
@@ -51,7 +51,7 @@ LIMIT 15
 
 ```dataview
 TABLE date_read as "Read", engagement as "Eng%", highlighted_pages as "Pages", highlight_word_count as "Words"
-FROM "{folder}/Saved"
+FROM "{folder}/Papers/Notes"
 WHERE date_read AND engagement > 0
 SORT engagement DESC
 LIMIT 10
@@ -61,7 +61,7 @@ LIMIT 10
 
 ```dataview
 TABLE date_read as "Read", default(engagement, "-") as "Eng%"
-FROM "{folder}/Saved"
+FROM "{folder}/Papers/Notes"
 WHERE date_read
 SORT date_read DESC
 LIMIT 10
@@ -91,32 +91,36 @@ def _is_obsidian() -> bool:
 
 
 def _inbox_dir() -> Optional[Path]:
-    """Return the Inbox subdirectory in the papers folder, or None if unconfigured."""
+    """Return the To Read subdirectory."""
+    if config.DISTILLATE_HOME:
+        inbox = Path(config.DISTILLATE_HOME) / "Papers" / "To Read"
+        inbox.mkdir(parents=True, exist_ok=True)
+        return inbox
     d = _papers_dir()
     if d is None:
         return None
-    inbox = d / "Inbox"
+    inbox = d / "Papers" / "To Read"
     inbox.mkdir(parents=True, exist_ok=True)
     return inbox
 
 
 def _read_dir() -> Optional[Path]:
-    """Return the Saved subdirectory in the papers folder, or None if unconfigured."""
+    """Return the Notes subdirectory (``Papers/Notes/``)."""
     d = _papers_dir()
     if d is None:
         return None
-    rd = d / "Saved"
+    rd = d / "Papers" / "Notes"
     rd.mkdir(parents=True, exist_ok=True)
     return rd
 
 
 def _pdf_dir() -> Optional[Path]:
-    """Return the directory for saved PDFs.
-
-    When ``PDF_SUBFOLDER`` is set (default ``"pdf"``), returns
-    ``Saved/<subfolder>/``.  When empty, PDFs live alongside notes in
-    ``Saved/``.
-    """
+    """Return the directory for saved PDFs."""
+    if config.DISTILLATE_HOME:
+        pd = Path(config.DISTILLATE_HOME) / "Papers"
+        pd.mkdir(parents=True, exist_ok=True)
+        return pd
+    # Legacy: PDFs inside the vault/output folder
     rd = _read_dir()
     if rd is None:
         return None
@@ -249,20 +253,24 @@ def _needs_template_update(path: Path) -> bool:
 
 
 def ensure_stats_note() -> None:
-    """Create or update the Distillate Stats dashboard note."""
+    """Create or update the Stats dashboard note in ``_meta/``."""
     if not _is_obsidian():
         return
     d = _papers_dir()
     if d is None:
         return
 
-    # Remove legacy name
-    old_path = d / "Reading Stats.md"
-    if old_path.exists():
-        old_path.rename(d / "Distillate Stats.md")
-        log.info("Renamed Reading Stats -> Distillate Stats")
+    meta = d / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
 
-    stats_path = d / "Distillate Stats.md"
+    # Migrate legacy locations
+    for old_name in ("Reading Stats.md", "Distillate Stats.md"):
+        old_path = d / old_name
+        if old_path.exists():
+            old_path.rename(meta / "Stats.md")
+            log.info("Migrated %s -> _meta/Stats.md", old_name)
+
+    stats_path = d / "_meta" / "Stats.md"
     if _needs_template_update(stats_path):
         stats_path.write_text(
             _STATS_TEMPLATE.format(
@@ -278,7 +286,7 @@ _BASES_TEMPLATE = """\
 # distillate:template:{version}
 filters:
   and:
-    - file.inFolder("{folder}/Saved")
+    - file.inFolder("{folder}/Papers/Notes")
     - 'file.ext == "md"'
 views:
   - type: table
@@ -298,23 +306,27 @@ views:
 
 
 def ensure_bases_note() -> None:
-    """Create or update the Obsidian Bases .base file.
-
-    Bases (Obsidian 1.9+) is the native replacement for Dataview.
-    """
+    """Create or update the Obsidian Bases .base file in ``_meta/``."""
     if not _is_obsidian():
         return
     d = _papers_dir()
     if d is None:
         return
 
-    # Remove legacy name
-    old_path = d / "Papers.base"
-    if old_path.exists():
-        old_path.unlink()
-        log.info("Removed legacy Papers.base")
+    meta = d / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
 
-    bases_path = d / "Distillate Papers.base"
+    # Migrate legacy locations
+    for old_name in ("Papers.base", "Distillate Papers.base"):
+        old_path = d / old_name
+        if old_path.exists():
+            if old_name == "Papers.base":
+                old_path.unlink()
+            else:
+                old_path.rename(meta / "Papers.base")
+            log.info("Migrated %s -> _meta/Papers.base", old_name)
+
+    bases_path = d / "_meta" / "Papers.base"
     if _needs_template_update(bases_path):
         bases_path.write_text(
             _BASES_TEMPLATE.format(
@@ -433,8 +445,11 @@ def create_paper_note(
     # DOI link in note body
     doi_link_md = f"[Open paper](https://doi.org/{doi})\n\n" if doi else ""
 
-    # PDF embed
-    if pdf_filename and _is_obsidian():
+    # PDF link — file:// when PDF lives outside the vault, Obsidian embed otherwise
+    if pdf_filename and config.DISTILLATE_HOME:
+        pdf_uri = (Path(config.DISTILLATE_HOME) / "Papers" / pdf_filename).as_uri()
+        pdf_embed = f"[Open PDF]({pdf_uri})\n\n"
+    elif pdf_filename and _is_obsidian():
         pdf_embed = f"![[{pdf_filename}]]\n\n"
     else:
         pdf_embed = ""
@@ -483,12 +498,14 @@ def create_paper_note(
     if note_path.exists():
         existing = note_path.read_text(encoding="utf-8")
 
-        # Preserve user's "My Notes" section
+        # Preserve user's "My Notes" section (stop at end marker — don't capture it or any junk beyond)
         preserved_notes = ""
         my_notes_marker = "\n## My Notes\n"
         idx = existing.find(my_notes_marker)
         if idx >= 0:
-            preserved_notes = existing[idx + len(my_notes_marker):]
+            notes_start = idx + len(my_notes_marker)
+            end_in_notes = existing.find(_MARKER_END, notes_start)
+            preserved_notes = existing[notes_start:end_in_notes] if end_in_notes >= 0 else existing[notes_start:]
 
         if _MARKER_START in existing:
             # Scenario 2: re-sync — replace between markers
@@ -506,7 +523,10 @@ def create_paper_note(
                 f"## My Notes\n\n"
                 f"{_MARKER_END}"
             )
-            content = existing[:start] + new_block + existing[end:]
+            # Strip any spurious end markers that accumulated via prior corruption
+            tail = existing[end:]
+            tail = re.sub(r'^(\s*<!-- distillate:end -->)+', '', tail)
+            content = existing[:start] + new_block + tail
 
             # Re-insert preserved notes
             if preserved_notes:
@@ -624,7 +644,10 @@ def create_paper_note(
         optional += f"\nhighlight_word_count: {highlight_word_count}"
     if page_count:
         optional += f"\npage_count: {page_count}"
-    if pdf_filename and _is_obsidian():
+    if pdf_filename and config.DISTILLATE_HOME:
+        pdf_uri = (Path(config.DISTILLATE_HOME) / "Papers" / pdf_filename).as_uri()
+        pdf_yaml = f'\npdf: "{pdf_uri}"'
+    elif pdf_filename and _is_obsidian():
         pdf_yaml = f'\npdf: "[[{pdf_filename}]]"'
     elif pdf_filename:
         pdf_yaml = f'\npdf: "{pdf_filename}"'
@@ -753,7 +776,10 @@ def _merge_distillate_frontmatter(
     if page_count:
         blocks["page_count"] = f"page_count: {page_count}"
     if pdf_filename:
-        if _is_obsidian():
+        if config.DISTILLATE_HOME:
+            pdf_uri = (Path(config.DISTILLATE_HOME) / "Papers" / pdf_filename).as_uri()
+            blocks["pdf"] = f'pdf: "{pdf_uri}"'
+        elif _is_obsidian():
             blocks["pdf"] = f'pdf: "[[{pdf_filename}]]"'
         else:
             blocks["pdf"] = f'pdf: "{pdf_filename}"'
@@ -910,7 +936,7 @@ def rename_paper(title: str, old_citekey: str, new_citekey: str) -> bool:
     # Update wikilinks in reading log
     d = _papers_dir()
     if d is not None:
-        log_path = d / "Distillate Log.md"
+        log_path = d / "Papers Log.md"
         if log_path.exists():
             content = log_path.read_text(encoding="utf-8")
             # Try all candidates for old wikilinks
@@ -935,7 +961,7 @@ def update_reading_log_title(old_title: str, new_title: str, citekey: str = "") 
     if d is None:
         return False
 
-    log_path = d / "Distillate Log.md"
+    log_path = d / "Papers Log.md"
     if not log_path.exists():
         return False
 
@@ -978,17 +1004,18 @@ def append_to_reading_log(
     if d is None:
         return
 
-    # Rename legacy file
-    old_log = d / "Reading Log.md"
-    if old_log.exists():
-        old_log.rename(d / "Distillate Log.md")
-        log.info("Renamed Reading Log -> Distillate Log")
+    # Migrate legacy names
+    for old_name in ("Reading Log.md", "Distillate Log.md"):
+        old_log = d / old_name
+        if old_log.exists():
+            old_log.rename(d / "Papers Log.md")
+            log.info("Migrated %s -> Papers Log.md", old_name)
 
-    log_path = d / "Distillate Log.md"
+    log_path = d / "Papers Log.md"
 
     if not log_path.exists():
-        log_path.write_text("# Distillate Log\n\n", encoding="utf-8", newline="\n")
-        log.info("Created Distillate Log: %s", log_path)
+        log_path.write_text("# Papers Log\n\n", encoding="utf-8", newline="\n")
+        log.info("Created Papers Log: %s", log_path)
 
     existing = log_path.read_text(encoding="utf-8")
     sanitized = _sanitize_note_name(title)
@@ -1050,7 +1077,7 @@ def append_to_reading_log(
     log.info("Updated Distillate Log: %s", title)
 
 
-def get_obsidian_uri(title: str, subfolder: str = "Saved", citekey: str = "") -> Optional[str]:
+def get_obsidian_uri(title: str, subfolder: str = "Papers/Notes", citekey: str = "") -> Optional[str]:
     """Return an obsidian:// URI that opens the paper note in the vault.
 
     Returns None if vault name is not configured.
@@ -1109,11 +1136,11 @@ def _escape_yaml(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _projects_dir() -> Optional[Path]:
-    """Return the Projects subdirectory in the papers folder, or None."""
+    """Return the Experiments subdirectory in the papers folder, or None."""
     d = _papers_dir()
     if d is None:
         return None
-    pd = d / "Projects"
+    pd = d / "Experiments"
     pd.mkdir(parents=True, exist_ok=True)
     return pd
 
@@ -1124,7 +1151,7 @@ def write_experiment_html_notebook(
 ) -> Optional[Path]:
     """Write a self-contained HTML lab notebook for a project.
 
-    Writes to ``Projects/html/{project_id}.html``.  Unlike the markdown
+    Writes to ``Projects/html/{experiment_id}.html``.  Unlike the markdown
     notebook, HTML is fully regenerated each time (no markers — it's a
     read-only presentation layer).
 
@@ -1137,8 +1164,8 @@ def write_experiment_html_notebook(
     html_dir = pd / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
 
-    project_id = project.get("id", "untitled")
-    html_path = html_dir / f"{project_id}.html"
+    experiment_id = project.get("id", "untitled")
+    html_path = html_dir / f"{experiment_id}.html"
     html_path.write_text(content, encoding="utf-8", newline="\n")
     log.info("Wrote HTML notebook: %s", html_path)
     return html_path
@@ -1158,11 +1185,11 @@ def write_experiment_notebook(
     if pd is None:
         return None
 
-    project_id = project.get("id", "untitled")
+    experiment_id = project.get("id", "untitled")
     if section == "main":
-        filename = f"{project_id}.md"
+        filename = f"{experiment_id}.md"
     else:
-        filename = f"{project_id}-{section}.md"
+        filename = f"{experiment_id}-{section}.md"
 
     note_path = pd / filename
 
@@ -1172,6 +1199,8 @@ def write_experiment_notebook(
             # Replace between markers, preserve user content outside
             before = existing[: existing.index(MARKER_START)]
             after = existing[existing.index(MARKER_END) + len(MARKER_END) :]
+            # Strip spurious end markers left by prior corruption
+            after = re.sub(r'^(\s*<!-- distillate:end -->)+', '', after)
             note_path.write_text(
                 before + MARKER_START + "\n" + content + "\n" + MARKER_END + after,
                 encoding="utf-8",

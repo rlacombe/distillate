@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 32 32">
+  <!-- D: Daylight lilac. Lightest option, #a89eef to #6b5fc8. Matches the
+       dark-mode accent-light / accent-dim token pair. Reads best against
+       daylight wallpapers; closest to Sonoma system-icon feel. -->
+  <defs>
+    <clipPath id="clip"><rect x="0.5" y="0.5" width="31" height="31" rx="7.2" ry="7.2"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a89eef"/>
+      <stop offset="100%" stop-color="#6b5fc8"/>
+    </linearGradient>
+    <radialGradient id="highlight" cx="8%" cy="-5%" r="70%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="liquid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5db76a"/>
+      <stop offset="100%" stop-color="#a8eab1"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="7.2" ry="7.2" fill="url(#bg)"/>
+  <g clip-path="url(#clip)"><rect width="32" height="32" fill="url(#highlight)"/></g>
+  <polyline points="7,7.5 11,11.5 7,16" fill="none" stroke="#f0ead8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.50"/>
+  <path d="M15.1,15.72 Q17.35,16.5 19.64,16.28 L16.59,24.63 A2.23,2.23 0 0,1 12.4,23.1 Z" fill="url(#liquid)"/>
+  <g fill="none" stroke="#f0ead8" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="12.4" y1="23.1" x2="18.4" y2="6.6"/>
+    <line x1="16.59" y1="24.63" x2="22.59" y2="8.13"/>
+    <path d="M12.4,23.1 A2.23,2.23 0,0,0 16.59,24.63"/>
+    <line x1="17.18" y1="6.16" x2="23.82" y2="8.57"/>
+  </g>
+</svg>

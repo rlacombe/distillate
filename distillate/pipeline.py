@@ -150,7 +150,10 @@ def _process_paper_bundle(
 
     zotero_mode = config.is_zotero_reader()
     if not zotero_mode:
-        from distillate import remarkable_client
+        from distillate.integrations.remarkable import client as remarkable_client
+        from distillate.integrations.remarkable import renderer as rm_renderer
+    else:
+        rm_renderer = None  # unused in Zotero path
 
     title = doc["title"]
     rm_name = doc["remarkable_doc_name"]
@@ -190,10 +193,10 @@ def _process_paper_bundle(
                 rm_folder, rm_name, zip_path,
             )
             if bundle_ok and zip_path.exists():
-                highlights = renderer.extract_highlights(zip_path)
-                typed_notes = renderer.extract_typed_notes(zip_path)
+                highlights = rm_renderer.extract_highlights(zip_path)
+                typed_notes = rm_renderer.extract_typed_notes(zip_path)
                 try:
-                    handwritten_notes = renderer.ocr_handwritten_notes(zip_path)
+                    handwritten_notes = rm_renderer.ocr_handwritten_notes(zip_path)
                 except Exception:
                     handwritten_notes = {}
                     log.debug("Handwritten OCR skipped", exc_info=True)
@@ -203,9 +206,9 @@ def _process_paper_bundle(
                     stat = remarkable_client.stat_document(rm_folder, rm_name)
                     page_count = (stat or {}).get("page_count", 0)
                 if not page_count:
-                    page_count = renderer.get_page_count(zip_path)
+                    page_count = rm_renderer.get_page_count(zip_path)
 
-                render_ok = renderer.render_annotated_pdf(zip_path, pdf_path)
+                render_ok = rm_renderer.render_annotated_pdf(zip_path, pdf_path)
             else:
                 log.warning("Could not download bundle for '%s', skipping", title)
                 highlights = None
@@ -336,10 +339,17 @@ def _process_paper_bundle(
         if obsidian_uri:
             zotero_client.create_obsidian_link(item_key, obsidian_uri)
 
+        # Refresh vault wiki index after paper ingest
+        try:
+            from distillate.vault_wiki import regenerate_index
+            regenerate_index()
+        except Exception:
+            pass
+
         # Extract Zotero positions while zip is available
         zotero_positions = []
         if not zotero_mode and config.SYNC_HIGHLIGHTS and highlights and bundle_ok:
-            zotero_positions = renderer.extract_zotero_highlights(zip_path)
+            zotero_positions = rm_renderer.extract_zotero_highlights(zip_path)
 
     # Back-propagate highlights to Zotero as PDF annotations
     highlights_synced = False
@@ -452,7 +462,7 @@ def _upload_paper(paper, state, existing_on_rm, skip_remarkable=False) -> bool:
 
     zotero_mode = config.is_zotero_reader()
     if not zotero_mode:
-        from distillate import remarkable_client
+        from distillate.integrations.remarkable import client as remarkable_client
 
     item_key = paper["key"]
     meta = zotero_client.extract_metadata(paper)
@@ -661,7 +671,7 @@ def _demote_and_promote(state, pick_keys: list, verbose: bool = False, demote: b
         result["total_promoted"] = len(promoted_keys)
         return result
 
-    from distillate import remarkable_client
+    from distillate.integrations.remarkable import client as remarkable_client
 
     # Demote old promoted papers back to Inbox (skip if user started reading)
     old_promoted = state.promoted_papers
@@ -786,7 +796,7 @@ def run_sync() -> None:
 
     zotero_mode = config.is_zotero_reader()
     if not zotero_mode:
-        from distillate import remarkable_client
+        from distillate.integrations.remarkable import client as remarkable_client
 
     config.setup_logging()
 
@@ -806,10 +816,44 @@ def run_sync() -> None:
             from distillate.cloud_sync import pull_state
             pull_state(state)
 
+        # Backfill zotero_date_added for existing papers that predate the field
+        _missing_date = [
+            (k, doc) for k, doc in state.documents.items()
+            if not doc.get("zotero_date_added")
+        ]
+        if _missing_date:
+            log.info("Backfilling zotero_date_added for %d papers...", len(_missing_date))
+            try:
+                _batch_items = zotero_client.get_items_by_keys(
+                    [k for k, _ in _missing_date]
+                )
+                _by_key = {item["key"]: item for item in _batch_items}
+                _updated = 0
+                for k, doc in _missing_date:
+                    item = _by_key.get(k)
+                    if item:
+                        date_added = item.get("data", {}).get("dateAdded", "")
+                        if date_added:
+                            doc["zotero_date_added"] = date_added
+                            _updated += 1
+                if _updated:
+                    state.save()
+                    log.info("Backfilled zotero_date_added for %d papers", _updated)
+            except Exception:
+                log.warning("Could not backfill zotero_date_added", exc_info=True)
+
         # Migrate legacy Obsidian files on every run
         obsidian.ensure_dataview_note()   # removes Papers List.md
         obsidian.ensure_stats_note()      # renames to Distillate Stats
         obsidian.ensure_bases_note()      # replaces Papers.base → Distillate Papers.base
+
+        # Vault wiki structural files (schema + index)
+        try:
+            from distillate.vault_wiki import generate_schema, regenerate_index
+            generate_schema()
+            regenerate_index()
+        except Exception:
+            pass
 
         # Move PDFs from Saved/ into Saved/<subfolder>/ (one-time migration)
         moved_pdfs = obsidian.migrate_pdfs_to_subdir()
@@ -1213,16 +1257,16 @@ def run_sync() -> None:
             log.info("Nothing to do.")
 
         # Scan tracked experiment projects for new commits
-        if config.EXPERIMENTS_ENABLED and state.projects:
+        if config.EXPERIMENTS_ENABLED and state.experiments:
             from distillate.experiments import (
                 generate_notebook,
-                update_project,
+                update_experiment,
             )
             from distillate.obsidian import write_experiment_notebook
 
             exp_updated = 0
-            for proj in state.projects.values():
-                if update_project(proj, state):
+            for proj in state.experiments.values():
+                if update_experiment(proj, state):
                     notebook_md = generate_notebook(proj)
                     write_experiment_notebook(proj, notebook_md)
                     exp_updated += 1

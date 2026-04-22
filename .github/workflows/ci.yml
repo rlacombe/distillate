@@ -32,6 +32,23 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv venv --python ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv pip install -e . pytest
+        run: uv pip install -e . pytest pytest-timeout
       - name: Run tests
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ -m "not slow" --timeout=30 -q
+
+  desktop-unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install desktop dependencies
+        # --ignore-scripts skips the macOS-only patch-electron step and the
+        # node-pty native rebuild; unit tests mock both and don't need them.
+        run: npm ci --ignore-scripts
+      - name: Run desktop unit tests
+        run: npm test

@@ -247,16 +247,18 @@ def filter_new_papers(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def get_pdf_attachment(item_key: str) -> Optional[Dict[str, Any]]:
-    """Find the first PDF attachment child of an item."""
+    """Find the first PDF attachment child of an item.
+
+    Accepts all link modes: imported_file (cloud-stored PDF),
+    imported_url, linked_url, and linked_file (local file — created by
+    the sync pipeline when KEEP_ZOTERO_PDF is false).
+    """
     resp = _get(f"/items/{item_key}/children")
     for child in resp.json():
         data = child.get("data", {})
         if (
             data.get("itemType") == "attachment"
             and data.get("contentType") == "application/pdf"
-            and data.get("linkMode") in (
-                "imported_file", "imported_url", "linked_url",
-            )
         ):
             return child
     return None
@@ -505,6 +507,147 @@ def create_paper(
         return key
     log.warning("Failed to create paper: %s", result.get("failed"))
     return None
+
+
+def upload_pdf_attachment(
+    parent_key: str,
+    filename: str,
+    pdf_bytes: bytes,
+) -> Optional[str]:
+    """Upload a PDF to Zotero as an imported_file child of *parent_key*.
+
+    Implements Zotero's 4-step file upload flow:
+      1. POST /items     — create the attachment item stub (linkMode=imported_file)
+      2. POST /items/{K}/file — request an upload authorization (md5/size/mtime)
+      3. POST to `uploadUrl`  — upload the file bytes (prefix + body + suffix)
+      4. POST /items/{K}/file — register the completed upload
+
+    Returns the new attachment's item key on success, None on failure.
+    See https://www.zotero.org/support/dev/web_api/v3/file_upload for the
+    authoritative spec.
+    """
+    import hashlib
+    import time as _time
+
+    if not pdf_bytes:
+        log.warning("upload_pdf_attachment: empty pdf_bytes")
+        return None
+
+    md5 = hashlib.md5(pdf_bytes).hexdigest()
+    filesize = len(pdf_bytes)
+    mtime = int(_time.time() * 1000)  # Zotero expects ms since epoch
+
+    # Step 1 — create the attachment item stub
+    stub = {
+        "itemType": "attachment",
+        "parentItem": parent_key,
+        "linkMode": "imported_file",
+        "title": filename,
+        "filename": filename,
+        "contentType": "application/pdf",
+        "charset": "",
+        "tags": [],
+        "relations": {},
+    }
+    resp = _post("/items", json=[stub])
+    if resp.status_code not in (200, 201):
+        log.warning("Failed to create attachment stub: %s", resp.status_code)
+        return None
+    result = resp.json()
+    successful = result.get("successful", {})
+    if "0" not in successful:
+        log.warning(
+            "Failed to create attachment stub: %s", result.get("failed"),
+        )
+        return None
+    att_key = successful["0"]["key"]
+
+    # Step 2 — request upload authorization
+    auth_headers = {
+        **_headers(),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "If-None-Match": "*",  # first upload: file must not yet exist
+    }
+    auth_body = (
+        f"md5={md5}&filename={requests.utils.quote(filename)}"
+        f"&filesize={filesize}&mtime={mtime}"
+    )
+    auth_resp = _request_with_retry(
+        "POST",
+        _url(f"/items/{att_key}/file"),
+        headers=auth_headers,
+        data=auth_body,
+    )
+    if auth_resp.status_code != 200:
+        log.warning(
+            "Upload auth failed for %s: HTTP %s",
+            att_key, auth_resp.status_code,
+        )
+        # Roll back the stub so we don't leave orphaned items.
+        try:
+            _delete(
+                f"/items/{att_key}",
+                headers={"If-Unmodified-Since-Version": str(successful["0"]["version"])},
+            )
+        except Exception:
+            pass
+        return None
+
+    auth_data = auth_resp.json()
+
+    # Fast path: file already exists on Zotero storage (matched by md5).
+    if auth_data.get("exists"):
+        log.info(
+            "Zotero already has this file — reused existing blob for %s",
+            att_key,
+        )
+        return att_key
+
+    upload_url = auth_data.get("url")
+    upload_key = auth_data.get("uploadKey")
+    prefix = auth_data.get("prefix", "").encode("utf-8")
+    suffix = auth_data.get("suffix", "").encode("utf-8")
+    content_type = auth_data.get("contentType", "application/zip")
+    if not upload_url or not upload_key:
+        log.warning("Upload auth response missing url/uploadKey: %s", auth_data)
+        return None
+
+    # Step 3 — upload the file bytes to S3
+    body = prefix + pdf_bytes + suffix
+    upload_resp = _request_with_retry(
+        "POST",
+        upload_url,
+        headers={"Content-Type": content_type},
+        data=body,
+    )
+    if upload_resp.status_code not in (200, 201, 204):
+        log.warning(
+            "S3 upload failed for %s: HTTP %s",
+            att_key, upload_resp.status_code,
+        )
+        return None
+
+    # Step 4 — register the upload
+    register_headers = {
+        **_headers(),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "If-None-Match": "*",
+    }
+    register_resp = _request_with_retry(
+        "POST",
+        _url(f"/items/{att_key}/file"),
+        headers=register_headers,
+        data=f"upload={upload_key}",
+    )
+    if register_resp.status_code not in (200, 204):
+        log.warning(
+            "Upload registration failed for %s: HTTP %s",
+            att_key, register_resp.status_code,
+        )
+        return None
+
+    log.info("Uploaded '%s' (%d bytes) → attachment %s", filename, filesize, att_key)
+    return att_key
 
 
 def create_linked_attachment(
@@ -758,14 +901,142 @@ def get_raw_annotations(attachment_key: str) -> List[Dict[str, Any]]:
     return annotations
 
 
+def add_user_highlights(
+    attachment_key: str,
+    highlights: List[Dict[str, Any]],
+) -> List[str]:
+    """Create plain user highlight annotations on a PDF attachment.
+
+    Used by the desktop PDF reader when the user selects text and saves a
+    highlight. These are regular Zotero highlights — not tagged ``distillate``
+    and not cleaned up by ``create_highlight_annotations``. Returns the list
+    of created annotation item keys.
+    """
+    import json as _json
+
+    if not highlights:
+        return []
+
+    items = []
+    for h in highlights:
+        items.append({
+            "itemType": "annotation",
+            "parentItem": attachment_key,
+            "annotationType": "highlight",
+            "annotationText": h.get("text", ""),
+            "annotationComment": h.get("comment", ""),
+            "annotationColor": h.get("color", "#ffd400"),
+            "annotationPageLabel": str(h.get("page_label", h.get("page_index", 0) + 1)),
+            "annotationSortIndex": h.get("sort_index", f"{h.get('page_index', 0):05d}|000000|00000"),
+            "annotationPosition": _json.dumps({
+                "pageIndex": h.get("page_index", 0),
+                "rects": h.get("rects", []),
+            }),
+            "tags": [],
+        })
+
+    created_keys: List[str] = []
+    for i in range(0, len(items), 50):
+        batch = items[i:i + 50]
+        resp = _post("/items", json=batch)
+        if resp.status_code in (200, 201):
+            result = resp.json()
+            successful = result.get("successful", {})
+            created_keys.extend(v["key"] for v in successful.values())
+            # Surface Zotero's rejection reasons for failed items.
+            failed = result.get("failed", {})
+            if failed:
+                for idx, err in failed.items():
+                    log.warning(
+                        "Zotero rejected highlight %s: %s (code %s)",
+                        idx, err.get("message", ""), err.get("code", ""),
+                    )
+            unchanged = result.get("unchanged", {})
+            if unchanged:
+                log.debug("Zotero returned %d unchanged items", len(unchanged))
+        else:
+            body = ""
+            try:
+                body = resp.text[:500]
+            except Exception:
+                pass
+            log.warning(
+                "Failed to create user highlights (batch %d): %s — %s",
+                i // 50, resp.status_code, body,
+            )
+
+    log.info(
+        "Created %d user highlight annotation(s) on %s",
+        len(created_keys), attachment_key,
+    )
+    return created_keys
+
+
+def delete_user_highlight(
+    attachment_key: str,
+    text: str,
+    page_index: int,
+) -> int:
+    """Delete Zotero highlight annotations that match ``text`` on the given
+    page. Returns the number of annotations deleted.
+
+    Matches by whitespace-normalized text and 0-based page_index. Skips
+    annotations tagged ``distillate`` (the pipeline manages those).
+    """
+    import json as _json
+
+    norm_target = " ".join((text or "").split())
+    if not norm_target:
+        return 0
+
+    resp = _get(
+        f"/items/{attachment_key}/children",
+        params={"itemType": "annotation"},
+    )
+    if resp.status_code != 200:
+        return 0
+
+    deleted = 0
+    for ann in resp.json():
+        data = ann.get("data", {})
+        if any(t.get("tag") == "distillate" for t in data.get("tags", [])):
+            continue
+        if data.get("annotationType") != "highlight":
+            continue
+        ann_text = " ".join((data.get("annotationText") or "").split())
+        if ann_text != norm_target:
+            continue
+        try:
+            pos = _json.loads(data.get("annotationPosition", "{}"))
+            if pos.get("pageIndex", 0) != page_index:
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        del_resp = _delete(
+            f"/items/{ann['key']}",
+            headers={"If-Unmodified-Since-Version": str(ann["version"])},
+        )
+        if del_resp.status_code in (200, 204):
+            deleted += 1
+        else:
+            log.warning(
+                "Failed to delete annotation %s: %s", ann["key"], del_resp.status_code,
+            )
+
+    return deleted
+
+
 def create_highlight_annotations(
     attachment_key: str,
     highlights: List[Dict[str, Any]],
 ) -> List[str]:
     """Create Zotero highlight annotations on a PDF attachment.
 
-    highlights: list of dicts from renderer.extract_zotero_highlights().
-    Returns list of created annotation item keys.
+    highlights: list of dicts from the reMarkable renderer's
+    ``extract_zotero_highlights()``. Creates new annotations tagged
+    ``distillate``, then deletes any previously tagged annotations on the
+    same attachment. Returns list of created annotation item keys.
     Batches in groups of 50 (Zotero API limit).
     """
     import json as _json
@@ -1025,4 +1296,5 @@ def extract_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
             or ""
         ),
         "tags": tags,
+        "zotero_date_added": data.get("dateAdded", ""),
     }

@@ -5,6 +5,8 @@ Each tool is a pure function that takes `state` as a keyword argument
 JSON-serializable dict.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -280,6 +282,56 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "search_hf_models",
+        "description": (
+            "Search HuggingFace Hub for ML models by query, task, or library. "
+            "Returns model IDs, download counts, tasks, and links. "
+            "Use when looking for pretrained models, baselines, or implementations."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query (model name, architecture, etc.)"},
+                "task": {"type": "string", "description": "Filter by task (e.g. 'text-classification', 'image-classification')"},
+                "library": {"type": "string", "description": "Filter by library (e.g. 'transformers', 'diffusers')"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_hf_datasets",
+        "description": (
+            "Search HuggingFace Hub for datasets by query or task. "
+            "Returns dataset IDs, download counts, and links. "
+            "Use when looking for training data for experiments."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "task": {"type": "string", "description": "Filter by task category"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "find_paper_associations",
+        "description": (
+            "Find models, datasets, and Spaces on HuggingFace Hub associated "
+            "with a paper (by arXiv ID). Use after reading a paper to find "
+            "implementations, pretrained weights, and demos."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "arxiv_id": {"type": "string", "description": "The arXiv ID (e.g. '2301.12345')"},
+            },
+            "required": ["arxiv_id"],
+        },
+    },
+    {
         "name": "add_paper_to_zotero",
         "description": (
             "Add a new paper to the user's Zotero library so it gets picked up "
@@ -454,7 +506,7 @@ def get_paper_details(*, state, identifier: str) -> dict:
     if linked_projects:
         project_names = []
         for pid in linked_projects:
-            proj = state.get_project(pid)
+            proj = state.get_experiment(pid)
             if proj:
                 project_names.append(proj.get("name", pid))
             else:
@@ -862,6 +914,50 @@ def get_trending_papers(*, state, limit: int = 10) -> dict:
             entry["github_stars"] = p.get("github_stars")
         results.append(entry)
     return {"papers": results, "total": len(results)}
+
+
+def search_hf_models(
+    *, state,
+    query: str,
+    task: str = "",
+    library: str = "",
+    limit: int = 10,
+) -> dict:
+    """Search HuggingFace Hub for models."""
+    from distillate import huggingface
+
+    models = huggingface.search_models(query, task=task, library=library, limit=limit)
+    return {"models": models, "total": len(models), "query": query}
+
+
+def search_hf_datasets(
+    *, state,
+    query: str,
+    task: str = "",
+    limit: int = 10,
+) -> dict:
+    """Search HuggingFace Hub for datasets."""
+    from distillate import huggingface
+
+    datasets = huggingface.search_datasets(query, task=task, limit=limit)
+    return {"datasets": datasets, "total": len(datasets), "query": query}
+
+
+def find_paper_associations(*, state, arxiv_id: str) -> dict:
+    """Find models, datasets, and Spaces associated with a paper."""
+    from distillate import huggingface
+
+    models = huggingface.find_paper_models(arxiv_id)
+    datasets = huggingface.find_paper_datasets(arxiv_id)
+    spaces = huggingface.find_paper_spaces(arxiv_id)
+
+    return {
+        "arxiv_id": arxiv_id,
+        "models": models,
+        "datasets": datasets,
+        "spaces": spaces,
+        "total": len(models) + len(datasets) + len(spaces),
+    }
 
 
 def add_paper_to_zotero(

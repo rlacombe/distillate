@@ -1,98 +1,198 @@
 # Changelog
 
-## 0.7.0 — 2026-04-11
+## 0.8.0-dev.1 — 2026-04-22
 
-Distillate is now an autonomous research platform. Describe a hypothesis, and an AI agent runs experiments for you — training models, tuning hyperparameters, and reporting results. A desktop GUI lets you watch the frontier improve in real time, steer the agent, and compare runs across projects.
+Preview release. Core loop stable. Install via:
+`pip install "distillate[desktop] @ git+https://github.com/rlacombe/distillate.git@dev-0.8.0"`
 
 ### Highlights
+- **Projects & Experiments redesign** — Workspace renamed to Project, per-experiment run charts, effort knob per launch
+- **Experiments sidebar** — filter, sort, and search across experiments
+- **Integrations moved to Settings** — cleaner sidebar; Integrations now lives in Settings → Integrations
+- **Welcome screen** — tips & examples panel (Nicolas capabilities at a glance)
+- **GPU metrics strip** — live GPU/CPU usage via HF Jobs
+- **Live billing** — per-run cost tracking, session cost totals
+- **Sub-agents renamed** — Scribe → Knowledge Agent, Scout → Research Agent
 
-- **Autonomous experiments**: describe what you want to test, an agent runs it. Time-budgeted sessions with live metric tracking, automatic frontier detection (`best`/`completed` runs), and structured insight extraction
-- **Desktop IDE**: Electron app with four tabs — Control Panel (frontier chart + live session status), Session (terminal), Results (run grid + insights), Prompt (PROMPT.md editor). Context-aware chat with Nicolas throughout
-- **Cloud & email** (optional): sign up with `--email` to get experiment reports with embedded charts, daily paper suggestions, and weekly digests. Papers and experiments sync to the cloud for backup
-- **One-click onboarding**: install to live experiment in 60 seconds — new users see CTAs to launch a demo or connect their paper library
-- **Paper-experiment integration**: link papers to experiments, discover relevant papers, credit papers via `inspired_by` on runs — what you read informs what you try
-- **Desktop IDE**: four-tab Electron app (Control Panel, Session, Results, Prompt) with context-aware chat, stop generation, and full highlight display
-- **No API key needed**: runs entirely through your Claude Code subscription (Max or Pro)
+## 0.7.5 — 2026-04-12
 
-### New Features
+Primitives v2 Phase 5: Notebook → events migration.
 
-- **Autonomous experiments**: describe a hypothesis, Nicolas spawns an agent to test it. Time-budgeted sessions, live metric tracking, and automatic insight extraction
-- **Alchemy skill system**: 9 slash commands — The Laboratory (`/survey`, `/conjure`, `/steer`, `/assay`, `/distill`), The Library (`/brew`, `/forage`, `/tincture`), and `/transmute` to bridge papers and experiments
-- **Onboarding flow**: sidebar CTA, welcome screen CTA, chat suggestion — all lead to a 3-step scaffold/GitHub/launch flow that gets you to a running experiment in under a minute
-- **Library setup wizard**: "Connect your library" CTA in papers sidebar → Zotero credentials → reading surface choice (reMarkable / iPad / any device) → sync
-- **Paper-experiment cross-references**: linked papers in experiment detail, linked experiments in paper detail, both clickable for navigation
-- **`discover_relevant_papers` tool**: keyword-matches your paper library against experiment goals, returns candidates with relevance reasons
-- **`inspired_by` on runs**: `conclude_run` accepts a paper reference, auto-links it to the project
-- **Stop generation**: red stop button interrupts Claude via SDK, Nicolas says "Stopped. What should I do instead?"
-- **Context-aware suggestions**: chat pills above the input update based on context — experiment (steer, analyze, compare) or paper (summarize, experiment ideas, similar papers)
-- **Link handling**: external links open in system browser, arXiv/DOI links show popup with "Open in browser" or "Add to library queue"
-- **Windows support**: `install.ps1` script, `npm run install:win`, homepage auto-detects OS via user agent
-- **`purge_hook_runs` tool**: clean up accumulated noise from manual script executions
-- **49 MCP tools**: paper library, experiments, bridge, and cleanup tools via the Distillate MCP server
-- **Monorepo**: desktop app, MCP server, and Agent SDK in a single repository
-- **GitHub integration**: public repos by default (`distillate-xp-` prefix), GitHub flare in control panel
+### Unified Event Stream
+
+- **`distillate/events.py`**: event types, creation, emission, and query helpers for the unified timeline
+- **`events` table in state**: bounded stream (10k events max) with project/type/time filtering
+- **`GET /events`**: query the event stream with filters (project, type, since, limit)
+- **`POST /events`**: create manual note events (the "+ Note" button now writes to the event stream)
+- **`EventDict` TypedDict**: schema for events in state.json
+
+### What events capture
+
+Every primitive emits events: `experiment_launched`, `run_completed`, `paper_added`, `session_started`, `manual_note`, and more. The Notebook view reads from this stream instead of a separate table.
+
+### Migration
+
+- `scripts/migrate_v2_phase5.py`: backfills events from existing experiments, runs, papers, and notebook entries
+- Existing notebook entries become `manual_note` events
+- Notebook table stays for compatibility — not dropped
+
+## 0.7.4 — 2026-04-12
+
+Primitives v2 Phase 4: multi-backend experimentalist.
+
+### HarnessAdapter Pattern
+
+- **`HarnessAdapter` base class**: protocol for CLI runtime adapters — each knows how to build commands, set env vars, locate context files
+- **`ClaudeCodeAdapter`**: existing behavior, now formalized
+- **`CodexAdapter`**: OpenAI's Codex CLI (when available)
+- **`GeminiCLIAdapter`**: Google's Gemini CLI (when available)
+- **`OpenHandsAdapter`**: All-Hands AI's OpenHands platform (when available)
+- **Adapter registry**: `HARNESS_ADAPTERS` dict + `get_harness_adapter()` + `list_harness_adapters()`
+
+### EndlessBench Ready
+
+The v2 model can now express EndlessBench cleanly: create a Project, launch N Experiments with different harness adapters, compare results side by side. Each experiment's harness badge shows which backend ran it.
+
+## 0.7.3 — 2026-04-12
+
+Primitives v2 Phase 3: Tier 2 sub-agent infrastructure.
+
+### Sub-Agent System
+
+- **`agent_runtime/subagent.py`**: protocol + registry for in-process delegates with isolated contexts
+- **`agent_runtime/breadcrumbs.py`**: event emission system for sub-agent progress
+- **`agent_runtime/knowledge_agent.py`**: notebook & wiki upkeep
+- **`agent_runtime/research_agent.py`**: paper discovery & trending
+
+### API
+
+- **`/agents/capabilities`**: lists Nicolas's sub-agents with status for the Capabilities panel
+
+### Nicolas
+
+- System prompt updated with Specialists section — tells Nicolas when to delegate to Knowledge Agent, Research Agent
+- Sub-agents auto-register on import
+
+## 0.7.2 — 2026-04-12
+
+Primitives v2 Phase 2: data model cleanup.
+
+### Schema
+
+- **`agent_id` on experiments**: every experiment now tracks which agent identity runs it (backfilled to `claude-code`)
+- **`harness_id` on experiments**: the CLI runtime (Claude Code, Codex, etc.) is a separate field from the agent identity
+- **`produced_by_agent_id` on runs**: defensive FK on run records
+- **`workspace_id` backfill**: orphan experiments assigned to Workbench
+- **`harnesses` registry**: formalized table of CLI runtimes with detection logic
+- **`tier` on agents**: "shell" (Nicolas) vs "agent" (Tier 3b peers)
+- **`emoji` field**: first-class emoji on both Projects and Agents for visual character
+
+### API
+
+- **`/agents/roster`**: returns agents by tier (shell vs agents)
+- **`/harnesses`**: lists all registered harnesses with availability
+- Experiment list and detail responses include `agent_id` and `harness_id`
+- Experiment detail view shows harness badge
+
+### Migration
+
+- Auto-runs on first v0.7.2 startup (idempotent)
+- Manual: `python scripts/migrate_v2_phase2.py`
+- Backs up state.json before making changes
+
+## 0.7.1 — 2026-04-11
+
+Primitives v2 Phase 1: vocabulary cleanup, sidebar restructure, B+ welcome screen.
+
+### Sidebar Restructure
+
+- **Nicolas at the top**: the Distillate logo button is now the default landing, showing the new B+ welcome screen
+- **Activity bar reordered**: Nicolas, Projects, Experiments, Papers, Notebook, Agents, Chat
+- **Experiments promoted**: now sits above Papers and Notebook in the sidebar (keystone principle)
+- **Agents rail**: non-Nicolas agents (Lux, Switchback, custom) get their own rail below the spacer
+- **Notebook renamed**: "Lab Notebook" is now just "Notebook" (the view reframe)
+
+### B+ Welcome Screen
+
+- **7-state fallback chain**: the home screen adapts to your current lab state — active experiments, recent wins, stuck experiments, reading queue, stale projects, reflective, or onboarding
+- **Frontier strip**: a compact chart or status panel shows the most actionable thing right now
+- **Suggestions**: contextual one-click actions attributed to Nicolas and his specialists
+- **Chat input**: full-width input with Cmd+K badge, always visible on the home screen
+
+### Workbench Default Project
+
+- **Auto-created on first run**: the "Workbench" project absorbs unfiled experiments and sessions
+- **Pinned last in sidebar**: italicized with a 🧪 icon, cannot be deleted
+- **Default in new-experiment wizard**: pre-selected when no project is chosen
+
+### Other
+
+- **Cmd+K**: focuses the Nicolas welcome input from any view (View menu + keyboard shortcut)
+- **Integrations restructured**: now sub-divided into Models/Backends, Harnesses, Knowledge/Library, Compute
+- **System prompt update**: Nicolas introduces himself as "the Alchemist of the Distillate lab" with specialist delegation
+- **Version bump**: 0.7.0 → 0.7.1
+
+## 1.0.0 — 2026-04-09
+
+Distillate 1.0: the Integrated Agents Environment for ML research. Autonomous experiments, a desktop IDE, multi-agent support, and a paper library — in one tool.
+
+### Autonomous Experiments
+
+- **Auto-research**: describe a hypothesis, an AI agent runs the experiment — training models, tuning hyperparameters, reporting results
+- **Live frontier tracking**: metric chart with automatic `best`/`completed` detection, log scale, PNG export
+- **Pre-registration**: structured predictions and verdicts for experiment runs
+- **Time budgets**: session wall-clock timer, watchdog with auto-restart, per-run elapsed/budget display
+- **Session management**: SSE-based live status, always-restart watchdog, budget enforcement
+
+### Multi-Agent Support
+
+- **Agent registry**: Claude Code, Codex CLI, Gemini CLI, and Pi supported as experiment backends
+- **Agent-specific protocols**: CLAUDE.md (MCP), AGENTS.md (non-MCP), GEMINI.md
+- **Sister runs**: compare agents head-to-head on the same experiment
 
 ### Desktop IDE
 
-- **Control Panel**: metric chart with log scale toggle, export to PNG, session timer, goal chips
-- **Session tab**: embedded xterm.js terminal attached to the running Claude Code agent
-- **Results tab**: runs grid with research insights (key breakthrough, lessons learned, dead ends)
-- **Prompt tab**: view and edit PROMPT.md with markdown rendering and syntax highlighting
-- **Three experiment states**: running (green triangle), ready (purple circle), paused (gray square)
-- **Chat UX**: purple presence dot on Nicolas messages, thinking spinner after tool completion, tool subtitles showing what's happening (search terms, project names, etc.)
-- **Full highlights**: paper detail view shows complete highlights (no truncation)
-- **Keyboard shortcuts**: Cmd+R refresh, Cmd+1-4 switch tabs, Cmd+E toggle sidebar, Cmd+K toggle chat
+- **Four tabs**: Control Panel (frontier chart + status), Session (xterm.js terminal), Results (run grid + insights), Prompt (PROMPT.md editor)
+- **Visual design**: animated mesh gradient, glass surfaces, Newsreader/Inter typography, light/dark themes
+- **Chat**: context-aware Nicolas chat with tool subtitles, stop generation, suggestion pills
+- **Keyboard shortcuts**: Cmd+R refresh, Cmd+1-4 tabs, Cmd+E sidebar, Cmd+K chat
 
-### CLI
+### Lab Notebook
 
-- **Onboarding**: first-use welcome with two clear paths — conjure an experiment or connect Zotero via `/init`
-- **Contextual suggestions**: hints adapt to what you have (papers, experiments, or both)
-- **Rotating tips**: one random skill tip per session
-- **`--report`**: reading insights dashboard — lifetime stats, weekly velocity, topic breakdown
-- **`--export-state` / `--import-state`**: backup and restore tracked papers and reading history
+- **Core engine**: chronological research activity log with structured entries
+- **Auto-capture**: entries from experiments, papers, and agents
+- **Agent context injection**: recent entries fed into agent context
+- **REST API**: endpoints for desktop UI integration
+- **Weekly digest**: generated summaries of research activity
 
-### Bug Fixes
+### Long-Lived Agents
 
-- **Scanner spurious runs**: hooks fired on all Bash commands, creating ghost runs. Now gated by `DISTILLATE_SESSION` env var — only fires inside Distillate-managed tmux sessions
-- **`compare_projects` null values**: skipped non-"keep" runs and used wrong direction for loss metrics. Now includes all non-discarded runs with direction-aware best (min for loss, max for accuracy)
-- **Unhashable list crash on delete**: run names in set comprehensions crashed with list-valued hyperparameters. Defensive `str()` wrapping
-- **Highlights truncated at 3000 chars**: desktop paper detail used the MCP tool's truncation limit. Now reads full highlights directly
-- **Links opened inside Electron app**: no navigation interception. Added `will-navigate` + `setWindowOpenHandler` guards
-- **Control panel disappeared on select**: `isReady` variable removed during refactor but still referenced, crashing the render
-- **Tab hijack on polling**: 15-second session poll re-rendered the detail pane, snapping back to Control Panel. Polling now only updates sidebar
-- **Sync 501 errors in DevTools**: `triggerCloudSync()` called `.json()` on non-ok responses
-- **Dock icon too large in dev mode**: now uses `.icns` with proper resolutions
+- **Persistent AI sessions**: Nicolas, experiment agents, coding agents, custom assistants
+- **Activity bar**: agents-first sidebar with live status dots (green/amber/red)
+- **Template library**: 12 agent templates with contextual skill dispatch
+
+### Cloud GPUs & Checkpointing
+
+- **RunPod integration**: create, monitor, terminate GPU pods with auto-teardown on budget expiry
+- **Model checkpointing**: GitHub Releases and HuggingFace Hub storage backends
+- **Auto-upload**: best-run checkpoints uploaded automatically
+
+### Paper Library
+
+- **Full pipeline**: Zotero → reMarkable/iPad/any device → annotated PDF + structured notes
+- **HuggingFace MCP**: model/dataset/paper search via Nicolas
+- **Paper-experiment bridge**: link papers to experiments, discover relevant papers, `inspired_by` tracking
 
 ### Cloud & Email
 
-- **Cloud state sync**: papers and experiments sync to the Distillate cloud API via granular endpoints with incremental pull (`?since=` watermark) and additive merge
-- **Run-level merge**: cross-device sync merges individual runs — decisions advance monotonically (best > completed > crash), metrics and metadata fill gaps
-- **Email notifications**: experiment reports on session completion (with embedded chart), daily paper suggestions, and weekly digest — each toggled independently
-- **Auto sync triggers**: background sync after first app load, automatic push after experiment sessions end
-- **Supabase URL auto-derived**: no manual configuration needed — the Supabase project ref is extracted from the anon key JWT
+- **Cross-device sync**: papers and experiments sync via Distillate cloud API with run-level merge
+- **Email notifications**: experiment reports, daily paper suggestions, weekly digest — each toggled independently
 
-### Experiment Decisions (best/completed)
+### CLI
 
-- **Auto-detected decisions**: `conclude_run()` automatically marks runs as `best` (frontier-improving) or `completed` — agents no longer decide keep/discard
-- **State migration v1→v2**: existing experiments re-evaluated chronologically to compute best/completed from the key metric frontier
-- **Backward compatible**: old `keep`/`discard` in runs.jsonl parsed as `completed`; `best` determined from state migration
-- **Commit format**: `[best]` prefix on frontier-improving runs — e.g. `[best] baseline CNN: f1=0.42`
-
-### Desktop Improvements
-
-- **Chart Y-axis**: scales to best runs only (discarded outliers no longer squish the frontier flat)
-- **Log-scale ticks**: clean rounded values when data spans less than one decade
-- **Sidebar stability**: experiments sorted by `added_at` instead of `last_scanned_at` (no more reordering on reload)
-- **Faster sidebar**: removed auto-rescan from experiment list — state.json is authoritative, rescans only on session end and manual reload
-- **Session status**: "Agent working — analyzing runs" instead of misleading "awaiting instructions"
-- **Enrichment prompts**: cleaner output — one-sentence breakthroughs, no ALL CAPS, no Greek letters
-
-### CLI Improvements
-
-- **`--connectors`**: check status of all integrations (Zotero, email, Obsidian, reMarkable) at a glance
-- **`--email`**: interactive email management with per-type toggles
-- **`--sync-state`**: manual cloud sync trigger
-- **Security**: CORS tightened to localhost only, auth token verification on sensitive endpoints
+- **Skill system**: 12 contextual slash commands for research workflows
+- **Onboarding**: install to running experiment in 60 seconds
+- **49 MCP tools**: full paper library, experiments, bridge, and cleanup tools
 
 ### Migration from 0.6.x
 

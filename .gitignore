@@ -1,5 +1,4 @@
 .env
-.env.bak*
 .DS_Store
 state.json
 state.lock
@@ -23,9 +22,22 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv-desktop/
+
+# Test leakage — a test patches config.CONFIG_DIR / OBSIDIAN_VAULT_PATH with
+# a MagicMock and lab_notebook.append_entry writes a path built from the
+# mock, materializing literal "MagicMock/mock.CONFIG_DIR.__truediv__()/..."
+# dirs in CWD. Guard against the leakage ending up in the tree.
+MagicMock/
 .wrangler/
 workers/.wrangler/
 
 # Desktop (Electron)
 desktop/node_modules/
 desktop/dist/
+desktop/restart.sh
+
+# Test runner artifacts
+test-results/
+
+# Bundler/generated artifacts
+c65ecab25-n1ad8KFY.js

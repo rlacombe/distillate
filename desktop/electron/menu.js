@@ -55,7 +55,7 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
       label: "File",
       submenu: [
         {
-          label: "New Conversation",
+          label: "New Thread",
           accelerator: "CmdOrCtrl+N",
           click: () => onNewConversation(),
         },
@@ -105,7 +105,8 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
       ],
     },
 
-    // Edit — essential for copy/paste to work on macOS
+    // Edit — registerAccelerator:false lets Cmd+C/V/A reach the xterm.js handler
+    // instead of being consumed by the native menu. Chromium handles them for DOM inputs.
     {
       label: "Edit",
       submenu: [
@@ -113,15 +114,15 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
         { role: "redo" },
         { type: "separator" },
         { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
+        { label: "Copy", accelerator: "CmdOrCtrl+C", registerAccelerator: false, role: "copy" },
+        { label: "Paste", accelerator: "CmdOrCtrl+V", registerAccelerator: false, role: "paste" },
         ...(isMac
           ? [
               { role: "pasteAndMatchStyle" },
               { role: "delete" },
-              { role: "selectAll" },
+              { label: "Select All", accelerator: "CmdOrCtrl+A", registerAccelerator: false, role: "selectAll" },
             ]
-          : [{ role: "delete" }, { type: "separator" }, { role: "selectAll" }]),
+          : [{ role: "delete" }, { type: "separator" }, { label: "Select All", accelerator: "CmdOrCtrl+A", registerAccelerator: false, role: "selectAll" }]),
       ],
     },
 
@@ -129,6 +130,25 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
     {
       label: "View",
       submenu: [
+        {
+          label: "Focus Nicolas",
+          accelerator: "CmdOrCtrl+K",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.send("focus-nicolas");
+          },
+        },
+        {
+          label: "Toggle Sidebar",
+          accelerator: "CmdOrCtrl+B",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.executeJavaScript(
+              'if(typeof togglePane==="function"){togglePane("sidebar-left");}'
+            ).catch(() => {});
+          },
+        },
+        { type: "separator" },
         {
           label: "Refresh Data",
           accelerator: "CmdOrCtrl+R",
@@ -178,6 +198,17 @@ function buildMenu({ onNewConversation, onOpenSettings, getWindow }) {
     {
       label: "Help",
       submenu: [
+        {
+          label: "Keyboard Shortcuts",
+          accelerator: "CmdOrCtrl+/",
+          click: () => {
+            const win = getWindow();
+            if (win) win.webContents.executeJavaScript(
+              'if(typeof openShortcutsOverlay==="function"){openShortcutsOverlay();}'
+            ).catch(() => {});
+          },
+        },
+        { type: "separator" },
         {
           label: "Documentation",
           click: () => shell.openExternal("https://distillate.dev"),

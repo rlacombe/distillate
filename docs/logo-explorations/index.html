@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Distillate — icon color tuning</title>
+<style>
+  :root {
+    --paper: #e6e0d4;
+    --paper-2: #f4eede;
+    --ink: #1a1720;
+    --ink-2: #2a2436;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px;
+    background: var(--ink);
+    color: var(--paper);
+    font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  h1 { font: 500 24px/1.1 Georgia, serif; margin: 0 0 8px; }
+  .sub { color: #a89eef; margin-bottom: 32px; max-width: 680px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 240px repeat(4, auto) repeat(4, auto);
+    gap: 16px 20px;
+    align-items: center;
+    background: rgba(255,255,255,0.02);
+    padding: 24px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+    width: fit-content;
+  }
+  .head { font-size: 12px; color: #7f7889; text-transform: uppercase; letter-spacing: 0.06em; text-align: center; }
+  .group-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #7f7889; text-align: center; }
+  .row-label { font-weight: 600; }
+  .row-label small { display: block; color: #7f7889; font-weight: 400; margin-top: 2px; font-size: 12px; line-height: 1.35; }
+  .row-label code { font-size: 11px; color: #a89eef; }
+  .cell-dark  { background: var(--ink-2);  display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; }
+  .cell-light { background: var(--paper-2); display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; }
+  .cell-dark.s128, .cell-light.s128 { width: 144px; height: 144px; }
+  .cell-dark.s64,  .cell-light.s64  { width: 80px;  height: 80px; }
+  .cell-dark.s32,  .cell-light.s32  { width: 48px;  height: 48px; }
+  .cell-dark.s16,  .cell-light.s16  { width: 32px;  height: 32px; }
+  img.s128 { width: 128px; height: 128px; }
+  img.s64  { width: 64px;  height: 64px; }
+  img.s32  { width: 32px;  height: 32px; }
+  img.s16  { width: 16px;  height: 16px; }
+  .divider { grid-column: 1 / -1; height: 1px; background: rgba(255,255,255,0.06); }
+  .span4 { grid-column: span 4; }
+</style>
+</head>
+<body>
+  <h1>Distillate — icon color tuning</h1>
+  <p class="sub">Same composition as current. Only the background fill + top highlight change. Goal: modern macOS gradient feel, better readable by day, still on-brand.</p>
+
+  <div class="grid">
+    <div></div>
+    <div class="group-head span4">On dark surface</div>
+    <div class="group-head span4">On light surface</div>
+
+    <div class="head">Variant</div>
+    <div class="head">128</div><div class="head">64</div><div class="head">32</div><div class="head">16</div>
+    <div class="head">128</div><div class="head">64</div><div class="head">32</div><div class="head">16</div>
+
+    <div class="divider"></div>
+
+    <div class="row-label">current<small><code>#4a53b8</code> flat — too dark by day</small></div>
+    <div class="cell-dark s128"><img class="s128" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="../../desktop/resources/icon.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="../../desktop/resources/icon.svg"></div>
+
+    <div class="divider"></div>
+
+    <div class="row-label">A — brand periwinkle<small><code>#8a80d8 → #5a4fb3</code><br>literal brand accent tokens</small></div>
+    <div class="cell-dark s128"><img class="s128" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="a-brand-periwinkle.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="a-brand-periwinkle.svg"></div>
+
+    <div class="row-label">B — violet pop<small><code>#9890e2 → #5548a6</code><br>more saturated, slightly purple</small></div>
+    <div class="cell-dark s128"><img class="s128" src="b-violet-pop.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="b-violet-pop.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="b-violet-pop.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="b-violet-pop.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="b-violet-pop.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="b-violet-pop.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="b-violet-pop.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="b-violet-pop.svg"></div>
+
+    <div class="row-label">C — warm bloom<small><code>#7d72d0 → #4a3cc4</code><br>+ warm-gold radial top-right</small></div>
+    <div class="cell-dark s128"><img class="s128" src="c-warm-bloom.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="c-warm-bloom.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="c-warm-bloom.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="c-warm-bloom.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="c-warm-bloom.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="c-warm-bloom.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="c-warm-bloom.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="c-warm-bloom.svg"></div>
+
+    <div class="row-label">D — daylight lilac<small><code>#a89eef → #6b5fc8</code><br>lightest — accent-light → accent-dim</small></div>
+    <div class="cell-dark s128"><img class="s128" src="d-daylight-lilac.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="d-daylight-lilac.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="d-daylight-lilac.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="d-daylight-lilac.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="d-daylight-lilac.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="d-daylight-lilac.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="d-daylight-lilac.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="d-daylight-lilac.svg"></div>
+
+    <div class="row-label">E — dawn gradient<small><code>#9890e2 → #8a6db0 → #b4694a</code><br>diagonal periwinkle → pink → warm</small></div>
+    <div class="cell-dark s128"><img class="s128" src="e-dawn-gradient.svg"></div>
+    <div class="cell-dark s64"><img class="s64" src="e-dawn-gradient.svg"></div>
+    <div class="cell-dark s32"><img class="s32" src="e-dawn-gradient.svg"></div>
+    <div class="cell-dark s16"><img class="s16" src="e-dawn-gradient.svg"></div>
+    <div class="cell-light s128"><img class="s128" src="e-dawn-gradient.svg"></div>
+    <div class="cell-light s64"><img class="s64" src="e-dawn-gradient.svg"></div>
+    <div class="cell-light s32"><img class="s32" src="e-dawn-gradient.svg"></div>
+    <div class="cell-light s16"><img class="s16" src="e-dawn-gradient.svg"></div>
+  </div>
+
+  <p style="color:#7f7889; font-size:12px; margin-top: 24px;">
+    Pick one and I'll copy it to <code>desktop/resources/icon.svg</code> + <code>docs/logo.svg</code> and rerun <code>desktop/scripts/build-icons.sh</code>.
+  </p>
+</body>
+</html>

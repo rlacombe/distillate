@@ -417,7 +417,7 @@ class PythonManager {
     const currentPath = process.env.PATH || "/usr/bin:/bin";
     const fullPath = [...new Set([...extraPaths, ...currentPath.split(":")])].join(":");
 
-    this.process = spawn(python, ["-m", "distillate.server", String(this.port)], {
+    this.process = spawn(python, ["-m", "distillate.server", String(this.port), "--no-open"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, PATH: fullPath },
     });

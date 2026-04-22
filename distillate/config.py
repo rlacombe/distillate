@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from distillate import secrets as _secrets
+
 # Config directory: respects XDG_CONFIG_HOME, overridable with DISTILLATE_CONFIG_DIR
 CONFIG_DIR = Path(
     os.environ.get("DISTILLATE_CONFIG_DIR", "")
@@ -25,7 +27,7 @@ load_dotenv(ENV_PATH)
 
 
 def _require(var: str) -> str:
-    value = os.environ.get(var, "").strip()
+    value = _secrets.get(var) if var in _secrets.SECRET_KEYS else os.environ.get(var, "").strip()
     if not value or value.startswith("your_"):
         if not ENV_PATH.exists():
             print("Error: No config found. Run 'distillate --init' to get started.")
@@ -36,7 +38,14 @@ def _require(var: str) -> str:
 
 
 def save_to_env(key: str, value: str) -> None:
-    """Update a single key in the .env file, preserving all other content."""
+    """Update a single key in the .env file, preserving all other content.
+
+    Raises ``ValueError`` if *key* is a secret — use ``secrets.set()`` instead.
+    """
+    if key in _secrets.SECRET_KEYS:
+        raise ValueError(
+            f"{key} is a secret — use distillate.secrets.set() instead of save_to_env()"
+        )
     if ENV_PATH.exists():
         text = ENV_PATH.read_text(encoding="utf-8")
     else:
@@ -60,7 +69,7 @@ ZOTERO_API_KEY: str = ""
 ZOTERO_USER_ID: str = ""
 
 # Optional — reMarkable token is set later via --register
-REMARKABLE_DEVICE_TOKEN: str = os.environ.get("REMARKABLE_DEVICE_TOKEN", "").strip()
+REMARKABLE_DEVICE_TOKEN: str = _secrets.get("REMARKABLE_DEVICE_TOKEN")
 
 # Configurable with defaults
 RM_FOLDER_PAPERS: str = os.environ.get("RM_FOLDER_PAPERS", "Distillate").strip()
@@ -83,10 +92,16 @@ OUTPUT_PATH: str = os.environ.get("OUTPUT_PATH", "").strip()
 
 PDF_SUBFOLDER: str = os.environ.get("PDF_SUBFOLDER", "pdf").strip()
 
+# Distillate home folder — stores PDFs outside the Obsidian vault.
+# Default is empty (falls back to vault-embedded PDFs); wizard suggests ~/Distillate.
+DISTILLATE_HOME: str = os.environ.get("DISTILLATE_HOME", "").strip()
+
 KEEP_ZOTERO_PDF: bool = os.environ.get("KEEP_ZOTERO_PDF", "true").strip().lower() in ("true", "1", "yes")
 
-# Reading surface: "remarkable" (default) or "zotero" (any device via Zotero app)
-READING_SOURCE: str = os.environ.get("READING_SOURCE", "remarkable").strip().lower()
+# Reading surface: "zotero" (default, any device via Zotero app) or "remarkable".
+# reMarkable is now an optional integration — install via:
+#   pip install "distillate[remarkable]"
+READING_SOURCE: str = os.environ.get("READING_SOURCE", "zotero").strip().lower()
 
 # When using Zotero reader, default SYNC_HIGHLIGHTS to false (highlights already in Zotero)
 _sync_default = "false" if READING_SOURCE == "zotero" else "true"
@@ -97,19 +112,27 @@ def is_zotero_reader() -> bool:
     """True when the user reads on any device via Zotero app (no reMarkable)."""
     return READING_SOURCE == "zotero"
 
-ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_API_KEY: str = _secrets.get("ANTHROPIC_API_KEY")
+
+# HuggingFace — inference providers, jobs compute, Hub storage
+HF_TOKEN: str = _secrets.get("HF_TOKEN")
+HF_INFERENCE_ROUTING: str = os.environ.get("HF_INFERENCE_ROUTING", ":fastest").strip()
+HF_COMPUTE_ENABLED: bool = os.environ.get("HF_COMPUTE_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+HF_DEFAULT_GPU_FLAVOR: str = os.environ.get("HF_DEFAULT_GPU_FLAVOR", "a100-large").strip()
+HF_STORAGE_BUCKET: str = os.environ.get("HF_STORAGE_BUCKET", "").strip()
+HF_NAMESPACE: str = os.environ.get("HF_NAMESPACE", "").strip()
 
 # Cloud backend (optional — used by desktop app for managed AI)
-DISTILLATE_AUTH_TOKEN: str = os.environ.get("DISTILLATE_AUTH_TOKEN", "").strip()
+DISTILLATE_AUTH_TOKEN: str = _secrets.get("DISTILLATE_AUTH_TOKEN")
 DISTILLATE_API_URL: str = os.environ.get("DISTILLATE_API_URL", "").strip()
 
-RESEND_API_KEY: str = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_API_KEY: str = _secrets.get("RESEND_API_KEY")
 DIGEST_FROM: str = os.environ.get("DIGEST_FROM", "onboarding@resend.dev").strip()
 DIGEST_TO: str = os.environ.get("DIGEST_TO", "").strip()
 
 ZOTERO_WEBDAV_URL: str = os.environ.get("ZOTERO_WEBDAV_URL", "").strip().rstrip("/")
 ZOTERO_WEBDAV_USERNAME: str = os.environ.get("ZOTERO_WEBDAV_USERNAME", "").strip()
-ZOTERO_WEBDAV_PASSWORD: str = os.environ.get("ZOTERO_WEBDAV_PASSWORD", "").strip()
+ZOTERO_WEBDAV_PASSWORD: str = _secrets.get("ZOTERO_WEBDAV_PASSWORD")
 
 STATE_GIST_ID: str = os.environ.get("STATE_GIST_ID", "").strip()
 
@@ -123,6 +146,14 @@ VERBOSE: bool = False
 CLAUDE_FAST_MODEL: str = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001").strip()
 CLAUDE_SMART_MODEL: str = os.environ.get("CLAUDE_SMART_MODEL", "claude-sonnet-4-5-20250929").strip()
 CLAUDE_AGENT_MODEL: str = os.environ.get("CLAUDE_AGENT_MODEL", "claude-haiku-4-5-20251001").strip()
+
+# When true, strip ANTHROPIC_API_KEY from the Claude Code subprocess env
+# so Nicolas's main loop bills to the user's Claude Code subscription
+# (Pro/Max) instead of the Anthropic Console. The parent process keeps
+# the key for lab_repl sub-calls. Requires `claude login` on the host.
+NICOLAS_USE_SUBSCRIPTION: bool = os.environ.get(
+    "DISTILLATE_NICOLAS_USE_SUBSCRIPTION", "true"
+).strip().lower() in ("true", "1", "yes")
 
 
 _loaded = False
@@ -140,13 +171,16 @@ def ensure_loaded(*, required: bool = True) -> None:
         return
     _loaded = True
 
+    # Migrate secrets from .env to OS keychain on first run after upgrade.
+    _secrets.migrate_from_env()
+
     if required:
         ZOTERO_API_KEY = _require("ZOTERO_API_KEY")
         ZOTERO_USER_ID = _require("ZOTERO_USER_ID")
     else:
         log = logging.getLogger(__name__)
-        ZOTERO_API_KEY = os.environ.get("ZOTERO_API_KEY", "").strip()
-        ZOTERO_USER_ID = os.environ.get("ZOTERO_USER_ID", "").strip()
+        ZOTERO_API_KEY = _secrets.get("ZOTERO_API_KEY")
+        ZOTERO_USER_ID = _secrets.get("ZOTERO_USER_ID")
         if not ZOTERO_API_KEY or not ZOTERO_USER_ID:
             log.warning(
                 "Zotero credentials not configured — paper library disabled. "
@@ -177,8 +211,13 @@ def _validate_optional() -> None:
     if EXPERIMENTS_ROOT and not Path(EXPERIMENTS_ROOT).is_dir():
         log.warning("EXPERIMENTS_ROOT does not exist: %s", EXPERIMENTS_ROOT)
 
+    if DISTILLATE_HOME and not Path(DISTILLATE_HOME).is_dir():
+        log.warning("DISTILLATE_HOME does not exist: %s", DISTILLATE_HOME)
 
+
+DB_PATH = CONFIG_DIR / "state.db"
 LOG_FILE = CONFIG_DIR / "distillate.log"
+NICOLAS_SESSIONS_FILE = CONFIG_DIR / "nicolas_sessions.json"
 
 
 _logging_configured = False

@@ -1,3 +1,4 @@
+# Covers: distillate/semantic_scholar.py
 """Tests for Semantic Scholar metadata enrichment."""
 
 
@@ -144,3 +145,104 @@ class TestCitekeyRegeneration:
         # After S2 fills date
         key2 = _generate_citekey(["Liu"], "Embeddings from language models", "2024-06-15")
         assert key2 == "liu_embeddings_2024"
+
+
+# ---------------------------------------------------------------------------
+# Migrated from test_v032.py
+# ---------------------------------------------------------------------------
+
+
+class TestS2FieldsOfStudy:
+    """enrich_metadata() should populate tags from S2 fieldsOfStudy."""
+
+    def test_fills_empty_tags(self):
+        from distillate.semantic_scholar import enrich_metadata
+        meta = {"tags": []}
+        s2 = {
+            "citation_count": 10, "influential_citation_count": 1,
+            "s2_url": "", "fields_of_study": ["Computer Science", "Medicine"],
+        }
+        result = enrich_metadata(meta, s2)
+        assert result["tags"] == ["Computer Science", "Medicine"]
+
+    def test_merges_into_existing_tags(self):
+        from distillate.semantic_scholar import enrich_metadata
+        meta = {"tags": ["existing-tag"]}
+        s2 = {
+            "citation_count": 10, "influential_citation_count": 1,
+            "s2_url": "", "fields_of_study": ["Physics"],
+        }
+        result = enrich_metadata(meta, s2)
+        assert "existing-tag" in result["tags"]
+        assert "Physics" in result["tags"]
+
+    def test_no_duplicate_merge(self):
+        from distillate.semantic_scholar import enrich_metadata
+        meta = {"tags": ["Biology"]}
+        s2 = {
+            "citation_count": 5, "influential_citation_count": 0,
+            "s2_url": "", "fields_of_study": ["Biology", "Medicine"],
+        }
+        result = enrich_metadata(meta, s2)
+        assert result["tags"].count("Biology") == 1
+        assert "Medicine" in result["tags"]
+
+
+# ---------------------------------------------------------------------------
+# Migrated from test_v070.py
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+
+
+class TestS2TldrFallback:
+    def test_tldr_extracted_from_lookup(self):
+        from distillate.semantic_scholar import lookup_paper
+        paper_data = {
+            "citationCount": 10,
+            "influentialCitationCount": 2,
+            "url": "https://example.com",
+            "tldr": {"text": "This paper does X."},
+            "publicationDate": "2025-01-01",
+            "venue": "NeurIPS",
+            "year": 2025,
+            "fieldsOfStudy": ["Computer Science"],
+            "authors": [{"name": "Alice"}],
+        }
+        with patch("distillate.semantic_scholar._fetch_by_id", return_value=paper_data):
+            result = lookup_paper(doi="10.48550/arXiv.2501.00001")
+        assert result["tldr"] == "This paper does X."
+
+    def test_tldr_stored_in_enrich_metadata(self):
+        from distillate.semantic_scholar import enrich_metadata
+        meta = {"citation_count": 0}
+        s2_data = {
+            "citation_count": 5,
+            "influential_citation_count": 1,
+            "s2_url": "https://s2.com",
+            "tldr": "Paper introduces Y.",
+            "publication_date": "",
+            "venue": "",
+            "year": 0,
+            "fields_of_study": [],
+            "authors": [],
+        }
+        enrich_metadata(meta, s2_data)
+        assert meta["s2_tldr"] == "Paper introduces Y."
+
+    def test_existing_s2_tldr_not_overwritten(self):
+        from distillate.semantic_scholar import enrich_metadata
+        meta = {"citation_count": 0, "s2_tldr": "Existing TLDR."}
+        s2_data = {
+            "citation_count": 5,
+            "influential_citation_count": 1,
+            "s2_url": "https://s2.com",
+            "tldr": "New TLDR.",
+            "publication_date": "",
+            "venue": "",
+            "year": 0,
+            "fields_of_study": [],
+            "authors": [],
+        }
+        enrich_metadata(meta, s2_data)
+        assert meta["s2_tldr"] == "Existing TLDR."

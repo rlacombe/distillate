@@ -10,6 +10,8 @@ from pathlib import Path
 
 import requests
 
+from distillate import secrets as _secrets
+
 log = logging.getLogger("distillate")
 
 _SUBSCRIBE_URL = "https://distillate-subscribe.distillate.workers.dev/"
@@ -39,7 +41,7 @@ def _prompt_with_default(prompt: str, env_key: str, sensitive: bool = False) -> 
 def _init_step5_claude(save_to_env) -> None:
     """Step 5: Claude API key (optional — for sync pipeline only)."""
     print("  " + "-" * 48)
-    print("  Step 5 of 6: Claude API (optional)")
+    print("  Step 5 of 7: Claude API (optional)")
     print("  " + "-" * 48)
     print()
     print("  An Anthropic API key enables AI-powered features")
@@ -60,17 +62,65 @@ def _init_step5_claude(save_to_env) -> None:
         "  Anthropic API key (Enter to skip)", "ANTHROPIC_API_KEY", sensitive=True,
     )
     if anthropic_key:
-        save_to_env("ANTHROPIC_API_KEY", anthropic_key)
+        _secrets.set("ANTHROPIC_API_KEY", anthropic_key)
         print("  Claude API enabled for sync pipeline.")
     else:
         print("  Skipped — Nicolas will still work via Claude Code.")
     print()
 
 
-def _init_step6_extras(save_to_env) -> None:
-    """Step 6: Email digest + experiment tracking."""
+def _init_step6_huggingface(save_to_env) -> None:
+    """Step 6: HuggingFace integration (optional)."""
     print("  " + "-" * 48)
-    print("  Step 6 of 6: Extras")
+    print("  Step 6 of 7: HuggingFace (optional)")
+    print("  " + "-" * 48)
+    print()
+    print("  A HuggingFace token unlocks:")
+    print()
+    print("    - Pi agent with open-weight models (Llama, Qwen, Mistral)")
+    print("      via 15+ inference providers (Cerebras, Groq, Together...)")
+    print("    - Cloud GPU compute (HF Jobs: A100 at $2.50/hr)")
+    print("    - Model & dataset search in experiment agents")
+    print()
+    print("  Create a free account at: https://huggingface.co/join")
+    print("  Then get a token at: https://huggingface.co/settings/tokens")
+    print()
+
+    hf_token = _prompt_with_default(
+        "  HuggingFace token (Enter to skip)", "HF_TOKEN", sensitive=True,
+    )
+    if hf_token:
+        # Validate the token
+        try:
+            from distillate.huggingface import validate_token
+            result = validate_token(hf_token)
+            if result.get("ok"):
+                _secrets.set("HF_TOKEN", hf_token)
+                username = result.get("username", "unknown")
+                plan = result.get("plan", "free")
+                can_pay = result.get("can_pay", False)
+                print(f"  Connected as {username} ({plan} plan)")
+                if can_pay:
+                    print("  Billing enabled — HF Jobs compute available.")
+                else:
+                    print("  Add credits at huggingface.co/settings/billing for GPU compute.")
+            else:
+                print(f"  Token validation failed: {result.get('error', 'unknown error')}")
+                print("  Saving anyway — you can update it later.")
+                _secrets.set("HF_TOKEN", hf_token)
+        except Exception:
+            print("  Could not validate token (network error).")
+            print("  Saving anyway — you can update it later.")
+            _secrets.set("HF_TOKEN", hf_token)
+    else:
+        print("  Skipped — Hub search still works without a token.")
+    print()
+
+
+def _init_step7_extras(save_to_env) -> None:
+    """Step 7: Email digest + experiment tracking."""
+    print("  " + "-" * 48)
+    print("  Step 7 of 7: Extras")
     print("  " + "-" * 48)
     print()
     print("  These are all optional. Press Enter to skip any of them.")
@@ -89,7 +139,7 @@ def _init_step6_extras(save_to_env) -> None:
         "  Resend API key (Enter to skip)", "RESEND_API_KEY", sensitive=True,
     )
     if resend_key:
-        save_to_env("RESEND_API_KEY", resend_key)
+        _secrets.set("RESEND_API_KEY", resend_key)
         email_to = _prompt_with_default("  Your email address", "DIGEST_TO")
         if email_to:
             save_to_env("DIGEST_TO", email_to)
@@ -139,7 +189,7 @@ def _init_step6_extras(save_to_env) -> None:
                     from distillate.experiments import (
                         generate_html_notebook,
                         generate_notebook,
-                        scan_project,
+                        scan_experiment,
                         slugify,
                     )
                     from distillate.obsidian import (
@@ -150,17 +200,17 @@ def _init_step6_extras(save_to_env) -> None:
                     state = State()
                     for repo_path in repos:
                         print(f"    Scanning {repo_path.name}...")
-                        result = scan_project(repo_path)
+                        result = scan_experiment(repo_path)
                         if "error" not in result:
                             pid = slugify(result["name"])
-                            state.add_project(
-                                project_id=pid,
+                            state.add_experiment(
+                                experiment_id=pid,
                                 name=result["name"],
                                 path=str(repo_path),
                             )
                             for run_id, run_data in result.get("runs", {}).items():
                                 state.add_run(pid, run_id, run_data)
-                            state.update_project(
+                            state.update_experiment(
                                 pid,
                                 last_scanned_at=__import__("datetime").datetime.now(
                                     __import__("datetime").timezone.utc
@@ -170,7 +220,7 @@ def _init_step6_extras(save_to_env) -> None:
                             runs = result.get("runs", {})
                             print(f"      {len(runs)} run(s) discovered")
                             # Generate notebooks (MD + HTML)
-                            proj = state.get_project(pid)
+                            proj = state.get_experiment(pid)
                             if proj:
                                 nb = generate_notebook(proj)
                                 write_experiment_notebook(proj, nb)
@@ -449,6 +499,20 @@ def _connectors() -> None:
             rm_detail = "rmapi not installed"
         connectors.append((_check(rm_ok), "Tablet", "reMarkable", rm_detail))
 
+    # HuggingFace
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    hf_ok = bool(hf_token)
+    if hf_ok:
+        try:
+            from distillate.huggingface import validate_token
+            info = validate_token(hf_token)
+            hf_detail = info.get("username", "connected") if info.get("ok") else "token invalid"
+        except Exception:
+            hf_detail = "connected"
+    else:
+        hf_detail = "not configured"
+    connectors.append((_check(hf_ok), "HuggingFace", "Models & compute", hf_detail))
+
     total = len(connectors)
     connected = sum(1 for c in connectors if "\u2713" in c[0])
 
@@ -582,8 +646,8 @@ def _setup_zotero(save_to_env) -> bool | None:
 
     print()
     print("  Verifying...")
-    save_to_env("ZOTERO_API_KEY", api_key)
-    save_to_env("ZOTERO_USER_ID", user_id)
+    _secrets.set("ZOTERO_API_KEY", api_key)
+    _secrets.set("ZOTERO_USER_ID", user_id)
     try:
         resp = requests.get(
             f"https://api.zotero.org/users/{user_id}/items?limit=1",
@@ -657,7 +721,7 @@ def _setup_zotero(save_to_env) -> bool | None:
         if webdav_user:
             save_to_env("ZOTERO_WEBDAV_USERNAME", webdav_user)
         if webdav_pass:
-            save_to_env("ZOTERO_WEBDAV_PASSWORD", webdav_pass)
+            _secrets.set("ZOTERO_WEBDAV_PASSWORD", webdav_pass)
         print("  WebDAV configured.")
     elif existing_webdav:
         print("  Keeping existing WebDAV config.")
@@ -708,7 +772,7 @@ def _setup_remarkable(save_to_env) -> None:
         print()
         register = input("  Re-register? [y/N] ").strip().lower()
         if register == "y":
-            from distillate.remarkable_auth import register_interactive
+            from distillate.integrations.remarkable.auth import register_interactive
             register_interactive()
         else:
             print("  Keeping existing registration.")
@@ -719,7 +783,7 @@ def _setup_remarkable(save_to_env) -> None:
         print()
         register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
         if register != "n":
-            from distillate.remarkable_auth import register_interactive
+            from distillate.integrations.remarkable.auth import register_interactive
             register_interactive()
         else:
             print("  Skipped. Run 'distillate --register' later.")
@@ -752,7 +816,7 @@ def _setup_remarkable(save_to_env) -> None:
                     print()
                     register = input("  Register your reMarkable now? [Y/n] ").strip().lower()
                     if register != "n":
-                        from distillate.remarkable_auth import register_interactive
+                        from distillate.integrations.remarkable.auth import register_interactive
                         register_interactive()
                     else:
                         print("  Skipped. Run 'distillate --register' later.")
@@ -819,18 +883,21 @@ def _setup_obsidian(save_to_env) -> None:
             print("  Skipped. Notes will only be stored in Zotero.")
     print()
 
-    # PDF subfolder
-    existing_sub = os.environ.get("PDF_SUBFOLDER", "pdf")
-    pdf_sub = input(f"  PDF subfolder name [{existing_sub}]: ").strip()
-    if not pdf_sub:
-        pdf_sub = existing_sub
-    if pdf_sub.lower() == "none":
-        pdf_sub = ""
-    save_to_env("PDF_SUBFOLDER", pdf_sub)
-    if pdf_sub:
-        print(f"  PDFs will go to: Saved/{pdf_sub}/")
-    else:
-        print("  PDFs will be alongside notes in Saved/")
+    # Distillate home folder (stores PDFs outside the Obsidian vault)
+    existing_home = os.environ.get("DISTILLATE_HOME", "")
+    default_home = existing_home or str(Path.home() / "Distillate")
+    print("  Distillate stores PDFs outside your Obsidian vault so it stays")
+    print("  lightweight. Notes will link to them with a file:// link.")
+    print()
+    home_input = input(f"  Distillate home folder [{default_home}]: ").strip()
+    if not home_input:
+        home_input = default_home
+    home_path = str(Path(home_input).expanduser().resolve())
+    save_to_env("DISTILLATE_HOME", home_path)
+    papers_path = Path(home_path) / "Papers"
+    papers_path.mkdir(parents=True, exist_ok=True)
+    (papers_path / "To Read").mkdir(parents=True, exist_ok=True)
+    print(f"  PDFs will go to: {papers_path}/")
     print()
 
     # PDF storage policy
@@ -862,7 +929,7 @@ def _setup_single(connector: str) -> None:
     """Route --setup <connector> to the appropriate setup function."""
     from distillate.config import save_to_env
 
-    valid = {"zotero", "email", "remarkable", "obsidian"}
+    valid = {"zotero", "email", "remarkable", "obsidian", "huggingface"}
     if connector not in valid:
         print(f"  Unknown connector: {connector}")
         print(f"  Available: {', '.join(sorted(valid))}")
@@ -876,6 +943,8 @@ def _setup_single(connector: str) -> None:
         _setup_obsidian(save_to_env)
     elif connector == "email":
         _email_signup()
+    elif connector == "huggingface":
+        _init_step6_huggingface(save_to_env)
 
 
 def _init_done(env_path) -> None:
@@ -1013,12 +1082,12 @@ def _init_seed() -> None:
         if skip_remarkable:
             print("  reMarkable not registered — papers will upload on first sync.")
         else:
-            from distillate import remarkable_client
+            from distillate.integrations.remarkable import client as remarkable_client
             remarkable_client.ensure_folders()
 
         existing_on_rm = set()
         if not skip_remarkable:
-            from distillate import remarkable_client
+            from distillate.integrations.remarkable import client as remarkable_client
             existing_on_rm = set(
                 remarkable_client.list_folder(config.RM_FOLDER_INBOX)
             )
@@ -1068,7 +1137,8 @@ def _init_wizard() -> None:
         if choice != "1":
             print()
             _init_step5_claude(save_to_env)
-            _init_step6_extras(save_to_env)
+            _init_step6_huggingface(save_to_env)
+            _init_step7_extras(save_to_env)
             _init_done(ENV_PATH)
             return
         # Warn about existing state
@@ -1128,9 +1198,13 @@ def _init_wizard() -> None:
 
     _init_step5_claude(save_to_env)
 
-    # -- Step 6: Extras (email + experiments) --
+    # -- Step 6: HuggingFace --
 
-    _init_step6_extras(save_to_env)
+    _init_step6_huggingface(save_to_env)
+
+    # -- Step 7: Extras (email + experiments) --
+
+    _init_step7_extras(save_to_env)
 
     # -- Done --
 

@@ -14,10 +14,20 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
-const appSource = readFileSync(
-  resolve(__dirname, "../renderer/app.js"),
+
+// app.js was split into focused modules in an earlier refactor.
+// Insights rendering lives in results.js now; the rest of the
+// experiment detail pipeline is in experiments.js / experiment-detail.js.
+const resultsSource = readFileSync(
+  resolve(__dirname, "../renderer/results.js"),
   "utf-8"
 );
+const experimentsSource = readFileSync(
+  resolve(__dirname, "../renderer/experiments.js"),
+  "utf-8"
+);
+// Combined source used by the static-assertion tests below
+const appSource = resultsSource + "\n" + experimentsSource;
 
 // ───── Minimal DOM shim for testing rendering logic ─────
 

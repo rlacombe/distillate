@@ -736,32 +736,32 @@
       <p class="section-sub">Spawn research agents. Steer them. Distill results.</p>
       <div class="grid">
         <div class="card card-hero">
-          <strong>/conjure</strong>
-          <em class="tag tag-lab">Summon a research agent</em>
+          <strong>/spawn-xp-agent</strong>
+          <em class="tag tag-lab">Launch a research agent</em>
           <p>Describe a research question. Nicolas sets up a git repo, drafts a prompt, and spawns an autonomous research agent with a time budget.</p>
         </div>
         <div class="card">
-          <strong>/steer</strong>
+          <strong>/steer-xp</strong>
           <em class="tag tag-lab">Steer a running agent</em>
           <p>Adjust goals, write steering instructions, or change direction based on early results.</p>
         </div>
         <div class="card">
-          <strong>/assay</strong>
+          <strong>/analyze-xp-results</strong>
           <em class="tag tag-lab">Deep analysis</em>
           <p>Compare runs side-by-side, identify what moved the needle, and understand why certain approaches worked.</p>
         </div>
         <div class="card">
-          <strong>/distill</strong>
+          <strong>/read-xp-logs</strong>
           <em class="tag tag-lab">Extract insights</em>
-          <p>Distill an experiment's full session history into key findings. Zero API calls &mdash; works from local logs.</p>
+          <p>Read an experiment's full session history and extract key findings. Zero API calls &mdash; works from local logs.</p>
         </div>
         <div class="card">
-          <strong>/survey</strong>
+          <strong>/scan-experiments</strong>
           <em class="tag tag-lab">Scan all experiments</em>
           <p>Quick overview of every experiment &mdash; new runs, breakthroughs, stuck agents, and what needs attention.</p>
         </div>
         <div class="card">
-          <strong>/transmute</strong>
+          <strong>/dream-up-new-xps</strong>
           <em class="tag tag-lab">Papers &rarr; experiments</em>
           <p>Turn paper insights into experiment ideas. Replicate results, test a variation, or apply a technique to your domain.</p>
         </div>
@@ -775,17 +775,17 @@
       <p class="section-sub">Read, highlight, synthesize across your collection.</p>
       <div class="grid grid-3">
         <div class="card">
-          <strong>/brew</strong>
+          <strong>/sync-library</strong>
           <em class="tag tag-library">Sync library</em>
           <p>Sync papers from Zotero, extract highlights from any reading device, generate AI summaries, and refresh your notes.</p>
         </div>
         <div class="card">
-          <strong>/forage</strong>
-          <em class="tag tag-library">Discover papers</em>
-          <p>Browse trending research from HuggingFace, get personalized reading suggestions, and add papers to your queue.</p>
+          <strong>/suggest-papers</strong>
+          <em class="tag tag-library">Discover readings</em>
+          <p>Browse trending research from HuggingFace, get personalized reading suggestions, and add readings to your queue.</p>
         </div>
         <div class="card">
-          <strong>/tincture</strong>
+          <strong>/deep-read</strong>
           <em class="tag tag-library">Deep extraction</em>
           <p>Focus on a single paper &mdash; extract key methods, results, and implications from your highlights and margin notes.</p>
         </div>
@@ -800,8 +800,8 @@
       <div class="flow-steps">
         <div class="flow-step">
           <span class="step-icon">📜</span>
-          <strong>Add papers</strong>
-          <p>Save papers to Zotero. Read and highlight on any device &mdash; reMarkable, iPad, desktop. Nicolas extracts everything and builds your knowledge base.</p>
+          <strong>Add readings</strong>
+          <p>Save readings to Zotero. Read and highlight on any device &mdash; reMarkable, iPad, desktop. Nicolas extracts everything and builds your knowledge base.</p>
         </div>
         <div class="flow-step">
           <span class="step-icon">⚗️</span>
@@ -894,11 +894,11 @@
         <span class="dim">  🧪 4 experiments · 12 runs · 1 running</span><br>
         <span class="dim">  📚 42 papers read · 7 in queue</span><br>
         <span class="dim">  ──────────────────────────────────────────────</span><br><br>
-        <span class="prompt">&gt;</span> <span class="cmd">/conjure tiny-matmul --duration 30m</span><br><br>
+        <span class="prompt">&gt;</span> <span class="cmd">/spawn-xp-agent tiny-matmul --duration 30m</span><br><br>
         <span class="dim">  🧪 Spawning research agent...</span><br>
         <span class="green">  Created distillate-xp-tiny-matmul</span><br>
         <span class="dim">  Research agent spawned — 30 min budget, will report when done.</span><br><br>
-        <span class="prompt">&gt;</span> <span class="cmd">/survey</span><br><br>
+        <span class="prompt">&gt;</span> <span class="cmd">/scan-experiments</span><br><br>
         <span class="dim">  🔬 Scanning 4 experiments...</span><br>
         <span class="green">  ✓ tiny-matmul: 8 runs, best loss 0.0023 (-42%)</span><br>
         <span class="gold">  ⚗ sigma-classify: 3 runs, accuracy 94.2% (goal: 95%)</span><br>

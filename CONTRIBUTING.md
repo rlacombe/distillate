@@ -14,9 +14,7 @@ Copy `.env.example` to `.env` and fill in your credentials.
 
 ## Running Tests
 
-```bash
-pytest tests/ -v
-```
+See [`TESTING.md`](./TESTING.md) for principles and the commands for all three test surfaces (Python, desktop unit, desktop E2E).
 
 ## Project Structure
 
@@ -56,6 +54,6 @@ distillate/
 ## Pull Requests
 
 - One logical change per PR
-- Include tests for new behavior
-- Run `pytest tests/` before submitting
+- Include tests for new behavior (see [`TESTING.md`](./TESTING.md))
+- Run the relevant test suites before submitting
 - Keep commit messages concise and descriptive

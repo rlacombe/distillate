@@ -25,8 +25,10 @@ Core experiment lifecycle and UX fundamentals.
 
 Research workflow improvements.
 
+- **Hardware metrics strip**: Live GPU/CPU utilization (Apple Silicon MPS via `powermetrics`) shown when experiments are running — minimal status-bar widget, graceful fallback on non-Mac
 - **Prompt templates library**: Save and reuse experiment configurations across projects
 - **Live cost tracking**: Show $$ spent per session and cumulative per experiment
+- **GPU budget display**: Show `$spent / $cap` and remaining budget in experiment detail; handle `hfjobs_budget_warning` (90%) and `hfjobs_budget_exceeded` SSE events in the frontend (backend already emits them, frontend has no handlers); show per-run cost in run list
 - **Comparison view**: Side-by-side metrics across experiments with highlighted bests
 - **Effort level selection**: Let users pick Claude effort level (low/medium/high) per experiment launch
 

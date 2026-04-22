@@ -366,13 +366,13 @@ def _backfill_highlights(args: list[str]) -> None:
     from datetime import datetime, timezone
 
     from distillate import config
-    from distillate import renderer
     from distillate import zotero_client
     from distillate.state import State
 
     zotero_mode = config.is_zotero_reader()
     if not zotero_mode:
-        from distillate import remarkable_client
+        from distillate.integrations.remarkable import client as remarkable_client
+        from distillate.integrations.remarkable import renderer as rm_renderer
 
     config.setup_logging()
 
@@ -430,7 +430,7 @@ def _backfill_highlights(args: list[str]) -> None:
                 print("    Could not download from reMarkable")
                 continue
 
-            positions = renderer.extract_zotero_highlights(zip_path)
+            positions = rm_renderer.extract_zotero_highlights(zip_path)
             if not positions:
                 print("    No highlight positions extracted")
                 continue
@@ -499,7 +499,7 @@ def _status() -> None:
     print("  " + "\u2500" * 40)
 
     # Experiments (shown first)
-    projects = state.projects
+    projects = state.experiments
     if projects:
         from distillate.launcher import refresh_session_statuses
         changed = refresh_session_statuses(state)
@@ -580,7 +580,7 @@ def _status() -> None:
     # Ready to process (in Read/ on reMarkable)
     if not config.is_zotero_reader():
         try:
-            from distillate import remarkable_client
+            from distillate.integrations.remarkable import client as remarkable_client
             read_docs = remarkable_client.list_folder(config.RM_FOLDER_READ)
             if read_docs:
                 print(f"  Ready:     {len(read_docs)} paper{'s' if len(read_docs) != 1 else ''} in Read/")
@@ -1262,7 +1262,7 @@ def _import(args: list[str]) -> None:
     from distillate.state import State, acquire_lock, release_lock
 
     if not config.is_zotero_reader():
-        from distillate import remarkable_client
+        from distillate.integrations.remarkable import client as remarkable_client
 
     config.setup_logging()
 
@@ -1405,7 +1405,7 @@ def _import_state(path: str) -> None:
     Backs up existing state before replacing.
     """
     import shutil
-    from distillate.state import STATE_PATH, _run_migrations
+    from distillate.state import STATE_PATH
 
     src = Path(path).expanduser().resolve()
     if not src.exists():
@@ -1423,9 +1423,6 @@ def _import_state(path: str) -> None:
     if not isinstance(data, dict) or "documents" not in data:
         print("  Invalid state file: missing 'documents' key.")
         sys.exit(1)
-
-    # Run migrations on the imported data
-    _run_migrations(data)
 
     # Backup existing state
     if STATE_PATH.exists():

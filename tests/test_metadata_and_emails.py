@@ -1,3 +1,4 @@
+# Covers: distillate/obsidian.py, distillate/email.py
 """Tests for metadata sync, frontmatter parsing, and email enrichment helpers."""
 
 import textwrap
