@@ -40,22 +40,20 @@ class TestScaffoldEndpoint:
 
     def test_scaffold_endpoint(self, tmp_path, client):
         """POST with valid template registers project and returns ok."""
-        self._make_template(tmp_path)
-        resp = client.post("/experiments/scaffold", json={"template": "tiny-matmul", "name": "TinyMatMul"})
+        resp = client.post("/experiments/scaffold", json={"template": "demo", "name": "Addition Grokking"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
-        assert data["experiment_id"] == "tinymatmul"
+        assert data["experiment_id"] == "addition-grokking"
         assert "path" in data
 
     def test_scaffold_already_exists(self, tmp_path, client):
         """POST when project already registered returns already_exists: true."""
-        self._make_template(tmp_path)
         # First call scaffolds
-        resp1 = client.post("/experiments/scaffold", json={"template": "tiny-matmul", "name": "TinyMatMul"})
+        resp1 = client.post("/experiments/scaffold", json={"template": "demo", "name": "Addition Grokking"})
         assert resp1.json()["ok"] is True
         # Second call returns existing
-        resp2 = client.post("/experiments/scaffold", json={"template": "tiny-matmul", "name": "TinyMatMul"})
+        resp2 = client.post("/experiments/scaffold", json={"template": "demo", "name": "Addition Grokking"})
         data = resp2.json()
         assert data["ok"] is True
         assert data["already_exists"] is True
@@ -72,6 +70,14 @@ class TestScaffoldEndpoint:
         resp = client.post("/experiments/scaffold", json={})
         assert resp.status_code == 400
         assert resp.json()["ok"] is False
+
+    def test_scaffold_builtin_template_on_fresh_config(self, client):
+        """POST succeeds on a fresh config dir because demo is a built-in template."""
+        resp = client.post("/experiments/scaffold", json={"template": "demo", "name": "Addition Grokking"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["experiment_id"] == "addition-grokking"
 
 
 # ---------------------------------------------------------------------------

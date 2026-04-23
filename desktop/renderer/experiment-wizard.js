@@ -910,13 +910,13 @@ async function launchDemoExperiment() {
 
   let projectId = null;
 
-  // Step 1: Scaffold from template
+  // Step 1: Scaffold from demo template
   updateOnboardingStep(1, "active", "");
   try {
     const r = await fetch(`http://127.0.0.1:${serverPort}/experiments/scaffold`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ template: "tiny-matmul", name: "TinyMatMul" }),
+      body: JSON.stringify({ template: "demo", name: "Addition Grokking" }),
     });
     const data = await r.json();
     if (!data.ok) throw new Error(data.reason || "Scaffold failed");

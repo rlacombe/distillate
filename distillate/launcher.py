@@ -124,10 +124,36 @@ def ensure_tmux():
 # Template management
 # ---------------------------------------------------------------------------
 
+_BUILTIN_TEMPLATES_DIR = Path(__file__).parent / "builtin_templates"
+
+
+def _copy_tree_if_missing(src: Path, dst: Path) -> None:
+    """Copy a directory tree into place only when the target is absent."""
+    if dst.exists():
+        return
+    shutil.copytree(src, dst)
+
+
+def ensure_builtin_templates() -> None:
+    """Seed packaged templates into the user config directory on first access."""
+    if not _BUILTIN_TEMPLATES_DIR.is_dir():
+        return
+
+    root = CONFIG_DIR / "templates"
+    root.mkdir(parents=True, exist_ok=True)
+
+    for child in sorted(_BUILTIN_TEMPLATES_DIR.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not (child / "PROMPT.md").is_file():
+            continue
+        _copy_tree_if_missing(child, root / child.name)
+
 def templates_dir() -> Path:
     """Return templates directory (~/.config/distillate/templates/)."""
     d = CONFIG_DIR / "templates"
     d.mkdir(parents=True, exist_ok=True)
+    ensure_builtin_templates()
     return d
 
 
@@ -194,6 +220,199 @@ def import_template(source: Path, name: str | None = None) -> str:
     return template_name
 
 
+def _create_demo_experiment_files(target: Path) -> None:
+    """Generate files for the demo experiment: smallest transformer that adds 10-digit numbers.
+
+    Inspired by work on arithmetic and grokking by Dimitrios Papailopoulos and others.
+    """
+    # PROMPT.md — experiment brief
+    prompt_md = """# Addition Grokking
+
+Train a small transformer to add two 10-digit numbers, inspired by research on
+arithmetic learning and grokking (Papailopoulos et al., 2024).
+
+## Goal
+
+Build the minimal transformer that learns to reliably predict the sum of two 10-digit
+integers. This task demonstrates how neural networks can develop structured
+generalizations on seemingly simple tasks.
+
+## Constraints
+
+- Model should have < 1M parameters
+- Training dataset: 50k random (a, b) pairs with their sum
+- Test set: out-of-distribution pairs (different range)
+- Track the exact moment of "grokking" (sudden generalization)
+
+## Metrics
+
+- `test_accuracy`: % of test examples predicted correctly (0-100)
+- `param_count`: total model parameters (lower is better)
+- `train_loss`: final training loss
+
+## Deliverables
+
+- Trained model checkpoint
+- Metrics logged to metrics.json
+- Brief analysis of learning dynamics
+"""
+    (target / "PROMPT.md").write_text(prompt_md, encoding="utf-8")
+
+    # train.py — the training script
+    train_py = '''"""Smallest transformer for learning integer addition.
+
+Based on grokking research: when do neural networks develop robust generalizations
+on arithmetic? This experiment trains a minimal transformer on the synthetic task
+of adding two 10-digit numbers.
+
+Inspired by Papailopoulos et al. (2024) and the grokking phenomenon.
+"""
+
+import json
+import random
+from pathlib import Path
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+
+class MiniTransformer(nn.Module):
+    """Minimal transformer for arithmetic tasks."""
+
+    def __init__(self, vocab_size=12, d_model=64, nhead=2, num_layers=2):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_feedforward=256, batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc_out = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.encoder(x)
+        x = self.fc_out(x[:, -1, :])
+        return x
+
+
+def generate_dataset(n_samples=50000, seed=42):
+    """Generate random addition pairs."""
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # Training: range [10^9, 10^10)
+    train_pairs = [
+        (random.randint(int(1e9), int(1e10)-1), random.randint(int(1e9), int(1e10)-1))
+        for _ in range(n_samples)
+    ]
+
+    # Test: out-of-distribution (smaller range)
+    test_pairs = [
+        (random.randint(1, int(1e8)), random.randint(1, int(1e8)))
+        for _ in range(int(n_samples * 0.2))
+    ]
+
+    return train_pairs, test_pairs
+
+
+def encode_number(n, vocab_size=10):
+    """Encode a number as digit sequence."""
+    digits = [int(d) for d in str(n).zfill(11)]
+    return digits
+
+
+def prepare_batch(pairs, vocab_size=10):
+    """Prepare training batch: (a, b) -> sum."""
+    inputs, outputs = [], []
+    for a, b in pairs:
+        a_digits = encode_number(a, vocab_size)
+        b_digits = encode_number(b, vocab_size)
+        sum_digits = encode_number(a + b, vocab_size)
+
+        # Concatenate: [a_digits] + [b_digits] + [sum_digits[0]]
+        seq = a_digits + b_digits
+        target = sum_digits[0]  # Predict first digit of sum
+
+        inputs.append(seq)
+        outputs.append(target)
+
+    return torch.tensor(inputs, dtype=torch.long), torch.tensor(outputs, dtype=torch.long)
+
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on {device}")
+
+    # Dataset
+    train_pairs, test_pairs = generate_dataset()
+    X_train, Y_train = prepare_batch(train_pairs)
+    X_test, Y_test = prepare_batch(test_pairs)
+
+    train_ds = TensorDataset(X_train, Y_train)
+    test_ds = TensorDataset(X_test, Y_test)
+
+    train_loader = DataLoader(train_ds, batch_size=128, shuffle=True)
+    test_loader = DataLoader(test_ds, batch_size=128)
+
+    # Model
+    model = MiniTransformer(vocab_size=12, d_model=64, nhead=2, num_layers=2)
+    model = model.to(device)
+
+    print(f"Model size: {sum(p.numel() for p in model.parameters())} parameters")
+
+    # Train
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.CrossEntropyLoss()
+
+    best_acc = 0
+    for epoch in range(50):
+        model.train()
+        total_loss = 0
+        for X_batch, Y_batch in train_loader:
+            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+            logits = model(X_batch)
+            loss = loss_fn(logits, Y_batch)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        # Evaluate
+        model.eval()
+        correct = 0
+        with torch.no_grad():
+            for X_batch, Y_batch in test_loader:
+                X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+                logits = model(X_batch)
+                pred = logits.argmax(dim=1)
+                correct += (pred == Y_batch).sum().item()
+
+        acc = 100 * correct / len(test_ds)
+
+        if (epoch + 1) % 10 == 0 or acc > best_acc:
+            print(f"Epoch {epoch+1:2d} | Loss: {total_loss/len(train_loader):.4f} | Test Acc: {acc:.1f}%")
+            best_acc = max(best_acc, acc)
+
+    # Save metrics
+    metrics = {
+        "test_accuracy": acc,
+        "param_count": sum(p.numel() for p in model.parameters()),
+        "train_loss": total_loss / len(train_loader),
+    }
+
+    Path("metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(f"\\nFinal metrics saved to metrics.json")
+    print(f"Model: {metrics['param_count']:,} params, {metrics['test_accuracy']:.1f}% test accuracy")
+
+
+if __name__ == "__main__":
+    main()
+'''
+    (target / "train.py").write_text(train_py, encoding="utf-8")
+
+
 def scaffold_experiment(
     template: str,
     target: Path,
@@ -207,7 +426,7 @@ def scaffold_experiment(
 ) -> Path:
     """Create a new experiment directory from a template.
 
-    - Copies template contents to target/
+    - Copies template contents to target/ (or generates for special "demo" template)
     - git init
     - Creates .distillate/ with REPORTING.md
     - Installs Claude Code hooks (.claude/settings.json)
@@ -220,25 +439,29 @@ def scaffold_experiment(
 
     Returns experiment path.
     """
-    tmpl_dir = templates_dir() / template
-    if not tmpl_dir.is_dir():
-        raise FileNotFoundError(f"Template not found: {template}")
-
     target = target.resolve()
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Target directory is not empty: {target}")
 
     target.mkdir(parents=True, exist_ok=True)
 
-    # Copy template contents
-    for item in tmpl_dir.iterdir():
-        if item.name.startswith("."):
-            continue
-        dst = target / item.name
-        if item.is_dir():
-            shutil.copytree(item, dst)
-        else:
-            shutil.copy2(item, dst)
+    # Handle special "demo" template by generating content inline
+    if template == "demo":
+        _create_demo_experiment_files(target)
+    else:
+        tmpl_dir = templates_dir() / template
+        if not tmpl_dir.is_dir():
+            raise FileNotFoundError(f"Template not found: {template}")
+
+        # Copy template contents
+        for item in tmpl_dir.iterdir():
+            if item.name.startswith("."):
+                continue
+            dst = target / item.name
+            if item.is_dir():
+                shutil.copytree(item, dst)
+            else:
+                shutil.copy2(item, dst)
 
     # git init (if not already a repo)
     if not (target / ".git").exists():
@@ -1405,6 +1628,11 @@ def _spawn_local(session_name: str, work_dir: Path, command: str,
     # Configure tmux session for embedded use (xterm.js)
     subprocess.run(["tmux", "set", "-t", session_name, "status", "off"], capture_output=True)
     subprocess.run(["tmux", "set", "-t", session_name, "mouse", "on"], capture_output=True)
+    # Disable tmux's outer alt-screen so xterm.js's native scrollback captures
+    # session output. Claude Code and most agent CLIs render inline (Ink/React
+    # for CLI) — with alt-screen off, their history flows into xterm's native
+    # scrollback instead of being trapped in tmux's internal pane buffer.
+    subprocess.run(["tmux", "set-window-option", "-t", session_name, "alternate-screen", "off"], capture_output=True)
 
     # Auto-confirm workspace trust dialog (Enter after brief delay)
     import time
@@ -1434,7 +1662,11 @@ def _spawn_ssh(
     budget_exports = f"export DISTILLATE_RUN_BUDGET_SECONDS={run_budget} && "
     if session_budget is not None:
         budget_exports += f"export DISTILLATE_SESSION_BUDGET_SECONDS={session_budget} && "
-    ssh_cmd = f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && {budget_exports}tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+    ssh_cmd = (
+        f"cd {shlex.quote(remote_dir)} && export DISTILLATE_SESSION=1 && {budget_exports}"
+        f"tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)} && "
+        f"tmux set-window-option -t {shlex.quote(session_name)} alternate-screen off"
+    )
     result = subprocess.run(
         ["ssh", host, ssh_cmd],
         capture_output=True,
