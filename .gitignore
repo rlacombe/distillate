@@ -38,6 +38,3 @@ desktop/restart.sh
 
 # Test runner artifacts
 test-results/
-
-# Bundler/generated artifacts
-c65ecab25-n1ad8KFY.js
